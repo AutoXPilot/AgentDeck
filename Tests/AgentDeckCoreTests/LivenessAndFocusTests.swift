@@ -85,13 +85,15 @@ struct LivenessAndFocusTests {
         #expect(boot > Date(timeIntervalSince1970: 0))
     }
 
-    @Test func revealURLExtractsGuidPart() {
+    @Test func revealURLKeepsFullSessionIdWithEncodedColon() {
+        // regression: a bare GUID is silently ignored by iTerm — the full
+        // "wXtYpZ:GUID" form (colon percent-encoded) is what focuses a pane
         let url = ITermFocus.revealURL(
             terminalSessionId: "w0t2p1:9E223F41-B4B0-4A5C-ABCD-000000000000"
         )
         #expect(
             url?.absoluteString
-                == "iterm2:///reveal?sessionid=9E223F41-B4B0-4A5C-ABCD-000000000000"
+                == "iterm2:///reveal?sessionid=w0t2p1%3A9E223F41-B4B0-4A5C-ABCD-000000000000"
         )
     }
 
@@ -105,7 +107,7 @@ struct LivenessAndFocusTests {
     @Test func revealURLEncodesUnexpectedCharacters() {
         #expect(
             ITermFocus.revealURL(terminalSessionId: "w0:has space&x=1")?.absoluteString
-                == "iterm2:///reveal?sessionid=has%20space%26x%3D1"
+                == "iterm2:///reveal?sessionid=w0%3Ahas%20space%26x%3D1"
         )
     }
 
