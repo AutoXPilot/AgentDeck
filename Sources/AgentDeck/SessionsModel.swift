@@ -146,6 +146,16 @@ final class SessionsModel: ObservableObject {
         let url = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AgentDeck/app.log")
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > 256 * 1024 {
+            try? FileManager.default.removeItem(
+                at: url.deletingPathExtension().appendingPathExtension("log.old")
+            )
+            try? FileManager.default.moveItem(
+                at: url,
+                to: url.deletingPathExtension().appendingPathExtension("log.old")
+            )
+        }
         let line = "\(Date()) \(message)\n"
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()

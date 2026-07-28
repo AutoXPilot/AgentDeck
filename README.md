@@ -9,6 +9,15 @@ the exact iTerm2 pane via `iterm2:///reveal?sessionid=…`.
 No server, no polling, no transcript scraping — lifecycle hooks write tiny
 metadata snapshots; the app watches the directory.
 
+Pane focusing uses AppleScript (select session → tab → window → activate),
+which needs a one-time Automation approval ("AgentDeck wants access to
+control iTerm2") on first row click. The `iterm2:///reveal` URL scheme is
+kept only as a fallback: it was observed working and then silently no-oping
+minutes later (app-to-app URL consent, most likely) — an unacceptable
+primary mechanism. Row clicks log to
+`~/Library/Application Support/AgentDeck/app.log` (focused / not-found /
+error) for diagnosis.
+
 ## Build & run
 
 ```sh
