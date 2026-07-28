@@ -14,6 +14,7 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var isInstalling = false
 
     var onChange: (() -> Void)?
+    var onRequestClose: (() -> Void)?
 
     /// While the popover is visible, row ORDER is frozen so live events and
     /// ack-clicks don't reshuffle rows under the cursor; states and times
@@ -112,10 +113,11 @@ final class SessionsModel: ObservableObject {
         Attention.needsAttention(snapshot, ackedAt: acks[snapshot.key])
     }
 
-    /// Row click: acknowledge the current event and focus the iTerm pane.
+    /// Row click: acknowledge, close the popover, focus the iTerm pane.
     func activate(_ snapshot: SessionSnapshot) {
         acks[snapshot.key] = Date()
         saveAcks()
+        onRequestClose?()
         if let url = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId) {
             NSWorkspace.shared.open(url)
         }

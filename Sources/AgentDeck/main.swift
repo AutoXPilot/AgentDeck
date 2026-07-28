@@ -24,10 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.delegate = self
         model.onChange = { [weak self] in self?.refreshBadge() }
+        model.onRequestClose = { [weak self] in self?.popover.performClose(nil) }
         model.start()
     }
 
     private func refreshBadge() {
+        // Changing the title changes the status item's WIDTH, which slides
+        // the anchored popover sideways — never resize while it's open.
+        guard !popover.isShown else { return }
         guard let button = statusItem.button else { return }
         let count = model.attentionCount
         button.title = count > 0 ? " \(count)" : ""
@@ -47,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         model.popoverIsShown = false
+        refreshBadge()  // apply any count change deferred while open
     }
 }
 
