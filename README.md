@@ -4,7 +4,8 @@ macOS menu-bar monitor for every active **Claude Code** and **Codex** terminal
 session. Shows provider, project, state (ready / working / waiting / done /
 error), and elapsed time; sessions needing attention are counted in the
 menu-bar badge and sorted first. Clicking a row acknowledges it and focuses
-the exact iTerm2 pane via `iterm2:///reveal?sessionid=…`.
+the exact iTerm2 pane (AppleScript select; reveal URL as fallback — see
+below).
 
 No server, no polling, no transcript scraping — lifecycle hooks write tiny
 metadata snapshots; the app watches the directory.

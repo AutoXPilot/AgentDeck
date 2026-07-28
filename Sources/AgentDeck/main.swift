@@ -43,14 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            model.popoverIsShown = true  // fresh sort, then freeze row order
+            model.popoverOpened()  // fresh sort, then freeze row order
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
 
     func popoverDidClose(_ notification: Notification) {
-        model.popoverIsShown = false
+        guard !popover.isShown else { return }  // stale callback after a fast reopen
+        model.popoverClosed()
         refreshBadge()  // apply any count change deferred while open
     }
 }

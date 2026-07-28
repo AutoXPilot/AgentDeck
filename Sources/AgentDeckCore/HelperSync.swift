@@ -29,10 +29,18 @@ public enum HelperSync {
         let tmp = stable.deletingLastPathComponent()
             .appendingPathComponent(".helper-\(UUID().uuidString).tmp")
         try fm.copyItem(at: bundled, to: tmp)
-        _ = try fm.replaceItemAt(stable, withItemAt: tmp)
-        // after the swap: replaceItemAt merges the OLD item's metadata onto
-        // the replacement by default, which would drop the executable bit
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stable.path)
+        // chmod BEFORE the rename so there is no window where a firing hook
+        // execs a non-executable file…
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp.path)
+        do {
+            _ = try fm.replaceItemAt(stable, withItemAt: tmp)
+        } catch {
+            try? fm.removeItem(at: tmp)  // don't strand tmp debris in bin/
+            throw error
+        }
+        // …and again after: replaceItemAt can merge the OLD item's metadata
+        // onto the replacement, which would drop the executable bit
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stable.path)
         return true
     }
 }

@@ -1,6 +1,7 @@
 import AgentDeckCore
 import AppKit
 import Combine
+import Darwin
 import Foundation
 
 @MainActor
@@ -16,23 +17,21 @@ final class SessionsModel: ObservableObject {
     var onChange: (() -> Void)?
     var onRequestClose: (() -> Void)?
 
-    /// While the popover is visible, row ORDER is frozen so live events and
-    /// ack-clicks don't reshuffle rows under the cursor; states and times
-    /// still update in place. A fresh sort happens on every popover open.
-    var popoverIsShown = false {
-        didSet {
-            if popoverIsShown != oldValue {
-                frozenOrder = nil
-                reload()
-            }
-        }
-    }
-    private var frozenOrder: [String]?
-
     private let store = SnapshotStore()
     private var acks: [String: Date] = [:]
     private var dirWatcher: DispatchSourceFileSystemObject?
     private var sweepTimer: Timer?
+
+    /// While the popover is visible, row ORDER is frozen so live events and
+    /// ack-clicks don't reshuffle rows under the cursor; states and times
+    /// still update in place. A fresh sort happens on every popover open.
+    private var popoverVisible = false
+    private var frozenOrder: [String]?
+
+    /// Single pending focus action, fired when the popover actually closes
+    /// (the real signal) rather than after a guessed delay. Single-slot:
+    /// rapid clicks replace it instead of racing parallel osascripts.
+    private var pendingFocus: (() -> Void)?
 
     private static let acksDefaultsKey = "acknowledgments"
 
@@ -68,6 +67,31 @@ final class SessionsModel: ObservableObject {
         reload()
     }
 
+    // MARK: - Popover lifecycle
+
+    /// Always resets the freeze so every open starts from a fresh sort,
+    /// even if a previous close's delegate callback got swallowed by a
+    /// rapid close→reopen.
+    func popoverOpened() {
+        frozenOrder = nil
+        popoverVisible = true
+        reload()
+    }
+
+    func popoverClosed() {
+        popoverVisible = false
+        frozenOrder = nil
+        if let focus = pendingFocus {
+            pendingFocus = nil
+            // small settle for the activation hand-back, anchored to the
+            // ACTUAL close instead of the click
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: focus)
+        }
+        reload()
+    }
+
+    // MARK: - Data
+
     func reload() {
         var all = store.loadAll()
         store.sweepOrphans()
@@ -87,22 +111,13 @@ final class SessionsModel: ObservableObject {
         }
         all.removeAll { removed.contains($0.key) }
         let sorted = Attention.sorted(all, acks: acks)
-        if popoverIsShown, let order = frozenOrder {
-            var byKey = Dictionary(uniqueKeysWithValues: sorted.map { ($0.key, $0) })
-            var arranged: [SessionSnapshot] = []
-            for key in order {
-                if let snapshot = byKey.removeValue(forKey: key) {
-                    arranged.append(snapshot)
-                }
-            }
-            // brand-new sessions append below existing rows, in sort order,
-            // and join the frozen order so they don't shuffle either
-            arranged += sorted.filter { byKey.keys.contains($0.key) }
-            sessions = arranged
-            frozenOrder = arranged.map(\.key)
+        if popoverVisible {
+            let arranged = RowOrdering.arrange(sorted: sorted, frozenOrder: frozenOrder)
+            sessions = arranged.rows
+            frozenOrder = arranged.frozenOrder
         } else {
             sessions = sorted
-            frozenOrder = popoverIsShown ? sorted.map(\.key) : nil
+            frozenOrder = nil
         }
         attentionCount = Attention.count(all, acks: acks)
         refreshHealth()
@@ -113,20 +128,16 @@ final class SessionsModel: ObservableObject {
         Attention.needsAttention(snapshot, ackedAt: acks[snapshot.key])
     }
 
-    /// Row click: acknowledge, close the popover, focus the iTerm pane.
-    /// The reveal fires AFTER the popover teardown settles — closing hands
-    /// activation back to the previously active app, and if the reveal has
-    /// already activated iTerm by then, that hand-back yanks focus away
-    /// from it again (windows flash, nothing ends up front).
+    /// Row click: acknowledge, close the popover, then focus the iTerm pane
+    /// once the close has actually happened (popoverClosed fires the action).
     func activate(_ snapshot: SessionSnapshot) {
         acks[snapshot.key] = Date()
         saveAcks()
         let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId)
         let fallbackURL = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId)
         Self.appLog("activate key=\(snapshot.key) guid=\(guid ?? "nil")")
-        onRequestClose?()
         if let guid {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            pendingFocus = {
                 Task.detached {
                     let result = ITermFocus.focusViaAppleScript(guid: guid)
                     Self.appLog("applescript focus: \(result)")
@@ -139,31 +150,13 @@ final class SessionsModel: ObservableObject {
                 }
             }
         }
+        if popoverVisible {
+            onRequestClose?()  // popoverClosed() will fire pendingFocus
+        } else if let focus = pendingFocus {
+            pendingFocus = nil
+            focus()
+        }
         reload()
-    }
-
-    nonisolated static func appLog(_ message: String) {
-        let url = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentDeck/app.log")
-        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-           size > 256 * 1024 {
-            try? FileManager.default.removeItem(
-                at: url.deletingPathExtension().appendingPathExtension("log.old")
-            )
-            try? FileManager.default.moveItem(
-                at: url,
-                to: url.deletingPathExtension().appendingPathExtension("log.old")
-            )
-        }
-        let line = "\(Date()) \(message)\n"
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? Data(line.utf8).write(to: url)
-        }
     }
 
     /// Runs `agentdeck-hook install` off the main actor; result lands in
@@ -207,14 +200,54 @@ final class SessionsModel: ObservableObject {
         }
     }
 
+    // MARK: - Logging
+
+    /// POSIX O_APPEND: atomic for small writes, safe across the main actor
+    /// and detached tasks without coordination.
+    nonisolated static func appLog(_ message: String) {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AgentDeck")
+        let url = dir.appendingPathComponent("app.log")
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > 256 * 1024 {
+            let old = dir.appendingPathComponent("app.log.old")
+            try? FileManager.default.removeItem(at: old)
+            try? FileManager.default.moveItem(at: url, to: old)
+        }
+        let line = "\(Date()) \(message)\n"
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        guard fd >= 0 else { return }
+        _ = Data(line.utf8).withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        close(fd)
+    }
+
     // MARK: - Private
+
+    private static let bundledHelperHash: String? = {
+        bundledHelperURL.flatMap { HelperSync.sha256(of: $0) }
+    }()
+    private var stableHashCache: (mtime: Date, size: Int, hash: String)?
+
+    private func stableHelperHash() -> String? {
+        let path = Self.helperURL.path
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mtime = attrs[.modificationDate] as? Date,
+              let size = (attrs[.size] as? NSNumber)?.intValue
+        else { return nil }
+        if let cached = stableHashCache, cached.mtime == mtime, cached.size == size {
+            return cached.hash
+        }
+        guard let hash = HelperSync.sha256(of: Self.helperURL) else { return nil }
+        stableHashCache = (mtime, size, hash)
+        return hash
+    }
 
     private func refreshHealth() {
         var helperOK = FileManager.default.isExecutableFile(atPath: Self.helperURL.path)
         // executability isn't enough: a stale helper must show as unhealthy
-        if helperOK, let bundled = Self.bundledHelperURL,
-           FileManager.default.isExecutableFile(atPath: bundled.path) {
-            helperOK = !HelperSync.needsSync(bundled: bundled, stable: Self.helperURL)
+        if helperOK, let bundledHash = Self.bundledHelperHash {
+            helperOK = stableHelperHash() == bundledHash
         }
         helperInstalled = helperOK
         let installer = HookInstaller(helperPath: Self.helperURL.path)

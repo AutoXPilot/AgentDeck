@@ -39,27 +39,38 @@ public enum ITermFocus {
 
     /// Runs the focus script via osascript. Returns "focused", "not-found",
     /// or "error: …" — callers can fall back to the reveal URL.
-    public static func focusViaAppleScript(guid: String) -> String {
+    ///
+    /// Bounded: the first-ever run blocks on the macOS Automation consent
+    /// dialog, and an unanswered dialog must not park a thread forever.
+    /// The timeout is generous so the user has time to read the prompt.
+    /// stderr merges into stdout (two pipes drained sequentially can
+    /// deadlock), and the post-exit drain can't block on a live process.
+    public static func focusViaAppleScript(
+        guid: String, timeout: TimeInterval = 20
+    ) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-", guid]
-        let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
+        let stdin = Pipe(), output = Pipe()
         process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = stderr
+        process.standardOutput = output
+        process.standardError = output
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do { try process.run() } catch { return "error: \(error.localizedDescription)" }
-        stdin.fileHandleForWriting.write(Data(focusScript.utf8))
+        try? stdin.fileHandleForWriting.write(contentsOf: Data(focusScript.utf8))
         try? stdin.fileHandleForWriting.close()
-        let out = stdout.fileHandleForReading.readDataToEndOfFile()
-        let err = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let detail = String(decoding: err, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return "error: \(detail)"
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            _ = exited.wait(timeout: .now() + 2)
+            return "error: timed out after \(Int(timeout))s "
+                + "(Automation permission dialog unanswered?)"
         }
-        return String(decoding: out, as: UTF8.self)
+        let data = (try? output.fileHandleForReading.readToEnd()) ?? Data()
+        let text = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationStatus == 0 else { return "error: \(text)" }
+        return text
     }
 
     /// ITERM_SESSION_ID looks like "w0t2p1:1D5C29F2-...-UUID". iTerm's reveal
