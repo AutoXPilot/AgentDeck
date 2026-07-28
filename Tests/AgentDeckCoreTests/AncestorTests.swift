@@ -53,14 +53,20 @@ final class AncestorTests {
         #expect(found == p.processIdentifier)
     }
 
-    @Test func unrelatedProcessDoesNotMatchCodex() throws {
+    @Test func unrelatedProcessItselfDoesNotMatch() throws {
         let p = try spawnMimic(named: "plainproc")
         defer { p.terminate() }
-        // walk ascends past plainproc into the test runner's ancestry;
-        // nothing there is a codex binary
-        let found = ProcessTree.findAgentAncestor(
-            provider: .codex, startingAt: p.processIdentifier
-        )
-        #expect(found == nil)
+        // The walk legitimately ascends past plainproc and MAY find an
+        // ambient agent higher up (these tests run under claude or codex
+        // during development), so asserting nil would be environment-
+        // dependent. The property under test is only that plainproc itself
+        // never matches.
+        for provider in Provider.allCases {
+            let found = ProcessTree.findAgentAncestor(
+                provider: provider, startingAt: p.processIdentifier
+            )
+            #expect(found != p.processIdentifier,
+                    "\(provider.rawValue) matched an unrelated binary name")
+        }
     }
 }

@@ -11,6 +11,7 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var codexHooksInstalled = false
     @Published private(set) var helperInstalled = false
     @Published private(set) var installMessage: String?
+    @Published private(set) var isInstalling = false
 
     var onChange: (() -> Void)?
 
@@ -27,11 +28,25 @@ final class SessionsModel: ObservableObject {
             .appendingPathComponent("AgentDeck/bin/agentdeck-hook")
     }
 
+    static var bundledHelperURL: URL? {
+        Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("agentdeck-hook")
+    }
+
     func start() {
         loadAcks()
         try? FileManager.default.createDirectory(
             at: store.directory, withIntermediateDirectories: true
         )
+        // keep the helper hooks invoke in lockstep with this build — an app
+        // upgrade must never leave hooks running an old helper
+        if let bundled = Self.bundledHelperURL,
+           FileManager.default.isExecutableFile(atPath: bundled.path) {
+            if (try? HelperSync.sync(bundled: bundled, stable: Self.helperURL)) == true {
+                installMessage = "helper updated to match this build"
+            }
+        }
         watchDirectory()
         sweepTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload() }
@@ -44,8 +59,11 @@ final class SessionsModel: ObservableObject {
         store.sweepOrphans()
         var removed = Set<String>()
         for key in Liveness.keysToRemove(all) {
-            // re-check on disk before deleting: a hook may have rewritten
-            // the snapshot between loadAll() and now (e.g. claude --resume)
+            // Re-check on disk before deleting: a hook may have rewritten the
+            // snapshot between loadAll() and now (e.g. claude --resume). This
+            // NARROWS the race to milliseconds rather than eliminating it —
+            // a write landing between this check and remove() is still lost,
+            // which is benign: the session reappears on its next hook event.
             if let fresh = store.load(key: key),
                Liveness.keysToRemove([fresh]).isEmpty {
                 continue
@@ -77,13 +95,13 @@ final class SessionsModel: ObservableObject {
     /// Runs `agentdeck-hook install` off the main actor; result lands in
     /// `installMessage` for the footer to display.
     func installHooks() {
-        let bundled = Bundle.main.executableURL?
-            .deletingLastPathComponent()
-            .appendingPathComponent("agentdeck-hook")
+        guard !isInstalling else { return }  // no concurrent installers
+        let bundled = Self.bundledHelperURL
         guard let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) else {
             installMessage = "agentdeck-hook binary not found next to the app"
             return
         }
+        isInstalling = true
         installMessage = "Installing…"
         Task.detached {
             var text: String
@@ -109,6 +127,7 @@ final class SessionsModel: ObservableObject {
             let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
             await MainActor.run { [weak self] in
                 self?.installMessage = message.isEmpty ? "done" : message
+                self?.isInstalling = false
                 self?.reload()
             }
         }
@@ -117,7 +136,13 @@ final class SessionsModel: ObservableObject {
     // MARK: - Private
 
     private func refreshHealth() {
-        helperInstalled = FileManager.default.isExecutableFile(atPath: Self.helperURL.path)
+        var helperOK = FileManager.default.isExecutableFile(atPath: Self.helperURL.path)
+        // executability isn't enough: a stale helper must show as unhealthy
+        if helperOK, let bundled = Self.bundledHelperURL,
+           FileManager.default.isExecutableFile(atPath: bundled.path) {
+            helperOK = !HelperSync.needsSync(bundled: bundled, stable: Self.helperURL)
+        }
+        helperInstalled = helperOK
         let installer = HookInstaller(helperPath: Self.helperURL.path)
         claudeHooksInstalled = installer.isInstalled(
             provider: .claude, in: HookInstaller.defaultClaudeSettingsURL

@@ -14,7 +14,7 @@ metadata snapshots; the app watches the directory.
 ```sh
 swift build -c release
 .build/release/AgentDeck &          # menu-bar app
-./test.sh                           # unit tests (33) — see note below
+./test.sh                           # unit tests — see note below
 ```
 
 To start at login: run `./install-app.sh` (packages a stable
@@ -24,6 +24,10 @@ General → Login Items.
 
 ## Hardening notes
 
+- On launch the app compares the bundled helper's SHA-256 against the stable
+  copy hooks invoke (`~/Library/Application Support/AgentDeck/bin/`) and
+  atomically updates it on drift — upgrading the app can never leave hooks
+  running an old helper. A stale helper also shows as unhealthy in the footer.
 - Snapshots predating the last boot are dropped (pids are meaningless across
   reboots), pid liveness treats another user's process as dead (claude/codex
   always run as you — EPERM means a recycled pid), and a 24h idle cap

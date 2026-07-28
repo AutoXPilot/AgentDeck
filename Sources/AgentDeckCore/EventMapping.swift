@@ -9,8 +9,9 @@ public enum HookAction: Equatable, Sendable {
 /// Maps provider lifecycle hook events to session-state actions.
 ///
 /// Claude events verified against code.claude.com/docs/en/hooks (2026-07).
-/// Codex ships a subset (no SessionEnd, no StopFailure); its sessions are
-/// removed by the PID liveness sweep instead.
+/// Codex (cli 0.145+) fires SessionStart/UserPromptSubmit/Stop/SessionEnd —
+/// verified live — and accepts PermissionRequest; it has no StopFailure, so
+/// codex sessions never reach .error and the PID sweep backstops removal.
 public enum EventMapping {
     /// Notification types that mean "a human needs to look at this".
     /// agent_needs_input = a background/subagent task blocked on the user.

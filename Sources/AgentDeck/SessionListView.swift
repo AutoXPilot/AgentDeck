@@ -60,8 +60,11 @@ struct SessionListView: View {
                 Spacer()
                 if !(model.helperInstalled && model.claudeHooksInstalled
                     && model.codexHooksInstalled) {
-                    Button("Install hooks") { model.installHooks() }
-                        .font(.caption)
+                    Button(model.isInstalling ? "Installing…" : "Install hooks") {
+                        model.installHooks()
+                    }
+                    .font(.caption)
+                    .disabled(model.isInstalling)
                 }
                 Button("Quit") { NSApp.terminate(nil) }.font(.caption)
             }
