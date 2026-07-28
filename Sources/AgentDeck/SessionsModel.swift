@@ -114,12 +114,19 @@ final class SessionsModel: ObservableObject {
     }
 
     /// Row click: acknowledge, close the popover, focus the iTerm pane.
+    /// The reveal fires AFTER the popover teardown settles — closing hands
+    /// activation back to the previously active app, and if the reveal has
+    /// already activated iTerm by then, that hand-back yanks focus away
+    /// from it again (windows flash, nothing ends up front).
     func activate(_ snapshot: SessionSnapshot) {
         acks[snapshot.key] = Date()
         saveAcks()
+        let url = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId)
         onRequestClose?()
-        if let url = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId) {
-            NSWorkspace.shared.open(url)
+        if let url {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                NSWorkspace.shared.open(url)
+            }
         }
         reload()
     }
