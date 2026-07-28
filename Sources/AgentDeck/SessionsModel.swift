@@ -121,14 +121,39 @@ final class SessionsModel: ObservableObject {
     func activate(_ snapshot: SessionSnapshot) {
         acks[snapshot.key] = Date()
         saveAcks()
-        let url = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId)
+        let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId)
+        let fallbackURL = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId)
+        Self.appLog("activate key=\(snapshot.key) guid=\(guid ?? "nil")")
         onRequestClose?()
-        if let url {
+        if let guid {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                NSWorkspace.shared.open(url)
+                Task.detached {
+                    let result = ITermFocus.focusViaAppleScript(guid: guid)
+                    Self.appLog("applescript focus: \(result)")
+                    if result != "focused", let fallbackURL {
+                        await MainActor.run {
+                            NSWorkspace.shared.open(fallbackURL)
+                            Self.appLog("fell back to reveal URL")
+                        }
+                    }
+                }
             }
         }
         reload()
+    }
+
+    nonisolated static func appLog(_ message: String) {
+        let url = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AgentDeck/app.log")
+        let line = "\(Date()) \(message)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
     }
 
     /// Runs `agentdeck-hook install` off the main actor; result lands in

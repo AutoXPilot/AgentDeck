@@ -111,6 +111,14 @@ struct LivenessAndFocusTests {
         )
     }
 
+    @Test func sessionGUIDExtraction() {
+        #expect(ITermFocus.sessionGUID(from: "w0t2p1:ABC-123") == "ABC-123")
+        #expect(ITermFocus.sessionGUID(from: "ABC-123") == "ABC-123")
+        #expect(ITermFocus.sessionGUID(from: "w0t0p0:") == nil)
+        #expect(ITermFocus.sessionGUID(from: "") == nil)
+        #expect(ITermFocus.sessionGUID(from: nil) == nil)
+    }
+
     @Test func revealURLNilForEmptyInputs() {
         #expect(ITermFocus.revealURL(terminalSessionId: nil) == nil)
         #expect(ITermFocus.revealURL(terminalSessionId: "") == nil)
