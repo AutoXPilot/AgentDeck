@@ -94,7 +94,54 @@ final class HookInstallerTests {
         let after = try read(url)
         let hooks = try #require(after["hooks"] as? [String: Any])
         #expect(Set(hooks.keys) == Set(HookInstaller.codexEvents))
-        #expect(installer.isInstalled(in: url))
+        #expect(installer.isInstalled(provider: .codex, in: url))
+    }
+
+    @Test func partialInstallIsUnhealthy() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        // only one of the required events carries our canonical command
+        try write([
+            "hooks": [
+                "Stop": [
+                    ["hooks": [["type": "command",
+                                "command": installer.command(for: .claude)]]]
+                ]
+            ]
+        ], to: url)
+        #expect(!installer.isInstalled(provider: .claude, in: url),
+                "one surviving entry must not paint the integration green")
+        // and install repairs it to fully healthy
+        #expect(try installer.installClaude(settingsURL: url))
+        #expect(installer.isInstalled(provider: .claude, in: url))
+    }
+
+    @Test func pathMentionOutsideHooksDoesNotCountAsInstalled() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        try write(["permissions": ["allow": ["Bash(\(helperPath)*)"]]], to: url)
+        #expect(!installer.isInstalled(provider: .claude, in: url))
+    }
+
+    @Test func sharedGroupKeepsForeignSubHooks() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        // a user merged their own hook into the same group as ours
+        try write([
+            "hooks": [
+                "Stop": [
+                    ["hooks": [
+                        ["type": "command", "command": "\(helperPath) claude"],  // stale ours
+                        ["type": "command", "command": "/usr/bin/say done"],
+                    ]]
+                ]
+            ]
+        ], to: url)
+        _ = try installer.installClaude(settingsURL: url)
+        let hooks = try #require(try read(url)["hooks"] as? [String: Any])
+        let stop = try #require(hooks["Stop"] as? [Any])
+        #expect(HookInstaller.contains("/usr/bin/say", in: stop),
+                "foreign sub-hook sharing our group must survive reinstall")
+        let ours = HookInstaller.commandStrings(in: stop)
+            .filter { $0.contains(helperPath) }
+        #expect(ours == [installer.command(for: .claude)])
     }
 
     @Test func refusesToClobberNonObjectJSON() throws {
@@ -107,9 +154,11 @@ final class HookInstallerTests {
     }
 
     @Test func isInstalledFalseForMissingOrForeignFile() throws {
-        #expect(!installer.isInstalled(in: dir.appendingPathComponent("nope.json")))
+        #expect(!installer.isInstalled(
+            provider: .claude, in: dir.appendingPathComponent("nope.json")
+        ))
         let url = dir.appendingPathComponent("other.json")
         try write(fixtureSettings(), to: url)
-        #expect(!installer.isInstalled(in: url))
+        #expect(!installer.isInstalled(provider: .claude, in: url))
     }
 }

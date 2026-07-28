@@ -13,7 +13,13 @@ public enum HookAction: Equatable, Sendable {
 /// removed by the PID liveness sweep instead.
 public enum EventMapping {
     /// Notification types that mean "a human needs to look at this".
-    static let waitingNotificationPrefixes = ["permission", "idle", "elicitation"]
+    /// agent_needs_input = a background/subagent task blocked on the user.
+    /// Deliberately NOT here: agent_completed (a background task finishing
+    /// must not flip the main session's state — Stop owns "done"), and
+    /// elicitation_complete/_response (those mean the wait resolved).
+    static let waitingNotificationPrefixes = [
+        "permission", "idle", "elicitation_dialog", "agent_needs",
+    ]
 
     public static func action(
         provider: Provider,

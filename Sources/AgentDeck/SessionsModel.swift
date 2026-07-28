@@ -10,6 +10,7 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var claudeHooksInstalled = false
     @Published private(set) var codexHooksInstalled = false
     @Published private(set) var helperInstalled = false
+    @Published private(set) var installMessage: String?
 
     var onChange: (() -> Void)?
 
@@ -32,17 +33,27 @@ final class SessionsModel: ObservableObject {
             at: store.directory, withIntermediateDirectories: true
         )
         watchDirectory()
-        sweepTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
-            Task { @MainActor [weak self] in self?.reload() }
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.reload() }
         }
         reload()
     }
 
     func reload() {
         var all = store.loadAll()
-        let dead = Set(Liveness.keysToRemove(all))
-        dead.forEach { store.remove(key: $0) }
-        all.removeAll { dead.contains($0.key) }
+        store.sweepOrphans()
+        var removed = Set<String>()
+        for key in Liveness.keysToRemove(all) {
+            // re-check on disk before deleting: a hook may have rewritten
+            // the snapshot between loadAll() and now (e.g. claude --resume)
+            if let fresh = store.load(key: key),
+               Liveness.keysToRemove([fresh]).isEmpty {
+                continue
+            }
+            store.remove(key: key)
+            removed.insert(key)
+        }
+        all.removeAll { removed.contains($0.key) }
         sessions = Attention.sorted(all, acks: acks)
         attentionCount = Attention.count(all, acks: acks)
         refreshHealth()
@@ -63,31 +74,43 @@ final class SessionsModel: ObservableObject {
         reload()
     }
 
-    func installHooks() -> String {
-        // The helper binary sits next to this app's executable in the build
-        // products; `agentdeck-hook install` copies it to the stable path and
-        // registers hooks for both providers.
+    /// Runs `agentdeck-hook install` off the main actor; result lands in
+    /// `installMessage` for the footer to display.
+    func installHooks() {
         let bundled = Bundle.main.executableURL?
             .deletingLastPathComponent()
             .appendingPathComponent("agentdeck-hook")
         guard let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) else {
-            return "agentdeck-hook binary not found next to the app"
+            installMessage = "agentdeck-hook binary not found next to the app"
+            return
         }
-        let process = Process()
-        process.executableURL = bundled
-        process.arguments = ["install"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            process.waitUntilExit()
-            reload()
-            return String(
-                decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
-            )
-        } catch {
-            return "install failed: \(error.localizedDescription)"
+        installMessage = "Installing…"
+        Task.detached {
+            var text: String
+            do {
+                let process = Process()
+                process.executableURL = bundled
+                process.arguments = ["install"]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+                try process.run()
+                // drain BEFORE waiting: waitUntilExit-first deadlocks once
+                // output exceeds the pipe buffer
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                text = String(decoding: data, as: UTF8.self)
+                if process.terminationStatus != 0 {
+                    text = "install failed (exit \(process.terminationStatus)): \(text)"
+                }
+            } catch {
+                text = "install failed: \(error.localizedDescription)"
+            }
+            let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            await MainActor.run { [weak self] in
+                self?.installMessage = message.isEmpty ? "done" : message
+                self?.reload()
+            }
         }
     }
 
@@ -97,18 +120,36 @@ final class SessionsModel: ObservableObject {
         helperInstalled = FileManager.default.isExecutableFile(atPath: Self.helperURL.path)
         let installer = HookInstaller(helperPath: Self.helperURL.path)
         claudeHooksInstalled = installer.isInstalled(
-            in: HookInstaller.defaultClaudeSettingsURL
+            provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
         )
-        codexHooksInstalled = installer.isInstalled(in: HookInstaller.defaultCodexHooksURL)
+        codexHooksInstalled = installer.isInstalled(
+            provider: .codex, in: HookInstaller.defaultCodexHooksURL
+        )
     }
 
     private func watchDirectory() {
+        dirWatcher?.cancel()
+        dirWatcher = nil
         let fd = open(store.directory.path, O_EVTONLY)
         guard fd >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd, eventMask: [.write], queue: .main
+            fileDescriptor: fd,
+            eventMask: [.write, .delete, .rename, .revoke],
+            queue: .main
         )
-        source.setEventHandler { [weak self] in self?.reload() }
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            // if the directory itself vanished, re-arm on the new inode —
+            // otherwise the watcher silently dies and we degrade to
+            // sweep-only latency forever
+            if !FileManager.default.fileExists(atPath: self.store.directory.path) {
+                try? FileManager.default.createDirectory(
+                    at: self.store.directory, withIntermediateDirectories: true
+                )
+                self.watchDirectory()
+            }
+            self.reload()
+        }
         source.setCancelHandler { close(fd) }
         source.resume()
         dirWatcher = source

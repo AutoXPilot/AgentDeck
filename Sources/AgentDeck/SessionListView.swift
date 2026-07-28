@@ -52,17 +52,26 @@ struct SessionListView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            healthDot(ok: model.helperInstalled, label: "helper")
-            healthDot(ok: model.claudeHooksInstalled, label: "claude")
-            healthDot(ok: model.codexHooksInstalled, label: "codex")
-            Spacer()
-            if !(model.helperInstalled && model.claudeHooksInstalled
-                && model.codexHooksInstalled) {
-                Button("Install hooks") { _ = model.installHooks() }
-                    .font(.caption)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                healthDot(ok: model.helperInstalled, label: "helper")
+                healthDot(ok: model.claudeHooksInstalled, label: "claude")
+                healthDot(ok: model.codexHooksInstalled, label: "codex")
+                Spacer()
+                if !(model.helperInstalled && model.claudeHooksInstalled
+                    && model.codexHooksInstalled) {
+                    Button("Install hooks") { model.installHooks() }
+                        .font(.caption)
+                }
+                Button("Quit") { NSApp.terminate(nil) }.font(.caption)
             }
-            Button("Quit") { NSApp.terminate(nil) }.font(.caption)
+            if let message = model.installMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

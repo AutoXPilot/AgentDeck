@@ -53,6 +53,41 @@ final class SnapshotStoreTests {
         #expect(all.first?.sessionId == "good")
     }
 
+    @Test func fractionalSecondPrecisionSurvivesRoundTrip() throws {
+        var snap = makeSnapshot(id: "frac")
+        snap.updatedAt = Date(timeIntervalSince1970: 1_785_000_000.400)
+        try store.write(snap)
+        let loaded = try #require(store.load(key: snap.key))
+        // whole-second precision would collapse the 0.4s — the same-second
+        // ack race depends on this
+        #expect(abs(loaded.updatedAt.timeIntervalSince1970 - 1_785_000_000.400) < 0.005)
+    }
+
+    @Test func traversalKeyStaysInsideDirectory() {
+        let url = store.url(forKey: "claude-../../../.claude/settings")
+        #expect(url.standardizedFileURL.path.hasPrefix(dir.standardizedFileURL.path))
+        #expect(!url.path.contains(".."))
+    }
+
+    @Test func orphanSweepRemovesStaleDebris() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try store.write(makeSnapshot(id: "keep"))
+        let staleTmp = dir.appendingPathComponent(".dead.tmp")
+        let corrupt = dir.appendingPathComponent("claude-corrupt.json")
+        try Data("partial".utf8).write(to: staleTmp)
+        try Data("{broken".utf8).write(to: corrupt)
+        let past = Date().addingTimeInterval(-7200)
+        try FileManager.default.setAttributes(
+            [.modificationDate: past], ofItemAtPath: staleTmp.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: past], ofItemAtPath: corrupt.path
+        )
+        store.sweepOrphans()
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        #expect(remaining == ["claude-keep.json"])
+    }
+
     @Test func concurrentWritesNeverExposePartialJSON() throws {
         let store = self.store
         DispatchQueue.concurrentPerform(iterations: 100) { i in

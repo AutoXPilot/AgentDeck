@@ -16,8 +16,10 @@ struct LivenessAndFocusTests {
         #expect(Liveness.isAlive(pid: getpid()))
     }
 
-    @Test func launchdIsAliveEvenThoughNotOurs() {
-        #expect(Liveness.isAlive(pid: 1), "pid 1 exists; EPERM must count as alive")
+    @Test func anotherUsersProcessCountsAsDead() {
+        // pid 1 (root launchd) exists but is not ours; claude/codex always
+        // run as the current user, so EPERM means a recycled pid — dead
+        #expect(!Liveness.isAlive(pid: 1))
     }
 
     @Test func exitedProcessIsDead() throws {
@@ -43,8 +45,44 @@ struct LivenessAndFocusTests {
                             state: .done, event: "x",
                             updatedAt: now.addingTimeInterval(-48 * 3600)),
         ]
-        let removed = Set(Liveness.keysToRemove(snaps, now: now))
+        let removed = Set(Liveness.keysToRemove(snaps, now: now, bootedAt: nil))
         #expect(removed == ["claude-dead", "codex-stale-nopid"])
+    }
+
+    @Test func snapshotsFromBeforeBootAreRemovedEvenWithLivePid() {
+        let now = Date()
+        let snap = SessionSnapshot(
+            provider: .claude, sessionId: "preboot", projectPath: "/",
+            state: .waiting, event: "x",
+            updatedAt: now.addingTimeInterval(-3600), agentPid: getpid()
+        )
+        // pid is alive (it's us) but the snapshot predates boot: pid recycled
+        let removed = Liveness.keysToRemove(
+            [snap], now: now, bootedAt: now.addingTimeInterval(-60)
+        )
+        #expect(removed == ["claude-preboot"])
+        // and kept when it postdates boot
+        #expect(Liveness.keysToRemove(
+            [snap], now: now, bootedAt: now.addingTimeInterval(-7200)
+        ).isEmpty)
+    }
+
+    @Test func maxIdleAppliesEvenToLivePids() {
+        // same-user pid reuse is undetectable by probing; the idle cap is
+        // the backstop that keeps zombies from being immortal
+        let now = Date()
+        let snap = SessionSnapshot(
+            provider: .claude, sessionId: "idle", projectPath: "/",
+            state: .done, event: "x",
+            updatedAt: now.addingTimeInterval(-25 * 3600), agentPid: getpid()
+        )
+        #expect(Liveness.keysToRemove([snap], now: now, bootedAt: nil) == ["claude-idle"])
+    }
+
+    @Test func bootTimeIsSane() throws {
+        let boot = try #require(Liveness.bootTime())
+        #expect(boot < Date())
+        #expect(boot > Date(timeIntervalSince1970: 0))
     }
 
     @Test func revealURLExtractsGuidPart() {

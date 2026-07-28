@@ -17,8 +17,26 @@ swift build -c release
 ./test.sh                           # unit tests (33) — see note below
 ```
 
-To start at login: System Settings → General → Login Items → add
-`.build/release/AgentDeck`.
+To start at login: run `./install-app.sh` (packages a stable
+`~/Applications/AgentDeck.app` so Login Items doesn't point into the
+disposable `.build/` directory), then add that app in System Settings →
+General → Login Items.
+
+## Hardening notes
+
+- Snapshots predating the last boot are dropped (pids are meaningless across
+  reboots), pid liveness treats another user's process as dead (claude/codex
+  always run as you — EPERM means a recycled pid), and a 24h idle cap
+  backstops same-user pid reuse.
+- `session_id` is sanitized before becoming a filename (hook payloads must
+  never write outside the sessions dir); stale `.tmp`/corrupt files are swept.
+- The sessions-dir watcher re-arms itself if the directory is deleted or
+  renamed; the liveness sweep re-checks on disk before deleting so it can't
+  race a concurrent hook write.
+- Config rewrite trade-off: hooks are installed via a JSONSerialization
+  round-trip, which loses key order/formatting and can change float
+  representation (1.1 → 1.1000000000000001). Timestamped backups (pruned to
+  the last 5) retain the original bytes; file permissions are preserved.
 
 ## Install the hooks
 
@@ -50,11 +68,19 @@ claude / codex lifecycle hooks
 ```
 
 State mapping — Claude: SessionStart→ready, UserPromptSubmit→working,
-PermissionRequest/Notification(permission·idle·elicitation)→waiting,
-Stop→done, StopFailure→error, SessionEnd→remove. Codex ships only
-SessionStart/UserPromptSubmit/Stop (schema is Claude-style `hooks.json`,
-verified against codex-cli 0.145.0); no waiting/error states, and removal
-relies on the PID sweep since Codex has no SessionEnd.
+PermissionRequest/Notification(permission·idle·elicitation_dialog·
+agent_needs_input)→waiting, Stop→done, StopFailure→error, SessionEnd→remove.
+`agent_completed` is deliberately ignored: a background task finishing must
+not flip the main session's state — Stop owns "done".
+
+Codex registers SessionStart/UserPromptSubmit/PermissionRequest/Stop/
+SessionEnd (Claude-style `hooks.json` schema). SessionStart, UserPromptSubmit,
+Stop, and SessionEnd verified firing live against codex-cli 0.145.0 (codex
+clamps SessionEnd's hook timeout to 3s). PermissionRequest is accepted by the
+config but has not been observed firing — exec mode never prompts; it's
+registered so interactive approvals surface as "waiting" if codex emits it.
+No StopFailure → no error state for Codex. The PID sweep remains the removal
+backstop for crashes.
 
 Snapshots are metadata-only (no prompts, responses, or credentials) and are
 written atomically (temp file + rename). The helper records the agent's PID by

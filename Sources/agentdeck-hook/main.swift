@@ -6,6 +6,7 @@ import Foundation
 //   agentdeck-hook claude|codex     read hook JSON on stdin, update snapshot
 //   agentdeck-hook install          copy self to stable path, register hooks
 //   agentdeck-hook status           print install/health report
+//   agentdeck-hook debug-ancestry   print the process walk (diagnostics)
 //
 // Hook mode must NEVER fail loudly or block the agent: exit 0 always,
 // no stdout (Claude interprets hook stdout).
@@ -22,45 +23,26 @@ func currentExecutableURL() -> URL {
 }
 
 func runHookMode(provider: Provider) {
-    let data = FileHandle.standardInput.readDataToEndOfFile()
-    guard let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-          let event = payload["hook_event_name"] as? String,
-          let sessionId = payload["session_id"] as? String,
-          !sessionId.isEmpty
-    else { exit(0) }
+    // Watchdog: if the CLI never closes stdin we must not hang into the
+    // hook timeout (10s) and add latency to the user's turn.
+    DispatchQueue.global().asyncAfter(deadline: .now() + 8) { exit(0) }
 
-    let notificationType =
-        payload["notification_type"] as? String ?? payload["type"] as? String
-    let action = EventMapping.action(
-        provider: provider, event: event, notificationType: notificationType
-    )
-
-    let store = SnapshotStore()
-    let key = "\(provider.rawValue)-\(sessionId)"
-    switch action {
-    case .ignore:
-        break
-    case .remove:
-        store.remove(key: key)
-    case .set(let state):
-        let existing = store.load(key: key)
-        let env = ProcessInfo.processInfo.environment
-        let terminal = env["ITERM_SESSION_ID"] ?? existing?.terminalSessionId
-        let cwd = (payload["cwd"] as? String) ?? existing?.projectPath ?? ""
-        let pid = ProcessTree.findAgentAncestor(provider: provider, startingAt: getppid())
-            ?? existing?.agentPid
-        let snapshot = SessionSnapshot(
-            provider: provider,
-            sessionId: sessionId,
-            projectPath: cwd,
-            state: state,
-            event: event,
-            updatedAt: Date(),
-            terminalSessionId: terminal,
-            agentPid: pid
-        )
-        try? store.write(snapshot)
+    var data = Data()
+    let maxBytes = 1 << 20  // payloads are ~1KB; anything huge is not for us
+    let stdin = FileHandle.standardInput
+    while data.count < maxBytes,
+          let chunk = try? stdin.read(upToCount: min(65536, maxBytes - data.count)),
+          !chunk.isEmpty {
+        data.append(chunk)
     }
+
+    HookProcessor.process(
+        provider: provider,
+        payloadData: data,
+        environment: ProcessInfo.processInfo.environment,
+        parentPid: getppid(),
+        store: SnapshotStore()
+    )
     exit(0)
 }
 
@@ -81,13 +63,13 @@ func runInstall() {
 
         let installer = HookInstaller(helperPath: stableHelperURL.path)
         let claudeChanged = try installer.installClaude()
-        print("claude hooks: \(claudeChanged ? "installed" : "already present") "
+        print("claude hooks: \(claudeChanged ? "installed/updated" : "already current") "
             + "(\(HookInstaller.defaultClaudeSettingsURL.path))")
         let codexChanged = try installer.installCodex()
-        print("codex hooks: \(codexChanged ? "installed" : "already present") "
+        print("codex hooks: \(codexChanged ? "installed/updated" : "already current") "
             + "(\(HookInstaller.defaultCodexHooksURL.path))")
         if codexChanged {
-            print("note: codex requires trusting the new hook — it will prompt on next launch")
+            print("note: codex will ask to trust the changed hooks on next launch")
         }
     } catch {
         FileHandle.standardError.write(Data("install failed: \(error)\n".utf8))
@@ -101,10 +83,17 @@ func runStatus() {
     let report: [String: Any] = [
         "helperInstalled": helperOK,
         "helperPath": stableHelperURL.path,
-        "claudeHooks": installer.isInstalled(in: HookInstaller.defaultClaudeSettingsURL),
-        "codexHooks": installer.isInstalled(in: HookInstaller.defaultCodexHooksURL),
+        "claudeHooks": installer.isInstalled(
+            provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
+        ),
+        "codexHooks": installer.isInstalled(
+            provider: .codex, in: HookInstaller.defaultCodexHooksURL
+        ),
         "sessionsDirectory": SnapshotStore.defaultDirectory.path,
         "activeSessions": SnapshotStore().loadAll().count,
+        "bootedAt": Liveness.bootTime().map {
+            SnapshotStore.isoFractional.string(from: $0)
+        } ?? "unknown",
     ]
     let data = try! JSONSerialization.data(
         withJSONObject: report, options: [.prettyPrinted, .sortedKeys]
@@ -119,7 +108,8 @@ func runDebugAncestry() {
             print("depth \(depth): pid \(pid) — sysctl failed")
             break
         }
-        print("depth \(depth): pid \(pid) comm '\(name)' ppid \(ppid)")
+        let path = ProcessTree.executablePath(of: pid) ?? "?"
+        print("depth \(depth): pid \(pid) comm '\(name)' path \(path) ppid \(ppid)")
         if ppid <= 1 { break }
         pid = ppid
     }
@@ -136,6 +126,6 @@ case "install": runInstall()
 case "status": runStatus()
 case "debug-ancestry": runDebugAncestry()
 default:
-    print("usage: agentdeck-hook claude|codex|install|status")
+    print("usage: agentdeck-hook claude|codex|install|status|debug-ancestry")
     exit(64)
 }
