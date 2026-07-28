@@ -14,8 +14,19 @@ public enum ProcessTree {
         return (name, info.kp_eproc.e_ppid)
     }
 
+    /// Full executable path. p_comm alone is useless for the claude CLI:
+    /// its binary is named after the version (~/.local/share/claude/versions/2.1.220),
+    /// so p_comm reads "2.1.220".
+    public static func executablePath(of pid: pid_t) -> String? {
+        var buf = [CChar](repeating: 0, count: 4096)
+        let n = proc_pidpath(pid, &buf, UInt32(buf.count))
+        guard n > 0 else { return nil }
+        return String(cString: buf)
+    }
+
     /// Hooks run under a shell the CLI spawned, so getppid() is usually
-    /// sh — walk ancestors until we find the agent process itself.
+    /// sh — walk ancestors until we find the agent process itself, matching
+    /// on the executable path (not p_comm; see above).
     /// Returns nil when no plausible agent ancestor exists; callers should
     /// then omit the pid rather than record a short-lived shell's.
     public static func findAgentAncestor(
@@ -24,13 +35,15 @@ public enum ProcessTree {
         var current = pid
         for _ in 0..<12 {
             guard let (name, ppid) = nameAndParent(of: current) else { return nil }
-            let lower = name.lowercased()
+            let lowerName = name.lowercased()
+            let lowerPath = executablePath(of: current)?.lowercased() ?? ""
             let matches: Bool
             switch provider {
             case .claude:
-                matches = lower.contains("claude") || lower == "node" || lower == "bun"
+                matches = lowerName.contains("claude") || lowerPath.contains("claude")
+                    || lowerName == "node" || lowerName == "bun"
             case .codex:
-                matches = lower.contains("codex")
+                matches = lowerName.contains("codex") || lowerPath.contains("codex")
             }
             if matches { return current }
             guard ppid > 1, ppid != current else { return nil }

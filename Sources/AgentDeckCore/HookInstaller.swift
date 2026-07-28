@@ -38,8 +38,10 @@ public struct HookInstaller: Sendable {
             .appendingPathComponent(".codex/hooks.json")
     }
 
+    /// The helper lives under "Application Support" — the path MUST be
+    /// quoted or sh splits the command at the space and the hook never runs.
     public func command(for provider: Provider) -> String {
-        "\(helperPath) \(provider.rawValue)"
+        "\"\(helperPath)\" \(provider.rawValue)"
     }
 
     @discardableResult
@@ -70,19 +72,29 @@ public struct HookInstaller: Sendable {
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         var changed = false
         for event in events {
-            var entries = hooks[event] as? [Any] ?? []
-            guard !Self.contains(helperPath, in: entries) else { continue }
+            let original = hooks[event] as? [Any] ?? []
+            // drop any stale entries of ours (e.g. old unquoted command),
+            // keep everything else, then append the canonical entry
+            var entries = original.filter { !Self.contains(helperPath, in: $0) }
             entries.append([
                 "hooks": [["type": "command", "command": command, "timeout": 10]]
             ])
-            hooks[event] = entries
-            changed = true
+            if !Self.jsonEqual(original, entries) {
+                hooks[event] = entries
+                changed = true
+            }
         }
         if changed {
             root["hooks"] = hooks
             try Self.backupAndWrite(root, to: fileURL)
         }
         return changed
+    }
+
+    static func jsonEqual(_ a: Any, _ b: Any) -> Bool {
+        let da = try? JSONSerialization.data(withJSONObject: a, options: [.sortedKeys])
+        let db = try? JSONSerialization.data(withJSONObject: b, options: [.sortedKeys])
+        return da != nil && da == db
     }
 
     static func readJSONObject(at url: URL) throws -> [String: Any] {

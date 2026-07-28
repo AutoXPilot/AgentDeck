@@ -112,11 +112,29 @@ func runStatus() {
     print(String(decoding: data, as: UTF8.self))
 }
 
+func runDebugAncestry() {
+    var pid = getppid()
+    for depth in 0..<12 {
+        guard let (name, ppid) = ProcessTree.nameAndParent(of: pid) else {
+            print("depth \(depth): pid \(pid) — sysctl failed")
+            break
+        }
+        print("depth \(depth): pid \(pid) comm '\(name)' ppid \(ppid)")
+        if ppid <= 1 { break }
+        pid = ppid
+    }
+    for provider in Provider.allCases {
+        let found = ProcessTree.findAgentAncestor(provider: provider, startingAt: getppid())
+        print("\(provider.rawValue) ancestor: \(found.map(String.init) ?? "nil")")
+    }
+}
+
 switch CommandLine.arguments.dropFirst().first {
 case "claude": runHookMode(provider: .claude)
 case "codex": runHookMode(provider: .codex)
 case "install": runInstall()
 case "status": runStatus()
+case "debug-ancestry": runDebugAncestry()
 default:
     print("usage: agentdeck-hook claude|codex|install|status")
     exit(64)
