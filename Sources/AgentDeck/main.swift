@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let model = SessionsModel()
@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: SessionListView(model: model)
         )
         popover.behavior = .transient
+        popover.delegate = self
         model.onChange = { [weak self] in self?.refreshBadge() }
         model.start()
     }
@@ -38,10 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            model.reload()
+            model.popoverIsShown = true  // fresh sort, then freeze row order
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        model.popoverIsShown = false
     }
 }
 

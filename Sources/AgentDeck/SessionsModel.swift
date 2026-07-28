@@ -15,6 +15,19 @@ final class SessionsModel: ObservableObject {
 
     var onChange: (() -> Void)?
 
+    /// While the popover is visible, row ORDER is frozen so live events and
+    /// ack-clicks don't reshuffle rows under the cursor; states and times
+    /// still update in place. A fresh sort happens on every popover open.
+    var popoverIsShown = false {
+        didSet {
+            if popoverIsShown != oldValue {
+                frozenOrder = nil
+                reload()
+            }
+        }
+    }
+    private var frozenOrder: [String]?
+
     private let store = SnapshotStore()
     private var acks: [String: Date] = [:]
     private var dirWatcher: DispatchSourceFileSystemObject?
@@ -72,7 +85,24 @@ final class SessionsModel: ObservableObject {
             removed.insert(key)
         }
         all.removeAll { removed.contains($0.key) }
-        sessions = Attention.sorted(all, acks: acks)
+        let sorted = Attention.sorted(all, acks: acks)
+        if popoverIsShown, let order = frozenOrder {
+            var byKey = Dictionary(uniqueKeysWithValues: sorted.map { ($0.key, $0) })
+            var arranged: [SessionSnapshot] = []
+            for key in order {
+                if let snapshot = byKey.removeValue(forKey: key) {
+                    arranged.append(snapshot)
+                }
+            }
+            // brand-new sessions append below existing rows, in sort order,
+            // and join the frozen order so they don't shuffle either
+            arranged += sorted.filter { byKey.keys.contains($0.key) }
+            sessions = arranged
+            frozenOrder = arranged.map(\.key)
+        } else {
+            sessions = sorted
+            frozenOrder = popoverIsShown ? sorted.map(\.key) : nil
+        }
         attentionCount = Attention.count(all, acks: acks)
         refreshHealth()
         onChange?()
