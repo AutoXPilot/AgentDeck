@@ -54,6 +54,10 @@ struct SessionListView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
+                Text("hooks:")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help("Setup health — are the lifecycle hooks installed? (Not session activity.)")
                 healthDot(ok: model.helperInstalled, label: "helper")
                 healthDot(ok: model.claudeHooksInstalled, label: "claude")
                 healthDot(ok: model.codexHooksInstalled, label: "codex")
