@@ -89,14 +89,19 @@ public enum ITermFocus {
     }
 
     /// Enumerates every iTerm session as "GUID<TAB>title" lines.
+    /// Delimiters are computed OUTSIDE the tell block: inside it, `tab`
+    /// resolves to iTerm's tab CLASS (dictionary shadowing), which silently
+    /// produced unparseable output.
     public static let listSessionsScript = """
     on run argv
+        set d to (character id 9)
+        set nl to (character id 10)
         set out to ""
         tell application "iTerm2"
             repeat with w in windows
                 repeat with t in tabs of w
                     repeat with s in sessions of t
-                        set out to out & (id of s) & tab & (name of s) & linefeed
+                        set out to out & (id of s) & d & (name of s) & nl
                     end repeat
                 end repeat
             end repeat
@@ -117,14 +122,13 @@ public enum ITermFocus {
         return names
     }
 
-    /// GUID → tab title for every live iTerm session; empty on any failure
-    /// (callers fall back to folder names). Only call when iTerm is running —
-    /// `tell application` would LAUNCH it otherwise.
-    public static func fetchSessionNames(timeout: TimeInterval = 10) -> [String: String] {
-        switch runAppleScript(listSessionsScript, timeout: timeout) {
-        case .success(let out): return parseSessionNames(out)
-        case .failure: return [:]
-        }
+    /// GUID → tab title for every live iTerm session; failure carries the
+    /// osascript error so callers can log why (and fall back to folders).
+    /// Only call when iTerm is running — `tell application` would LAUNCH it.
+    public static func fetchSessionNames(
+        timeout: TimeInterval = 10
+    ) -> ScriptOutcome {
+        runAppleScript(listSessionsScript, timeout: timeout)
     }
 
     /// ITERM_SESSION_ID looks like "w0t2p1:1D5C29F2-...-UUID". iTerm's reveal

@@ -94,9 +94,21 @@ final class SessionsModel: ObservableObject {
         // `tell application` would LAUNCH iTerm if it weren't running
         let itermRunning = NSWorkspace.shared.runningApplications
             .contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
-        guard itermRunning else { return }
+        guard itermRunning else {
+            Self.appLog("titles: iTerm not in runningApplications; skipping fetch")
+            return
+        }
         Task.detached {
-            let names = ITermFocus.fetchSessionNames()
+            let outcome = ITermFocus.fetchSessionNames()
+            let names: [String: String]
+            switch outcome {
+            case .success(let raw):
+                names = ITermFocus.parseSessionNames(raw)
+                Self.appLog("titles: fetched \(names.count) session titles")
+            case .failure(let err):
+                Self.appLog("titles: fetch FAILED: \(err)")
+                return
+            }
             guard !names.isEmpty else { return }
             Task { @MainActor [weak self] in
                 self?.terminalTitles = names
