@@ -13,6 +13,8 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var helperInstalled = false
     @Published private(set) var installMessage: String?
     @Published private(set) var isInstalling = false
+    /// iTerm session GUID → tab title, refreshed when the popover opens.
+    @Published private(set) var terminalTitles: [String: String] = [:]
 
     var onChange: (() -> Void)?
     var onRequestClose: (() -> Void)?
@@ -76,6 +78,31 @@ final class SessionsModel: ObservableObject {
         frozenOrder = nil
         popoverVisible = true
         reload()
+        refreshTerminalTitles()
+    }
+
+    /// Row title: the live iTerm tab title when we have it, else the folder.
+    func title(for snapshot: SessionSnapshot) -> String {
+        if let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId),
+           let name = terminalTitles[guid], !name.isEmpty {
+            return name
+        }
+        return snapshot.projectName
+    }
+
+    private func refreshTerminalTitles() {
+        // `tell application` would LAUNCH iTerm if it weren't running
+        let itermRunning = NSWorkspace.shared.runningApplications
+            .contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+        guard itermRunning else { return }
+        Task.detached {
+            let names = ITermFocus.fetchSessionNames()
+            guard !names.isEmpty else { return }
+            Task { @MainActor [weak self] in
+                self?.terminalTitles = names
+                self?.onChange?()
+            }
+        }
     }
 
     func popoverClosed() {

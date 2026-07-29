@@ -111,6 +111,22 @@ struct LivenessAndFocusTests {
         )
     }
 
+    @Test func parseSessionNamesHandlesRealAndMalformedLines() {
+        let output = """
+        C4EB7622-AAAA\t✳ infra (claude)
+        B4F41D67-BBBB\t⠂ Claude-session-watcher (caffeinate)
+        no-tab-in-this-line
+        \tname-without-guid
+        GUID-ONLY\t
+        """
+        let names = ITermFocus.parseSessionNames(output)
+        #expect(names == [
+            "C4EB7622-AAAA": "✳ infra (claude)",
+            "B4F41D67-BBBB": "⠂ Claude-session-watcher (caffeinate)",
+        ])
+        #expect(ITermFocus.parseSessionNames("").isEmpty)
+    }
+
     @Test func sessionGUIDExtraction() {
         #expect(ITermFocus.sessionGUID(from: "w0t2p1:ABC-123") == "ABC-123")
         #expect(ITermFocus.sessionGUID(from: "ABC-123") == "ABC-123")

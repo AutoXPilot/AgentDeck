@@ -19,6 +19,7 @@ struct SessionListView: View {
                         ForEach(model.sessions, id: \.key) { session in
                             SessionRow(
                                 session: session,
+                                title: model.title(for: session),
                                 needsAttention: model.needsAttention(session)
                             ) {
                                 model.activate(session)
@@ -95,6 +96,7 @@ struct SessionListView: View {
 
 struct SessionRow: View {
     let session: SessionSnapshot
+    let title: String
     let needsAttention: Bool
     let action: () -> Void
 
@@ -111,7 +113,7 @@ struct SessionRow: View {
                                   : Color.teal.opacity(0.25))
                     )
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.projectName).font(.callout).lineLimit(1)
+                    Text(title).font(.callout).lineLimit(1)
                     Text(session.projectPath)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
