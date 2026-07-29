@@ -1,76 +1,71 @@
 # AgentDeck
 
-macOS menu-bar monitor for every active **Claude Code** and **Codex** terminal
-session. Shows provider, project, state (ready / working / waiting / done /
-error), and elapsed time; sessions needing attention are counted in the
-menu-bar badge and sorted first. Clicking a row acknowledges it and focuses
-the exact iTerm2 pane (AppleScript select; reveal URL as fallback — see
-below).
+macOS menu-bar monitor for every **Claude Code** and **Codex** terminal
+session you have running. See at a glance which agents are working, which
+finished, and which are **blocked waiting on you** — then click a row to jump
+to that exact iTerm2 tab/pane.
 
-No server, no polling, no transcript scraping — lifecycle hooks write tiny
-metadata snapshots; the app watches the directory.
+- Live states per session: `ready · working · waiting · done · error`
+- Attention count in the menu bar; unacknowledged waiting/error/done sort first
+- Row titles are your live iTerm tab titles; click = acknowledge + focus pane
+- Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
 
-Pane focusing uses AppleScript (select session → tab → window → activate),
-which needs a one-time Automation approval ("AgentDeck wants access to
-control iTerm2") on first row click. The `iterm2:///reveal` URL scheme is
-kept only as a fallback: it was observed working and then silently no-oping
-minutes later (app-to-app URL consent, most likely) — an unacceptable
-primary mechanism. Row clicks log to
-`~/Library/Application Support/AgentDeck/app.log` (focused / not-found /
-error) for diagnosis.
+**Scope (v1):** macOS 14+, iTerm2, Claude Code + Codex.
 
-## Build & run
+## What it writes on your machine (read this first)
 
-```sh
-swift build -c release
-.build/release/AgentDeck &          # menu-bar app
-./test.sh                           # unit tests — see note below
-```
+AgentDeck's installer edits two files you own:
 
-To start at login: run `./install-app.sh` (packages a stable
-`~/Applications/AgentDeck.app` so Login Items doesn't point into the
-disposable `.build/` directory), then add that app in System Settings →
-General → Login Items.
+- `~/.claude/settings.json` — adds hook entries for 7 lifecycle events
+- `~/.codex/hooks.json` — adds hook entries for 5 lifecycle events
 
-## Hardening notes
+Every edit preserves your existing settings and hooks, is idempotent, and
+creates a timestamped `.bak` backup next to the file (last 5 kept). Known
+trade-off: files are rewritten via JSON serialization, which normalizes
+formatting/key order and can change float representation (`1.1` →
+`1.1000000000000001`); the backups retain your original bytes.
 
-- On launch the app compares the bundled helper's SHA-256 against the stable
-  copy hooks invoke (`~/Library/Application Support/AgentDeck/bin/`) and
-  atomically updates it on drift — upgrading the app can never leave hooks
-  running an old helper. A stale helper also shows as unhealthy in the footer.
-- Snapshots predating the last boot are dropped (pids are meaningless across
-  reboots), pid liveness treats another user's process as dead (claude/codex
-  always run as you — EPERM means a recycled pid), and a 24h idle cap
-  backstops same-user pid reuse.
-- `session_id` is sanitized before becoming a filename (hook payloads must
-  never write outside the sessions dir); stale `.tmp`/corrupt files are swept.
-- The sessions-dir watcher re-arms itself if the directory is deleted or
-  renamed; the liveness sweep re-checks on disk before deleting so it can't
-  race a concurrent hook write.
-- Config rewrite trade-off: hooks are installed via a JSONSerialization
-  round-trip, which loses key order/formatting and can change float
-  representation (1.1 → 1.1000000000000001). Timestamped backups (pruned to
-  the last 5) retain the original bytes; file permissions are preserved.
+The hooks invoke a small helper binary
+(`~/Library/Application Support/AgentDeck/bin/agentdeck-hook`) on session
+events. It writes **metadata-only** snapshots — provider, session id, working
+directory, state, timestamp, terminal pane id, agent pid — to
+`~/Library/Application Support/AgentDeck/sessions/`.
 
-## Install the hooks
+**Privacy:** no prompts, no responses, no transcripts, no credentials are
+read or stored, and nothing leaves your machine. There is a test in the suite
+asserting prompt text is never persisted.
+
+Uninstall: quit the app, remove the hook entries mentioning `agentdeck-hook`
+from the two config files (or restore the newest `.agentdeck-*.bak`), then
+delete `~/Library/Application Support/AgentDeck/` and the app.
+
+## Install (Homebrew)
 
 ```sh
-.build/release/agentdeck-hook install
-.build/release/agentdeck-hook status
+brew tap tonygivzey/tap
+brew install --HEAD agentdeck
+agentdeck-setup                      # creates ~/Applications/AgentDeck.app
+open ~/Applications/AgentDeck.app
 ```
 
-`install` copies the helper to `~/Library/Application Support/AgentDeck/bin/`
-and idempotently registers hook entries in `~/.claude/settings.json` and
-`~/.codex/hooks.json` (timestamped `.bak` backups are created; all existing
-settings and hooks are preserved; re-running repairs stale entries). The app's
-footer also shows hook health with an Install button.
+Then click **Install hooks** in the popover footer, and add the app to
+System Settings → General → Login Items.
 
-**Codex trust**: Codex requires hooks to be trusted; it will prompt once on
-the next interactive `codex` launch. Non-interactive runs before that only
-fire hooks with `--dangerously-bypass-hook-trust`.
+Or from source:
 
-**Claude sessions pick up hooks live** (file watcher) — no restart needed.
-Codex sessions need a restart to load hooks.json.
+```sh
+git clone https://github.com/tonygivzey/AgentDeck && cd AgentDeck
+./install-app.sh
+```
+
+### Permission prompts you'll see (once each)
+
+- **Automation → iTerm2** on your first row click (that's how pane focusing
+  works: AppleScript session select; the `iterm2:///reveal` URL scheme is
+  only a fallback because it can silently stop working).
+- **Codex hook trust** on its next launch after installing hooks.
+- Sessions started **before** the hooks were installed won't report until
+  restarted (Claude picks up hooks live; Codex needs a restart).
 
 ## How it works
 
@@ -88,31 +83,42 @@ agent_needs_input)→waiting, Stop→done, StopFailure→error, SessionEnd→rem
 not flip the main session's state — Stop owns "done".
 
 Codex registers SessionStart/UserPromptSubmit/PermissionRequest/Stop/
-SessionEnd (Claude-style `hooks.json` schema). SessionStart, UserPromptSubmit,
-Stop, and SessionEnd verified firing live against codex-cli 0.145.0 (codex
-clamps SessionEnd's hook timeout to 3s). PermissionRequest is accepted by the
-config but has not been observed firing — exec mode never prompts; it's
-registered so interactive approvals surface as "waiting" if codex emits it.
-No StopFailure → no error state for Codex. The PID sweep remains the removal
-backstop for crashes.
+SessionEnd (same `hooks.json` schema as Claude's settings). SessionStart,
+UserPromptSubmit, Stop, and SessionEnd verified firing live against
+codex-cli 0.145.0; PermissionRequest is accepted by the config but has not
+been observed firing. No StopFailure → no error state for Codex. A PID
+liveness sweep backstops removal for crashes.
 
-Snapshots are metadata-only (no prompts, responses, or credentials) and are
-written atomically (temp file + rename). The helper records the agent's PID by
-walking ancestors and matching the **executable path** — the claude binary's
-kernel name (p_comm) is its version number (e.g. `2.1.220`), so name matching
-alone fails. Hook commands must be quoted: the helper lives under
-"Application Support" and an unquoted command dies at the space.
+Sessions are removed when their agent exits (SessionEnd, or the sweep for
+crashed/closed terminals). Row order freezes while the popover is open so
+live events don't reshuffle rows under your cursor; each open re-sorts.
 
-## Uninstall
+## Hardening notes
 
-Remove the hook entries mentioning `agentdeck-hook` from
-`~/.claude/settings.json` and `~/.codex/hooks.json` (or restore the newest
-`.agentdeck-*.bak` backup next to each), then delete
-`~/Library/Application Support/AgentDeck/`.
+- On launch the app compares the bundled helper's SHA-256 against the stable
+  copy hooks invoke and atomically updates it on drift — upgrading can never
+  leave hooks running an old helper. A stale helper shows as unhealthy in
+  the footer (`hooks: ● helper ● claude ● codex` = setup health, not
+  session activity).
+- Snapshots predating the last boot are dropped (pids are meaningless across
+  reboots); a pid owned by another user counts as dead (agents run as you —
+  that's a recycled pid); a 24h idle cap backstops same-user pid reuse.
+- `session_id` is sanitized before becoming a filename; hook payloads can
+  never write outside the sessions directory. Stale temp/corrupt files are
+  swept. The sessions-dir watcher re-arms if the directory is recreated.
+- The helper never blocks an agent turn: bounded stdin read, 8s watchdog,
+  silent exit on any error.
 
-## Testing note
+## Development
 
-Tests use Swift Testing via `./test.sh`, which points the build at the
-Command Line Tools' `Testing.framework` and disables cross-import overlays
-(CLT ships no `_Testing_Foundation` Swift module). With full Xcode installed,
-plain `swift test` also works.
+```sh
+swift build && ./test.sh    # 67 tests; works with CLT-only or full Xcode
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a
+production bug this project already hit — quoting, p_comm, AppleScript
+dictionary shadowing, and friends).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

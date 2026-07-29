@@ -1,0 +1,21 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: ./test.sh
+      - name: App bundle smoke test
+        run: |
+          cp Resources/AppIcon.icns .build/release/
+          ./scripts/make-app-bundle.sh .build/release "$RUNNER_TEMP/AgentDeck.app"
+          test -x "$RUNNER_TEMP/AgentDeck.app/Contents/MacOS/AgentDeck"
+          plutil -lint "$RUNNER_TEMP/AgentDeck.app/Contents/Info.plist"
