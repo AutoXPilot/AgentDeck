@@ -15,6 +15,9 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var isInstalling = false
     /// iTerm session GUID → tab title, refreshed when the popover opens.
     @Published private(set) var terminalTitles: [String: String] = [:]
+    /// Discards out-of-order title-fetch results (older fetch finishing last
+    /// must not overwrite a newer one).
+    private var titleFetchGeneration = 0
 
     var onChange: (() -> Void)?
     var onRequestClose: (() -> Void)?
@@ -98,6 +101,8 @@ final class SessionsModel: ObservableObject {
             Self.appLog("titles: iTerm not in runningApplications; skipping fetch")
             return
         }
+        titleFetchGeneration += 1
+        let generation = titleFetchGeneration
         Task.detached {
             let outcome = ITermFocus.fetchSessionNames()
             let names: [String: String]
@@ -111,8 +116,9 @@ final class SessionsModel: ObservableObject {
             }
             guard !names.isEmpty else { return }
             Task { @MainActor [weak self] in
-                self?.terminalTitles = names
-                self?.onChange?()
+                guard let self, generation == self.titleFetchGeneration else { return }
+                self.terminalTitles = names
+                self.onChange?()
             }
         }
     }

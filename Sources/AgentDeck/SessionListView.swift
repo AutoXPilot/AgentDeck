@@ -37,8 +37,15 @@ struct SessionListView: View {
     }
 
     private var header: some View {
-        HStack {
+        let claude = model.sessions.filter { $0.provider == .claude }.count
+        let codex = model.sessions.count - claude
+        return HStack {
             Text("AgentDeck").font(.headline)
+            if !model.sessions.isEmpty {
+                Text("\(claude) CL · \(codex) CX")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             if model.attentionCount > 0 {
                 Text("\(model.attentionCount) need attention")
@@ -123,7 +130,7 @@ struct SessionRow: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     statePill
-                    Text(session.updatedAt, style: .relative)
+                    Text(TimeFormat.compactAge(of: session.updatedAt))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
