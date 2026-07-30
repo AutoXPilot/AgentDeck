@@ -10,7 +10,6 @@ class Agentdeck < Formula
   license "MIT"
   head "https://github.com/AutoXPilot/AgentDeck.git", branch: "main"
 
-  depends_on xcode: :build
   depends_on :macos
 
   def install
