@@ -45,6 +45,7 @@ delete `~/Library/Application Support/AgentDeck/` and the app.
 
 ```sh
 brew tap AutoXPilot/tap
+brew trust AutoXPilot/tap          # newer Homebrew requires trusting third-party taps
 brew install --HEAD agentdeck
 agentdeck-setup                      # creates ~/Applications/AgentDeck.app
 open ~/Applications/AgentDeck.app
