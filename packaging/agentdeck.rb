@@ -2,13 +2,13 @@
 # frozen_string_literal: true
 
 # Homebrew formula for AgentDeck.
-# Lives in the tap repo (github.com/tonygivzey/homebrew-tap) as
+# Lives in the tap repo (github.com/AutoXPilot/homebrew-tap) as
 # Formula/agentdeck.rb; this copy is the source of truth.
 class Agentdeck < Formula
   desc "Menu-bar monitor for Claude Code and Codex terminal sessions"
-  homepage "https://github.com/tonygivzey/AgentDeck"
+  homepage "https://github.com/AutoXPilot/AgentDeck"
   license "MIT"
-  head "https://github.com/tonygivzey/AgentDeck.git", branch: "main"
+  head "https://github.com/AutoXPilot/AgentDeck.git", branch: "main"
 
   depends_on xcode: :build
   depends_on :macos

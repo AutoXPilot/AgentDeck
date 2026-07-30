@@ -10,6 +10,8 @@ to that exact iTerm2 tab/pane.
 - Row titles are your live iTerm tab titles; click = acknowledge + focus pane
 - Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
 
+<img src="Resources/screenshot.png" width="440" alt="AgentDeck popover showing Claude and Codex sessions with waiting, done, working and ready states">
+
 **Scope (v1):** macOS 14+, iTerm2, Claude Code + Codex.
 
 ## What it writes on your machine (read this first)
@@ -42,7 +44,7 @@ delete `~/Library/Application Support/AgentDeck/` and the app.
 ## Install (Homebrew)
 
 ```sh
-brew tap tonygivzey/tap
+brew tap AutoXPilot/tap
 brew install --HEAD agentdeck
 agentdeck-setup                      # creates ~/Applications/AgentDeck.app
 open ~/Applications/AgentDeck.app
@@ -54,7 +56,7 @@ System Settings → General → Login Items.
 Or from source:
 
 ```sh
-git clone https://github.com/tonygivzey/AgentDeck && cd AgentDeck
+git clone https://github.com/AutoXPilot/AgentDeck && cd AgentDeck
 ./install-app.sh
 ```
 
