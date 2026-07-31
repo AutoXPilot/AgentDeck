@@ -15,6 +15,8 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var isInstalling = false
     /// iTerm session GUID → tab title, refreshed when the popover opens.
     @Published private(set) var terminalTitles: [String: String] = [:]
+    /// Codex session id → name set via its `/rename`.
+    @Published private(set) var codexNames: [String: String] = [:]
     /// Discards out-of-order title-fetch results (older fetch finishing last
     /// must not overwrite a newer one).
     private var titleFetchGeneration = 0
@@ -80,12 +82,19 @@ final class SessionsModel: ObservableObject {
     func popoverOpened() {
         frozenOrder = nil
         popoverVisible = true
+        codexNames = CodexSessionIndex.load()
         reload()
         refreshTerminalTitles()
     }
 
-    /// Row title: the live iTerm tab title when we have it, else the folder.
+    /// Row title, best available: a Codex session's own name (its terminal
+    /// title is only ever "<folder> (codex)"), else the live iTerm tab title
+    /// (Claude writes a descriptive one), else the folder name.
     func title(for snapshot: SessionSnapshot) -> String {
+        if snapshot.provider == .codex,
+           let name = codexNames[snapshot.sessionId], !name.isEmpty {
+            return name
+        }
         if let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId),
            let name = terminalTitles[guid], !name.isEmpty {
             return name

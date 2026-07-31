@@ -7,7 +7,8 @@ to that exact iTerm2 tab/pane.
 
 - Live states per session: `ready · working · waiting · done · error`
 - Attention count in the menu bar; unacknowledged waiting/error/done sort first
-- Row titles are your live iTerm tab titles; click = acknowledge + focus pane
+- Row titles: Codex session names (`/rename`), Claude's live iTerm tab
+  titles, folder name as fallback; click = acknowledge + focus pane
 - Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
 
 <img src="Resources/screenshot.png" width="440" alt="AgentDeck popover showing Claude and Codex sessions with waiting, done, working and ready states">
@@ -95,6 +96,13 @@ liveness sweep backstops removal for crashes.
 Sessions are removed when their agent exits (SessionEnd, or the sweep for
 crashed/closed terminals). Row order freezes while the popover is open so
 live events don't reshuffle rows under your cursor; each open re-sorts.
+
+Row titles come from the best available source, refreshed on popover open.
+Claude Code writes a descriptive terminal title, so its rows use the live
+iTerm tab title. Codex only ever sets `<folder> (codex)` as its title, but
+records names set via `/rename` in `~/.codex/session_index.jsonl` keyed by
+session id — so Codex rows read from that index (read-only) and fall back
+to the tab title, then the folder name.
 
 ## Hardening notes
 
