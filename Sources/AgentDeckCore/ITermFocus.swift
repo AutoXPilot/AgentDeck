@@ -110,13 +110,23 @@ public enum ITermFocus {
     end run
     """
 
+    /// Titles are whatever the shell or agent emitted. codex-cli emits an
+    /// unbalanced quote — `Code (codex")` — so drop stray quotes, while
+    /// leaving deliberately quoted titles (`run "make test"`) intact.
+    public static func sanitizeTitle(_ raw: String) -> String {
+        var title = raw.trimmingCharacters(in: .whitespaces)
+        if title.filter({ $0 == "\"" }).count % 2 == 1 {
+            title = title.replacingOccurrences(of: "\"", with: "")
+        }
+        return title.trimmingCharacters(in: .whitespaces)
+    }
+
     public static func parseSessionNames(_ output: String) -> [String: String] {
         var names: [String: String] = [:]
         for line in output.split(separator: "\n") {
             guard let tabIndex = line.firstIndex(of: "\t") else { continue }
             let guid = String(line[..<tabIndex])
-            let name = String(line[line.index(after: tabIndex)...])
-                .trimmingCharacters(in: .whitespaces)
+            let name = sanitizeTitle(String(line[line.index(after: tabIndex)...]))
             if !guid.isEmpty && !name.isEmpty { names[guid] = name }
         }
         return names

@@ -111,6 +111,21 @@ struct LivenessAndFocusTests {
         )
     }
 
+    @Test func sanitizeTitleDropsOnlyUnbalancedQuotes() {
+        // codex-cli emits a stray quote in its terminal title
+        #expect(ITermFocus.sanitizeTitle("Code (codex\")") == "Code (codex)")
+        #expect(ITermFocus.sanitizeTitle("knowledge (codex\")") == "knowledge (codex)")
+        // balanced quotes are intentional — keep them
+        #expect(ITermFocus.sanitizeTitle("run \"make test\"") == "run \"make test\"")
+        #expect(ITermFocus.sanitizeTitle("✳ V2B-1488 (claude)") == "✳ V2B-1488 (claude)")
+        #expect(ITermFocus.sanitizeTitle("  padded  ") == "padded")
+    }
+
+    @Test func parseSessionNamesSanitizesTitles() {
+        let names = ITermFocus.parseSessionNames("GUID-1\tCode (codex\")")
+        #expect(names["GUID-1"] == "Code (codex)")
+    }
+
     @Test func parseSessionNamesHandlesRealAndMalformedLines() {
         let output = """
         C4EB7622-AAAA\t✳ infra (claude)
