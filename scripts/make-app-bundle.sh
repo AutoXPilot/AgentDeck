@@ -27,11 +27,21 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>LSUIElement</key><true/>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>AgentDeck focuses the iTerm2 tab for the session you click, and reads tab titles to label rows.</string>
 </dict>
 </plist>
 EOF
+
+# A stable signing identity matters beyond tidiness: macOS keys Automation
+# and Notification grants to it, and SwiftPM's linker-signed default changes
+# identity on every rebuild — which silently revokes those grants.
+codesign --force --sign - --identifier com.tonyhoang.agentdeck "$APP" 2>/dev/null \
+    || echo "warning: ad-hoc codesign failed; permissions may reset on upgrade" >&2
+
 echo "Created $APP (v${VERSION})"
 echo "Next: open it, click 'Install hooks' in the popover footer, and add it"
 echo "to System Settings > General > Login Items for reboot persistence."

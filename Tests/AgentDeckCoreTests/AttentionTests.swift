@@ -25,10 +25,34 @@ struct AttentionTests {
         #expect(Attention.needsAttention(s, ackedAt: Date(timeIntervalSince1970: 999)))
     }
 
-    @Test func count() {
-        let snaps = [snap("a", .waiting), snap("b", .working), snap("c", .done)]
-        #expect(Attention.count(snaps, acks: [:]) == 2)
-        #expect(Attention.count(snaps, acks: ["claude-a": Date().addingTimeInterval(60)]) == 1)
+    @Test func badgeCountsBlockingStatesOnly() {
+        // regression: `done` used to be counted, so the badge was never zero
+        // and a 13h block went unnoticed among finished sessions
+        let snaps = [
+            snap("a", .waiting), snap("b", .working), snap("c", .done),
+            snap("d", .error), snap("e", .ready),
+        ]
+        #expect(Attention.alertCount(snaps, acks: [:]) == 2)
+        #expect(Attention.doneCount(snaps, acks: [:]) == 1)
+        #expect(
+            Attention.alertCount(snaps, acks: ["claude-a": Date().addingTimeInterval(60)]) == 1
+        )
+    }
+
+    @Test func doneAloneLeavesTheBadgeEmpty() {
+        let snaps = [snap("c", .done), snap("d", .done)]
+        #expect(Attention.alertCount(snaps, acks: [:]) == 0)
+        #expect(Attention.doneCount(snaps, acks: [:]) == 2)
+    }
+
+    @Test func mostUrgentPrefersErrorThenWaitingThenDone() {
+        #expect(Attention.mostUrgent([snap("a", .done), snap("b", .waiting)], acks: [:]) == .waiting)
+        #expect(Attention.mostUrgent([snap("a", .waiting), snap("b", .error)], acks: [:]) == .error)
+        #expect(Attention.mostUrgent([snap("a", .done)], acks: [:]) == .done)
+        #expect(Attention.mostUrgent([snap("a", .working)], acks: [:]) == nil)
+        // acknowledged items don't drive the glyph
+        let acked = ["claude-a": Date().addingTimeInterval(60)]
+        #expect(Attention.mostUrgent([snap("a", .waiting)], acks: acked) == nil)
     }
 
     @Test func sortOrder() {

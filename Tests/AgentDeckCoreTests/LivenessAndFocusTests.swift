@@ -67,16 +67,35 @@ struct LivenessAndFocusTests {
         ).isEmpty)
     }
 
-    @Test func maxIdleAppliesEvenToLivePids() {
-        // same-user pid reuse is undetectable by probing; the idle cap is
-        // the backstop that keeps zombies from being immortal
+    @Test func liveSessionSurvivesTheIdleCapThatKillsPidlessOnes() {
+        // Regression for a production bug: a session BLOCKED on the user
+        // emits no events at all, so the 24h idle cap deleted live sessions
+        // (5 of them, verified on a real machine) and they could never
+        // return. Live pids now get the long backstop instead.
         let now = Date()
-        let snap = SessionSnapshot(
-            provider: .claude, sessionId: "idle", projectPath: "/",
+        func snapshot(id: String, pid: Int32?, hoursOld: Double) -> SessionSnapshot {
+            SessionSnapshot(
+                provider: .claude, sessionId: id, projectPath: "/",
+                state: .waiting, event: "x",
+                updatedAt: now.addingTimeInterval(-hoursOld * 3600), agentPid: pid
+            )
+        }
+        let live = snapshot(id: "live", pid: getpid(), hoursOld: 30)
+        let pidless = snapshot(id: "pidless", pid: nil, hoursOld: 30)
+        let removed = Set(Liveness.keysToRemove([live, pidless], now: now, bootedAt: nil))
+        #expect(removed == ["claude-pidless"], "a live waiting session must survive")
+    }
+
+    @Test func livePidsStillExpireAtTheLongBackstop() {
+        // same-user pid reuse is undetectable by probing, so the cap still
+        // exists — just far beyond any plausible wait
+        let now = Date()
+        let ancient = SessionSnapshot(
+            provider: .claude, sessionId: "ancient", projectPath: "/",
             state: .done, event: "x",
-            updatedAt: now.addingTimeInterval(-25 * 3600), agentPid: getpid()
+            updatedAt: now.addingTimeInterval(-8 * 24 * 3600), agentPid: getpid()
         )
-        #expect(Liveness.keysToRemove([snap], now: now, bootedAt: nil) == ["claude-idle"])
+        #expect(Liveness.keysToRemove([ancient], now: now, bootedAt: nil) == ["claude-ancient"])
     }
 
     @Test func bootTimeIsSane() throws {

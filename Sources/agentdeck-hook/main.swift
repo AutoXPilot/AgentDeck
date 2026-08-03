@@ -81,6 +81,7 @@ func runStatus() {
     let installer = HookInstaller(helperPath: stableHelperURL.path)
     let helperOK = FileManager.default.isExecutableFile(atPath: stableHelperURL.path)
     let report: [String: Any] = [
+        "version": AgentDeckVersion.current,
         "helperInstalled": helperOK,
         "helperPath": stableHelperURL.path,
         "claudeHooks": installer.isInstalled(
@@ -125,7 +126,9 @@ case "codex": runHookMode(provider: .codex)
 case "install": runInstall()
 case "status": runStatus()
 case "debug-ancestry": runDebugAncestry()
+case "--version", "-v", "version": print(AgentDeckVersion.current)
 default:
-    print("usage: agentdeck-hook claude|codex|install|status|debug-ancestry")
+    print("agentdeck-hook \(AgentDeckVersion.current)")
+    print("usage: agentdeck-hook claude|codex|install|status|debug-ancestry|--version")
     exit(64)
 }

@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in AgentDeck misbehaves
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tip: the popover's **⋯ → Copy diagnostics** button gathers most of
+        this for you (it replaces your home directory with `~`).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste the output of "Copy diagnostics", or run `agentdeck-hook status`.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: CLI versions
+      description: Output of `claude --version` and `codex --version`.
+      placeholder: "claude 2.1.220, codex 0.145.0"
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: iTerm2 version (Help → About). AgentDeck v1 supports iTerm2 only.
+      placeholder: "iTerm2 3.6.11"
+  - type: textarea
+    id: log
+    attributes:
+      label: Log tail (optional)
+      description: "`tail -40 ~/Library/Application\\ Support/AgentDeck/app.log`"
+      render: text

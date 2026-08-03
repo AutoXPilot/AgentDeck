@@ -139,6 +139,77 @@ final class HookProcessorTests {
         #expect(store.load(key: "claude-s4")?.state == .waiting)
     }
 
+    @Test func capturesSessionMetadataFromPayload() {
+        _ = process(.claude, [
+            "hook_event_name": "SessionStart", "session_id": "meta", "cwd": "/p",
+            "permission_mode": "bypassPermissions", "model": "claude-fable-5",
+            "effort": ["level": "high"],
+        ])
+        let snap = store.load(key: "claude-meta")
+        #expect(snap?.permissionMode == "bypassPermissions")
+        #expect(snap?.isUnsupervised == true)
+        #expect(snap?.model == "claude-fable-5")
+        #expect(snap?.effort == "high")
+        #expect(snap?.schemaVersion == 2)
+    }
+
+    @Test func metadataSurvivesLaterEventsThatOmitIt() {
+        _ = process(.claude, [
+            "hook_event_name": "SessionStart", "session_id": "m2", "cwd": "/p",
+            "permission_mode": "plan", "model": "claude-opus-5",
+        ])
+        _ = process(.claude, ["hook_event_name": "Stop", "session_id": "m2"])
+        let snap = store.load(key: "claude-m2")
+        #expect(snap?.permissionMode == "plan")
+        #expect(snap?.model == "claude-opus-5")
+    }
+
+    @Test func waitingReasonRecordedThenClearedWhenUnblocked() {
+        _ = process(.claude, [
+            "hook_event_name": "SessionStart", "session_id": "w1", "cwd": "/p",
+        ])
+        _ = process(.claude, [
+            "hook_event_name": "Notification", "session_id": "w1",
+            "notification_type": "permission_prompt",
+        ])
+        #expect(store.load(key: "claude-w1")?.notificationType == "permission_prompt")
+        // a stale reason on a non-waiting row would mislead
+        _ = process(.claude, ["hook_event_name": "Stop", "session_id": "w1"])
+        #expect(store.load(key: "claude-w1")?.notificationType == nil)
+    }
+
+    @Test func stopFailureRecordsErrorKind() {
+        _ = process(.claude, [
+            "hook_event_name": "SessionStart", "session_id": "e1", "cwd": "/p",
+        ])
+        _ = process(.claude, [
+            "hook_event_name": "StopFailure", "session_id": "e1", "error": "rate_limit",
+        ])
+        let snap = store.load(key: "claude-e1")
+        #expect(snap?.state == .error)
+        #expect(snap?.errorKind == "rate_limit")
+    }
+
+    @Test func sessionEndKeepsRowAliveOnClearAndResume() {
+        // on /clear and resume the process keeps running — removing the row
+        // would drop a live session off the deck
+        for reason in ["clear", "resume"] {
+            _ = process(.claude, [
+                "hook_event_name": "SessionStart", "session_id": "keep", "cwd": "/p",
+            ])
+            let action = process(.claude, [
+                "hook_event_name": "SessionEnd", "session_id": "keep", "reason": reason,
+            ])
+            #expect(action == .set(.ready), "reason \(reason) must not remove the row")
+            #expect(store.load(key: "claude-keep") != nil)
+        }
+        let gone = process(.claude, [
+            "hook_event_name": "SessionEnd", "session_id": "keep", "reason": "logout",
+        ])
+        #expect(gone == .remove)
+        #expect(store.load(key: "claude-keep") == nil)
+    }
+
     @Test func codexLifecycleFixture() {
         // shape recorded from codex-cli 0.145.0 (session_id, turn_id, model…)
         let base: [String: Any] = [

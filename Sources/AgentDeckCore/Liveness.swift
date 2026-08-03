@@ -20,25 +20,33 @@ public enum Liveness {
     }
 
     /// Sessions to drop:
-    /// - snapshots from before the last boot (their pids are meaningless,
-    ///   and a recycled pid could otherwise keep them alive forever)
+    /// - snapshots from before the last boot (their pids are meaningless)
     /// - pid-bearing snapshots whose process is gone (crash, terminal close
     ///   without SessionEnd)
-    /// - anything idle past `maxIdle` — the backstop for pid-less snapshots
-    ///   AND for same-user pid reuse, which no liveness probe can detect
+    /// - pid-less snapshots idle past `maxIdle`
+    /// - live-pid snapshots idle past `liveMaxIdle`
+    ///
+    /// The two idle caps differ for a reason discovered in production: a
+    /// session blocked on the user emits NO events while it waits, so a 24h
+    /// cap silently deleted live sessions that were waiting overnight — and
+    /// they could never come back, because nothing fires until the user
+    /// answers. Live pids therefore get a much longer backstop, which exists
+    /// only for same-user pid reuse (reboots are already covered by the boot
+    /// guard above, and that's the common reuse vector).
     public static func keysToRemove(
         _ snapshots: [SessionSnapshot],
         now: Date = Date(),
         maxIdle: TimeInterval = 24 * 3600,
+        liveMaxIdle: TimeInterval = 7 * 24 * 3600,
         bootedAt: Date? = Liveness.bootTime()
     ) -> [String] {
         snapshots.compactMap { s in
             if let bootedAt, s.updatedAt < bootedAt { return s.key }
-            if now.timeIntervalSince(s.updatedAt) > maxIdle { return s.key }
             if let pid = s.agentPid {
-                return isAlive(pid: pid) ? nil : s.key
+                guard isAlive(pid: pid) else { return s.key }
+                return now.timeIntervalSince(s.updatedAt) > liveMaxIdle ? s.key : nil
             }
-            return nil
+            return now.timeIntervalSince(s.updatedAt) > maxIdle ? s.key : nil
         }
     }
 }

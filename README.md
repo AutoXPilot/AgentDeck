@@ -6,9 +6,12 @@ finished, and which are **blocked waiting on you** — then click a row to jump
 to that exact iTerm2 tab/pane.
 
 - Live states per session: `ready · working · waiting · done · error`
-- Attention count in the menu bar; unacknowledged waiting/error/done sort first
-- Row titles: Codex session names (`/rename`), Claude's live iTerm tab
-  titles, folder name as fallback; click = acknowledge + focus pane
+- The menu-bar badge counts only what's **blocking you** (waiting/error), and
+  the glyph shows the most urgent state; finished sessions are a muted count
+- Optional notification when a session has been blocked too long
+- Row titles use each provider's own session name; click = acknowledge +
+  focus the pane. ↑/↓ + Return, ⌘1–9, filter field, right-click actions
+- A marker on sessions running **unsupervised** (approvals off)
 - Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
 
 <img src="Resources/screenshot.png" width="440" alt="AgentDeck popover showing Claude and Codex sessions with waiting, done, working and ready states">
@@ -94,8 +97,19 @@ been observed firing. No StopFailure → no error state for Codex. A PID
 liveness sweep backstops removal for crashes.
 
 Sessions are removed when their agent exits (SessionEnd, or the sweep for
-crashed/closed terminals). Row order freezes while the popover is open so
-live events don't reshuffle rows under your cursor; each open re-sorts.
+crashed/closed terminals) — except on `/clear` and resume, where the process
+keeps running. Row order freezes while the popover is open so live events
+don't reshuffle rows under your cursor; each open re-sorts.
+
+**Hooks alone aren't enough to know if a session is blocked.** Nothing fires
+when a permission prompt is *answered*, so a `waiting` row could outlive the
+block by hours, and a block that arrived without a hook never showed at all.
+AgentDeck therefore reconciles each Claude row against Claude's own session
+registry (`~/.claude/sessions/<pid>.json`, matched on pid *and* session id),
+preferring whichever observation is newer. That registry also supplies the
+session name and the reason a session is blocked. Codex rows read
+`~/.codex/session_index.jsonl` and `~/.codex/state_5.sqlite` (read-only) for
+names, model, effort, token totals, branch and approval mode.
 
 Row titles come from the best available source, refreshed on popover open.
 Claude Code writes a descriptive terminal title, so its rows use the live
@@ -119,6 +133,28 @@ to the tab title, then the folder name.
   swept. The sessions-dir watcher re-arms if the directory is recreated.
 - The helper never blocks an agent turn: bounded stdin read, 8s watchdog,
   silent exit on any error.
+
+## Notifications
+
+A session that stays blocked longer than `waitAlertMinutes` (default 5) posts
+a local notification, once per block. macOS will ask for permission the first
+time the app runs. To change or disable:
+
+```sh
+defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disable
+```
+
+## Tested against
+
+| Component | Version |
+|---|---|
+| macOS | 14+ (developed on 26.x) |
+| Claude Code | 2.1.220 |
+| Codex CLI | 0.145.0 |
+| iTerm2 | 3.6.11 |
+
+Other terminals: rows still appear and states are correct, but there's no
+pane to focus — those rows say so instead of failing silently.
 
 ## Development
 

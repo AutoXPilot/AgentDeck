@@ -4,6 +4,29 @@ import Foundation
 /// payload-parsing path — the one component that must never fail loudly in
 /// production — is unit-testable with recorded fixtures.
 public enum HookProcessor {
+    /// Fields carried on every hook payload that describe the session rather
+    /// than its content. Conversation content (`prompt`,
+    /// `last_assistant_message`, `tool_input`, …) is never read.
+    static func metadata(from payload: [String: Any]) -> (
+        notificationType: String?, permissionMode: String?,
+        model: String?, effort: String?, errorKind: String?
+    ) {
+        let effort: String?
+        if let dict = payload["effort"] as? [String: Any] {
+            effort = dict["level"] as? String
+        } else {
+            effort = payload["effort"] as? String
+        }
+        return (
+            notificationType: payload["notification_type"] as? String
+                ?? payload["type"] as? String,
+            permissionMode: payload["permission_mode"] as? String,
+            model: payload["model"] as? String,
+            effort: effort,
+            errorKind: payload["error"] as? String
+        )
+    }
+
     @discardableResult
     public static func process(
         provider: Provider,
@@ -24,10 +47,12 @@ public enum HookProcessor {
         let sessionId = SnapshotStore.sanitizeKeyComponent(rawId)
         guard !sessionId.isEmpty else { return .ignore }
 
-        let notificationType =
-            payload["notification_type"] as? String ?? payload["type"] as? String
+        let meta = metadata(from: payload)
         let action = EventMapping.action(
-            provider: provider, event: event, notificationType: notificationType
+            provider: provider,
+            event: event,
+            notificationType: meta.notificationType,
+            endReason: payload["reason"] as? String
         )
         let key = "\(provider.rawValue)-\(sessionId)"
 
@@ -54,7 +79,14 @@ public enum HookProcessor {
                 event: event,
                 updatedAt: now,
                 terminalSessionId: terminal,
-                agentPid: pid
+                agentPid: pid,
+                // only meaningful while waiting; stale reasons would mislead
+                notificationType: state == .waiting
+                    ? (meta.notificationType ?? existing?.notificationType) : nil,
+                permissionMode: meta.permissionMode ?? existing?.permissionMode,
+                model: meta.model ?? existing?.model,
+                effort: meta.effort ?? existing?.effort,
+                errorKind: state == .error ? meta.errorKind : nil
             )
             try? store.write(snapshot)
         }

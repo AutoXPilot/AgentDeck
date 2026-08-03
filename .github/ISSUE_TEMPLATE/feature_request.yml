@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scope for v1 is macOS + iTerm2 + Claude Code/Codex. Support for other
+        terminals or providers is welcome as a discussion first — the pane
+        focusing and title reading are terminal-specific.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve
+      description: What are you trying to do that AgentDeck makes hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
