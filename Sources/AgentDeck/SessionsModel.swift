@@ -400,19 +400,43 @@ final class SessionsModel: ObservableObject {
         let due = waitingTracker.update(
             snapshots, threshold: TimeInterval(minutes * 60)
         )
-        guard !due.isEmpty, notificationsAuthorized else { return }
+        guard !due.isEmpty else { return }
         for key in due {
             guard let snapshot = snapshots.first(where: { $0.key == key }) else { continue }
-            let content = UNMutableNotificationContent()
-            content.title = "\(snapshot.provider.displayName) is waiting on you"
+            let heading = "\(snapshot.provider.displayName) is waiting on you"
             var body = title(for: snapshot)
             if let reason = waitingReasons[key] { body += " — \(reason)" }
+            post(title: heading, body: body, key: key)
+            Self.appLog("notified: \(key) waiting > \(minutes)m")
+        }
+    }
+
+    private func post(title heading: String, body: String, key: String) {
+        if notificationsAuthorized {
+            let content = UNMutableNotificationContent()
+            content.title = heading
             content.body = body
             content.sound = .default
             UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: key, content: content, trigger: nil)
             )
-            Self.appLog("notified: \(key) waiting > \(minutes)m")
+            return
+        }
+        // Ad-hoc signed builds are refused by UNUserNotificationCenter
+        // ("Notifications are not allowed for this application"), which is
+        // every Homebrew --HEAD install. osascript still gets a banner
+        // through; it's attributed to Script Editor, which is the price of
+        // not having a $99 Developer ID.
+        Task.detached {
+            _ = ITermFocus.runAppleScript(
+                """
+                on run argv
+                    display notification (item 2 of argv) with title (item 1 of argv)
+                end run
+                """,
+                arguments: [heading, body],
+                timeout: 10
+            )
         }
     }
 

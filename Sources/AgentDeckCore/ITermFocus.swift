@@ -49,7 +49,7 @@ public enum ITermFocus {
         case failure(String)
     }
 
-    static func runAppleScript(
+    public static func runAppleScript(
         _ script: String, arguments: [String] = [], timeout: TimeInterval = 20
     ) -> ScriptOutcome {
         let process = Process()
