@@ -131,18 +131,38 @@ struct LivenessAndFocusTests {
     }
 
     @Test func sanitizeTitleDropsOnlyUnbalancedQuotes() {
-        // codex-cli emits a stray quote in its terminal title
-        #expect(ITermFocus.sanitizeTitle("Code (codex\")") == "Code (codex)")
-        #expect(ITermFocus.sanitizeTitle("knowledge (codex\")") == "knowledge (codex)")
+        // codex-cli emits a stray quote in its terminal title; the provider
+        // suffix is then stripped too (see sanitizeTitleStripsDuplicatedDecoration)
+        #expect(ITermFocus.sanitizeTitle("Code (codex\")") == "Code")
+        #expect(ITermFocus.sanitizeTitle("knowledge (codex\")") == "knowledge")
         // balanced quotes are intentional — keep them
         #expect(ITermFocus.sanitizeTitle("run \"make test\"") == "run \"make test\"")
-        #expect(ITermFocus.sanitizeTitle("✳ V2B-1488 (claude)") == "✳ V2B-1488 (claude)")
         #expect(ITermFocus.sanitizeTitle("  padded  ") == "padded")
+    }
+
+    @Test func sanitizeTitleStripsDuplicatedDecoration() {
+        // the row already shows provider + state; the glyph and "(claude)"
+        // suffix just push every title right and waste ~90pt of a 360pt row
+        #expect(ITermFocus.sanitizeTitle("✳ V2B-1488 (claude)") == "V2B-1488")
+        #expect(ITermFocus.sanitizeTitle("⠂ AgentDeck (sourcekit-lsp)")
+            == "AgentDeck (sourcekit-lsp)", "only provider suffixes are dropped")
+        #expect(ITermFocus.sanitizeTitle("Code (codex\")") == "Code")
+        #expect(ITermFocus.sanitizeTitle("plain title") == "plain title")
+        #expect(ITermFocus.sanitizeTitle("✳ ") == "")
+    }
+
+    @Test func humanizeReasonReadsLikeEnglish() {
+        #expect(ITermFocus.humanizeReason("permission_prompt") == "needs permission")
+        #expect(ITermFocus.humanizeReason("idle_prompt") == "idle")
+        #expect(ITermFocus.humanizeReason("agent_needs_input") == "subagent needs input")
+        #expect(ITermFocus.humanizeReason("elicitation_dialog") == "needs input")
+        #expect(ITermFocus.humanizeReason("sandbox request") == "sandbox request")
+        #expect(ITermFocus.humanizeReason("something_new") == "something new")
     }
 
     @Test func parseSessionNamesSanitizesTitles() {
         let names = ITermFocus.parseSessionNames("GUID-1\tCode (codex\")")
-        #expect(names["GUID-1"] == "Code (codex)")
+        #expect(names["GUID-1"] == "Code")
     }
 
     @Test func parseSessionNamesHandlesRealAndMalformedLines() {
@@ -155,8 +175,8 @@ struct LivenessAndFocusTests {
         """
         let names = ITermFocus.parseSessionNames(output)
         #expect(names == [
-            "C4EB7622-AAAA": "✳ infra (claude)",
-            "B4F41D67-BBBB": "⠂ Claude-session-watcher (caffeinate)",
+            "C4EB7622-AAAA": "infra",
+            "B4F41D67-BBBB": "Claude-session-watcher (caffeinate)",
         ])
         #expect(ITermFocus.parseSessionNames("").isEmpty)
     }

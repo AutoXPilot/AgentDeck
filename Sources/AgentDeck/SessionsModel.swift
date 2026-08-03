@@ -217,7 +217,7 @@ final class SessionsModel: ObservableObject {
     /// Extra badges: why it's waiting, unsupervised mode, model.
     func detail(for snapshot: SessionSnapshot) -> String? {
         if snapshot.state == .waiting, let reason = waitingReasons[snapshot.key] {
-            return reason
+            return ITermFocus.humanizeReason(reason)
         }
         return nil
     }

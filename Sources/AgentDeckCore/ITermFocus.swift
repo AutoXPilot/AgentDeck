@@ -110,15 +110,46 @@ public enum ITermFocus {
     end run
     """
 
+    /// Leading activity markers the CLIs paint into the title (✳ busy,
+    /// braille spinner frames). The row's own state pill already says this,
+    /// so they're duplicated noise that also shifts every title right.
+    static let statusGlyphs = CharacterSet(charactersIn: "✳✽✻✢·*⠂⠄⠆⠇⠋⠙⠸⠰⠠⠐⢀⡀⣀⠈⠉⠊⠞⠟⠻⠽⠾⠷⠯⠟")
+
+    /// Trailing `(claude)` / `(codex)` — the provider badge already shows it.
+    static let providerSuffixes = ["(claude)", "(codex)"]
+
     /// Titles are whatever the shell or agent emitted. codex-cli emits an
     /// unbalanced quote — `Code (codex")` — so drop stray quotes, while
     /// leaving deliberately quoted titles (`run "make test"`) intact.
+    /// Then strip the decoration that duplicates the row's own badges.
     public static func sanitizeTitle(_ raw: String) -> String {
         var title = raw.trimmingCharacters(in: .whitespaces)
         if title.filter({ $0 == "\"" }).count % 2 == 1 {
             title = title.replacingOccurrences(of: "\"", with: "")
         }
+        while let first = title.unicodeScalars.first,
+              statusGlyphs.contains(first) || first == " " {
+            title.removeFirst()
+        }
+        let lowered = title.lowercased()
+        for suffix in providerSuffixes where lowered.hasSuffix(suffix) {
+            title = String(title.dropLast(suffix.count))
+            break
+        }
         return title.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Human wording for the raw notification/registry reason strings.
+    public static func humanizeReason(_ raw: String) -> String {
+        switch raw.lowercased().replacingOccurrences(of: "_", with: " ") {
+        case let s where s.contains("permission"): return "needs permission"
+        case let s where s.contains("idle"): return "idle"
+        case let s where s.contains("elicitation"): return "needs input"
+        case let s where s.contains("agent needs"): return "subagent needs input"
+        case let s where s.contains("sandbox"): return "sandbox request"
+        case let s where s.contains("dialog"): return "dialog open"
+        case let s: return s
+        }
     }
 
     public static func parseSessionNames(_ output: String) -> [String: String] {

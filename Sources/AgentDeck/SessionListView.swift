@@ -3,7 +3,9 @@ import SwiftUI
 
 struct SessionListView: View {
     @ObservedObject var model: SessionsModel
-    @State private var selection: Int = 0
+    /// -1 until a key is pressed: a highlight on row 0 that nobody asked for
+    /// reads as "this row is special" rather than "keyboard cursor".
+    @State private var selection: Int = -1
 
     private var rows: [SessionSnapshot] { model.visibleSessions }
 
@@ -54,8 +56,9 @@ struct SessionListView: View {
                     }
                 }
             }
-            .frame(maxHeight: min(CGFloat(rows.count) * 52 + 8, 460))
+            .frame(maxHeight: min(CGFloat(rows.count) * 48 + 6, 460))
             .onChange(of: selection) { _, new in
+                guard new >= 0 else { return }
                 withAnimation(.none) { proxy.scrollTo(new, anchor: .center) }
             }
         }
@@ -187,7 +190,8 @@ struct SessionListView: View {
                     Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
-                .frame(width: 28)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .accessibilityLabel("More actions")
             }
             if let problem = model.focusProblem {
@@ -243,7 +247,11 @@ struct SessionListView: View {
 
     private func move(_ delta: Int) -> KeyPress.Result {
         guard !rows.isEmpty else { return .ignored }
-        selection = max(0, min(rows.count - 1, selection + delta))
+        if selection < 0 {
+            selection = delta > 0 ? 0 : rows.count - 1
+        } else {
+            selection = max(0, min(rows.count - 1, selection + delta))
+        }
         return .handled
     }
 
