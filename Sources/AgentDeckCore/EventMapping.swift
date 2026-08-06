@@ -13,19 +13,33 @@ public enum HookAction: Equatable, Sendable {
 /// verified live — and accepts PermissionRequest; it has no StopFailure, so
 /// codex sessions never reach .error and the PID sweep backstops removal.
 public enum EventMapping {
-    /// Notification types that mean "a human needs to look at this".
+    /// Notification types that mean "this session is BLOCKED on a human".
     /// agent_needs_input = a background/subagent task blocked on the user.
-    /// Deliberately NOT here: agent_completed (a background task finishing
-    /// must not flip the main session's state — Stop owns "done"), and
-    /// elicitation_complete/_response (those mean the wait resolved).
+    ///
+    /// Deliberately NOT here:
+    /// - `idle_prompt`: the agent is merely sitting at the prompt with
+    ///   nothing to do. That's the ball being in your court, not a block —
+    ///   and counting it made five idle sessions read as "5 need you".
+    ///   Claude's own registry calls these `idle`, not `waiting`.
+    /// - `agent_completed`: a background task finishing must not flip the
+    ///   main session's state — Stop owns "done".
+    /// - `elicitation_complete`/`_response`: those mean the wait resolved.
     static let waitingNotificationPrefixes = [
-        "permission", "idle", "elicitation_dialog", "agent_needs",
+        "permission", "elicitation_dialog", "agent_needs",
     ]
 
     /// SessionEnd reasons where the process keeps running, so the row must
     /// survive: /clear starts a fresh conversation in the same process, and
     /// resume hands the session to another client.
     static let survivingEndReasons: Set<String> = ["clear", "resume"]
+
+    /// Whether a notification type means the session is blocked on a human.
+    /// Also used to re-judge snapshots written by older builds, which
+    /// recorded idle nudges as blocking waits.
+    public static func isBlockingNotification(_ type: String) -> Bool {
+        let lowered = type.lowercased()
+        return waitingNotificationPrefixes.contains { lowered.hasPrefix($0) }
+    }
 
     public static func action(
         provider: Provider,

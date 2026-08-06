@@ -12,7 +12,7 @@ struct EventMappingTests {
     }
 
     @Test(arguments: [
-        "permission_prompt", "idle_prompt", "elicitation_dialog",
+        "permission_prompt", "elicitation_dialog",
         "agent_needs_input", "Permission_Prompt",
     ])
     func notificationTypesThatMeanWaiting(type: String) {
@@ -24,6 +24,9 @@ struct EventMappingTests {
 
     @Test(arguments: [
         "auth_success", "agent_completed", "elicitation_complete", "elicitation_response",
+        // an idle agent is not a blocked agent: treating it as `waiting`
+        // put five idle sessions in the badge and made it meaningless
+        "idle_prompt",
     ])
     func notificationTypesThatAreIgnored(type: String) {
         // agent_completed: a background task finishing must not flip the
@@ -48,6 +51,16 @@ struct EventMappingTests {
         #expect(EventMapping.action(provider: .codex, event: "Stop") == .set(.done))
         #expect(EventMapping.action(provider: .codex, event: "SessionEnd") == .remove)
         #expect(EventMapping.action(provider: .codex, event: "PermissionRequest") == .set(.waiting))
+    }
+
+    @Test func blockingClassificationDrivesLegacyRepair() {
+        // used to re-judge snapshots written before idle stopped counting
+        #expect(EventMapping.isBlockingNotification("permission_prompt"))
+        #expect(EventMapping.isBlockingNotification("agent_needs_input"))
+        #expect(EventMapping.isBlockingNotification("elicitation_dialog"))
+        #expect(!EventMapping.isBlockingNotification("idle_prompt"))
+        #expect(!EventMapping.isBlockingNotification("agent_completed"))
+        #expect(!EventMapping.isBlockingNotification("auth_success"))
     }
 
     @Test func unknownEventsIgnored() {

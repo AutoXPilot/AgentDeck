@@ -30,7 +30,8 @@
 
 ### Added
 
-- Notification when a session has been blocked longer than a threshold
+- Notification when a session is genuinely blocked (permission prompt,
+  elicitation, subagent input) longer than a threshold
   (default 5 minutes; set `waitAlertMinutes` to 0 to disable).
 - Keyboard navigation: ↑/↓ to move, Return to focus, ⌘1–9 to jump.
 - Filter field once more than 8 sessions are listed.

@@ -158,6 +158,13 @@ final class SessionsModel: ObservableObject {
         var reasons: [String: String] = [:]
         let result: [SessionSnapshot] = snapshots.map { snapshot in
             var adjusted = snapshot
+            // Re-judge waits recorded by older builds, which counted an idle
+            // nudge as a block. Done before registry reconciliation so a
+            // stale `waiting` doesn't survive on disk-age alone.
+            if adjusted.state == .waiting, let type = snapshot.notificationType,
+               !EventMapping.isBlockingNotification(type) {
+                adjusted.state = .ready
+            }
             if snapshot.provider == .claude, let pid = snapshot.agentPid {
                 let outcome = StateReconciler.reconcile(
                     snapshot: snapshot, entry: claudeRegistry[pid]
