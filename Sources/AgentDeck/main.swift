@@ -10,6 +10,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Without an autosave name macOS re-places the item on every launch,
+        // usually at the leftmost slot of the third-party area — the first
+        // thing clipped on a notched display. With one, wherever the user
+        // ⌘-drags it is remembered, so they only position it once.
+        statusItem.autosaveName = "AgentDeckStatusItem"
+        statusItem.isVisible = true
         if let button = statusItem.button {
             button.imagePosition = .imageLeft
             button.target = self
@@ -51,11 +57,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         let urgent = model.mostUrgent
         let count = model.alertCount
-        button.image = NSImage(
+        let image = NSImage(
             systemSymbolName: symbolName(for: urgent),
             accessibilityDescription: "AgentDeck"
         )
-        button.title = count > 0 ? " \(count)" : ""
+        button.image = image
+        // An item with neither image nor title has zero width and is simply
+        // invisible — never let that happen if a symbol fails to resolve.
+        button.title = count > 0 ? " \(count)" : (image == nil ? "AD" : "")
         button.contentTintColor = count > 0
             ? (urgent == .error ? .systemRed : .systemOrange) : nil
         button.toolTip = count > 0

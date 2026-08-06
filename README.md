@@ -134,6 +134,19 @@ to the tab title, then the folder name.
 - The helper never blocks an agent turn: bounded stdin read, 8s watchdog,
   silent exit on any error.
 
+## Can't find the menu-bar icon?
+
+On notched MacBooks the menu bar has limited room, and macOS silently hides
+whatever doesn't fit — third-party items first. AgentDeck saves its position,
+so **⌘-drag it once** to a spot you like (leftward, nearer the notch) and it
+stays there across launches and upgrades.
+
+If the bar is genuinely full, free up room by hiding items you don't need
+(System Settings → Control Center), or use a menu-bar manager such as
+[Ice](https://github.com/jordanbaird/Ice) or Bartender. The icon is narrow
+when nothing is blocked (just the glyph) and widens with a count when
+sessions need you.
+
 ## Notifications
 
 A session that stays blocked longer than `waitAlertMinutes` (default 5) posts
