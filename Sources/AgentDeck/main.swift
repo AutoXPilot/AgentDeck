@@ -46,7 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         case .error: return "exclamationmark.triangle.fill"
         case .waiting: return "hand.raised.fill"
         case .done: return "checkmark.circle"
-        default: return "rectangle.stack"
+        // Not `rectangle.stack`: at menu-bar size it reads as a box with a
+        // divider, easily mistaken for Control Center's stacked toggles.
+        // Layers are distinctive and match the "deck" metaphor.
+        default: return "square.stack.3d.up"
         }
     }
 
