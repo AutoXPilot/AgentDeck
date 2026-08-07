@@ -157,24 +157,10 @@ final class SessionsModel: ObservableObject {
     private func reconcile(_ snapshots: [SessionSnapshot]) -> [SessionSnapshot] {
         var reasons: [String: String] = [:]
         let result: [SessionSnapshot] = snapshots.map { snapshot in
-            var adjusted = snapshot
-            // Re-judge waits recorded by older builds, which counted an idle
-            // nudge as a block. Done before registry reconciliation so a
-            // stale `waiting` doesn't survive on disk-age alone.
-            if adjusted.state == .waiting, let type = snapshot.notificationType,
-               !EventMapping.isBlockingNotification(type) {
-                adjusted.state = .ready
-            }
-            if snapshot.provider == .claude, let pid = snapshot.agentPid {
-                let outcome = StateReconciler.reconcile(
-                    snapshot: snapshot, entry: claudeRegistry[pid]
-                )
-                adjusted.state = outcome.state
-                if let reason = outcome.waitingFor { reasons[snapshot.key] = reason }
-            } else if snapshot.state == .waiting, let type = snapshot.notificationType {
-                reasons[snapshot.key] = type.replacingOccurrences(of: "_", with: " ")
-            }
-            return adjusted
+            let entry = snapshot.agentPid.flatMap { claudeRegistry[$0] }
+            let outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
+            if let reason = outcome.waitingFor { reasons[snapshot.key] = reason }
+            return outcome.snapshot
         }
         waitingReasons = reasons
         return result
@@ -390,6 +376,15 @@ final class SessionsModel: ObservableObject {
 
     private func requestNotificationAuthorization() {
         guard waitAlertMinutes > 0 else { return }
+        // UNUserNotificationCenter.current() raises an uncaught ObjC
+        // exception ("bundleProxyForCurrentProcess is nil") when the binary
+        // runs outside a .app — e.g. `swift run` or the render harness —
+        // which would take the whole process down. The osascript fallback
+        // covers that case anyway.
+        guard Bundle.main.bundleIdentifier != nil else {
+            Self.appLog("no bundle identity; using osascript notifications")
+            return
+        }
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
                 Task { @MainActor in self?.notificationsAuthorized = granted }

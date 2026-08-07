@@ -3,6 +3,9 @@ import SwiftUI
 
 struct SessionListView: View {
     @ObservedObject var model: SessionsModel
+    /// ImageRenderer can't lay out ScrollView/LazyVStack, so the offscreen
+    /// render harness swaps in a plain stack to inspect the real rows.
+    var staticLayout = false
     /// -1 until a key is pressed: a highlight on row 0 that nobody asked for
     /// reads as "this row is special" rather than "keyboard cursor".
     @State private var selection: Int = -1
@@ -24,6 +27,12 @@ struct SessionListView: View {
         }
         .frame(minWidth: 360, maxWidth: 460)
         .focusable()
+        // Focusable is required for onKeyPress, but macOS then paints a blue
+        // focus ring around the container. The popover clips it into stray
+        // blue bars at the top and bottom edges. This kills the ring (and,
+        // being environment-based, the rings on the hidden ⌘1–9 buttons too)
+        // while keeping key handling.
+        .focusEffectDisabled()
         .onKeyPress(.upArrow) { move(-1) }
         .onKeyPress(.downArrow) { move(1) }
         .onKeyPress(.return) { activateSelection() }
@@ -32,7 +41,31 @@ struct SessionListView: View {
 
     // MARK: - Pieces
 
+    @ViewBuilder
     private var list: some View {
+        if staticLayout {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.key) { index, session in
+                    SessionRow(
+                        session: session,
+                        title: model.title(for: session),
+                        subtitle: model.subtitle(for: session),
+                        detail: model.detail(for: session),
+                        unsupervised: model.isUnsupervised(session),
+                        focusable: model.canFocus(session),
+                        needsAttention: model.needsAttention(session),
+                        selected: index == selection,
+                        shortcutIndex: index < 9 ? index + 1 : nil
+                    ) {}
+                    Divider().padding(.leading, 12)
+                }
+            }
+        } else {
+            scrollingList
+        }
+    }
+
+    private var scrollingList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {

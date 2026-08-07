@@ -93,7 +93,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 }
 
+/// `AgentDeck --render-popover <out.png>` draws the real popover, with the
+/// real live session data, straight to a file. Lets UI changes be inspected
+/// without a screenshot — and gives bug reporters a way to show the window
+/// without capturing their whole screen.
+@MainActor
+func renderPopover(to path: String) -> Never {
+    let model = SessionsModel()
+    model.start()
+    model.popoverOpened()
+    // let the async title fetch land before drawing
+    RunLoop.main.run(until: Date().addingTimeInterval(2.5))
+    let renderer = ImageRenderer(
+        content: SessionListView(model: model, staticLayout: true).frame(width: 380)
+    )
+    renderer.scale = 2
+    guard let image = renderer.nsImage,
+          let tiff = image.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff),
+          let png = rep.representation(using: .png, properties: [:])
+    else {
+        FileHandle.standardError.write(Data("render failed\n".utf8))
+        exit(1)
+    }
+    do {
+        try png.write(to: URL(fileURLWithPath: path))
+        print("wrote \(path)")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("write failed: \(error)\n".utf8))
+        exit(1)
+    }
+}
+
 let app = NSApplication.shared
+if CommandLine.arguments.count > 2,
+   CommandLine.arguments[1] == "--render-popover" {
+    app.setActivationPolicy(.prohibited)
+    MainActor.assumeIsolated { renderPopover(to: CommandLine.arguments[2]) }
+}
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

@@ -132,4 +132,28 @@ public enum StateReconciler {
         }
         return Result(state: snapshot.state, waitingFor: nil, correctedByRegistry: false)
     }
+
+    /// The whole per-row correction, in the order that matters:
+    /// re-judge non-blocking notification types FIRST, then reconcile the
+    /// corrected snapshot against the registry. Doing it the other way round
+    /// let the registry hand back the stale `waiting` and silently undo the
+    /// repair — which is exactly the bug this function exists to prevent.
+    public static func normalize(
+        snapshot: SessionSnapshot, entry: ClaudeSessionRegistry.Entry?
+    ) -> (snapshot: SessionSnapshot, waitingFor: String?) {
+        var adjusted = snapshot
+        if adjusted.state == .waiting, let type = snapshot.notificationType,
+           !EventMapping.isBlockingNotification(type) {
+            adjusted.state = .ready
+        }
+        guard snapshot.provider == .claude else {
+            let reason = adjusted.state == .waiting
+                ? snapshot.notificationType.map { $0.replacingOccurrences(of: "_", with: " ") }
+                : nil
+            return (adjusted, reason)
+        }
+        let outcome = reconcile(snapshot: adjusted, entry: entry)
+        adjusted.state = outcome.state
+        return (adjusted, outcome.waitingFor)
+    }
 }

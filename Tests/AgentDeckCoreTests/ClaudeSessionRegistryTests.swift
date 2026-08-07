@@ -136,4 +136,50 @@ struct StateReconcilerTests {
         let result = StateReconciler.reconcile(snapshot: snapshot(.done), entry: nil)
         #expect(result.state == .done)
     }
+
+    // MARK: - normalize(): ordering of the two corrections
+
+    func idleWait(pid: Int32? = 100) -> SessionSnapshot {
+        SessionSnapshot(
+            provider: .claude, sessionId: "s1", projectPath: "/p",
+            state: .waiting, event: "Notification",
+            updatedAt: now.addingTimeInterval(-3600), agentPid: pid,
+            notificationType: "idle_prompt"
+        )
+    }
+
+    @Test func registryMustNotResurrectAnIdleWait() {
+        // Regression: the repair ran first, then the registry was handed the
+        // ORIGINAL snapshot and its `waiting` overwrote the repair — two idle
+        // sessions kept showing as blocked and inflated the badge.
+        let outcome = StateReconciler.normalize(
+            snapshot: idleWait(), entry: entry("idle", ageSeconds: 7200)
+        )
+        #expect(outcome.snapshot.state == .ready)
+        #expect(outcome.waitingFor == nil)
+    }
+
+    @Test func idleRepairAppliesWithoutARegistryEntry() {
+        let outcome = StateReconciler.normalize(snapshot: idleWait(pid: nil), entry: nil)
+        #expect(outcome.snapshot.state == .ready)
+    }
+
+    @Test func genuineBlockSurvivesNormalization() {
+        var blocked = idleWait()
+        blocked.notificationType = "permission_prompt"
+        let outcome = StateReconciler.normalize(
+            snapshot: blocked, entry: entry("waiting", waitingFor: "permission prompt")
+        )
+        #expect(outcome.snapshot.state == .waiting)
+        #expect(outcome.waitingFor == "permission prompt")
+    }
+
+    @Test func codexKeepsItsOwnReasonWithoutARegistry() {
+        var codex = idleWait(pid: nil)
+        codex.provider = .codex
+        codex.notificationType = "permission_prompt"
+        let outcome = StateReconciler.normalize(snapshot: codex, entry: nil)
+        #expect(outcome.snapshot.state == .waiting)
+        #expect(outcome.waitingFor == "permission prompt")
+    }
 }
