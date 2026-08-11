@@ -168,11 +168,13 @@ final class SessionsModel: ObservableObject {
 
     var visibleSessions: [SessionSnapshot] {
         let query = filterText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return sessions }
-        return sessions.filter {
+        let matching = query.isEmpty ? sessions : sessions.filter {
             title(for: $0).lowercased().contains(query)
                 || $0.projectPath.lowercased().contains(query)
         }
+        // Belt and braces: a duplicate key reaching ForEach renders the same
+        // session in several rows, which is confusing and hard to diagnose.
+        return RowOrdering.deduplicated(matching)
     }
 
     func needsAttention(_ snapshot: SessionSnapshot) -> Bool {

@@ -48,6 +48,14 @@ struct RowOrderingTests {
         #expect(result.rows[0].state == .waiting, "first occurrence wins")
     }
 
+    @Test func deduplicatedKeepsFirstOccurrenceAndOrder() {
+        let rows = [snap("a", .waiting), snap("b"), snap("a", .done), snap("c")]
+        let unique = RowOrdering.deduplicated(rows)
+        #expect(unique.map(\.sessionId) == ["a", "b", "c"])
+        #expect(unique[0].state == .waiting)
+        #expect(RowOrdering.deduplicated([]).isEmpty)
+    }
+
     @Test func emptyInputs() {
         let empty = RowOrdering.arrange(sorted: [], frozenOrder: ["claude-x"])
         #expect(empty.rows.isEmpty)

@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         model.onRequestClose = { [weak self] in self?.popover.performClose(nil) }
         model.start()
         refreshBadge()
+        logStatusItemPlacement()
         // A brand-new install has no hooks and would otherwise look like an
         // app that simply does nothing — show it once, with instructions.
         if !model.helperInstalled || !model.claudeHooksInstalled {
@@ -73,6 +74,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.toolTip = count > 0
             ? "AgentDeck — \(count) session\(count == 1 ? "" : "s") need you"
             : "AgentDeck — nothing blocked"
+    }
+
+    /// Where macOS actually placed the icon. A zero width means the item
+    /// drew nothing; an x beyond the screen (or no window at all) means the
+    /// menu bar ran out of room and the item is in the hidden overflow.
+    private func logStatusItemPlacement() {
+        // give the menu bar a beat to lay the item out
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            var frameText = "NO WINDOW"
+            if let frame = self.statusItem.button?.window?.frame {
+                let x = Int(frame.origin.x), y = Int(frame.origin.y)
+                let w = Int(frame.width), h = Int(frame.height)
+                frameText = "\(x),\(y) \(w)x\(h)"
+            }
+            let screens = NSScreen.screens.map { screen -> String in
+                let f = screen.frame
+                return "\(Int(f.width))x\(Int(f.height))@\(Int(f.origin.x))"
+            }.joined(separator: ",")
+            let hasImage = self.statusItem.button?.image != nil
+            let title = self.statusItem.button?.title ?? ""
+            if let screen = NSScreen.main {
+                // On notched Macs these are the usable menu-bar strips either
+                // side of the camera housing; an item outside them is hidden.
+                let left = screen.auxiliaryTopLeftArea
+                let right = screen.auxiliaryTopRightArea
+                let leftText = left.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"
+                let rightText = right.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"
+                SessionsModel.appLog(
+                    "menubar: notch-left=\(leftText) notch-right=\(rightText) "
+                    + "topInset=\(Int(screen.safeAreaInsets.top))"
+                )
+            }
+            SessionsModel.appLog(
+                "statusitem: visible=\(self.statusItem.isVisible) "
+                + "length=\(self.statusItem.length) frame=\(frameText) "
+                + "hasImage=\(hasImage) title='\(title)' screens=[\(screens)]"
+            )
+        }
     }
 
     @objc private func togglePopover() {

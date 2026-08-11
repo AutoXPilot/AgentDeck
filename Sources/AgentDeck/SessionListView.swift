@@ -83,7 +83,12 @@ struct SessionListView: View {
                         ) {
                             model.activate(session)
                         }
-                        .id(index)
+                        // No .id() here: ForEach already identifies rows by
+                        // session key, and adding a second identity (the
+                        // index) made LazyVStack recycle cells wrongly —
+                        // the same session appeared at several scroll
+                        // positions. ScrollViewReader can target the
+                        // ForEach id directly.
                         .contextMenu { contextMenu(for: session) }
                         Divider().padding(.leading, 12)
                     }
@@ -91,8 +96,8 @@ struct SessionListView: View {
             }
             .frame(maxHeight: min(CGFloat(rows.count) * 48 + 6, 460))
             .onChange(of: selection) { _, new in
-                guard new >= 0 else { return }
-                withAnimation(.none) { proxy.scrollTo(new, anchor: .center) }
+                guard rows.indices.contains(new) else { return }
+                withAnimation(.none) { proxy.scrollTo(rows[new].key, anchor: .center) }
             }
         }
     }
