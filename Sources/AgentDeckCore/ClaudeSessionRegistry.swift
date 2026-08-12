@@ -43,7 +43,10 @@ public enum ClaudeSessionRegistry {
     }
 
     public static var defaultDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let override = ProcessInfo.processInfo.environment["AGENTDECK_REGISTRY_DIR"] {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/sessions", isDirectory: true)
     }
 
@@ -139,7 +142,8 @@ public enum StateReconciler {
     /// let the registry hand back the stale `waiting` and silently undo the
     /// repair — which is exactly the bug this function exists to prevent.
     public static func normalize(
-        snapshot: SessionSnapshot, entry: ClaudeSessionRegistry.Entry?
+        snapshot: SessionSnapshot, entry: ClaudeSessionRegistry.Entry?,
+        now: Date = Date()
     ) -> (snapshot: SessionSnapshot, waitingFor: String?) {
         var adjusted = snapshot
         if adjusted.state == .waiting, let type = snapshot.notificationType,
@@ -154,6 +158,21 @@ public enum StateReconciler {
         }
         let outcome = reconcile(snapshot: adjusted, entry: entry)
         adjusted.state = outcome.state
+        // A correction is an OBSERVATION and must carry its own time.
+        // Leaving the old hook timestamp in place made three consumers lie:
+        // acks judged the corrected state against the stale time (a
+        // registry-detected block on an acked session was permanently
+        // invisible), WaitingTracker seeded its clock hours in the past
+        // (instant escalation), and the row displayed the wrong age.
+        if outcome.correctedByRegistry {
+            if let observed = entry?.statusUpdatedAt, observed > adjusted.updatedAt {
+                adjusted.updatedAt = observed
+            } else if entry?.statusUpdatedAt == nil {
+                // no transition time available: "now" is still closer to the
+                // truth than the hours-old hook time
+                adjusted.updatedAt = now
+            }
+        }
         return (adjusted, outcome.waitingFor)
     }
 }

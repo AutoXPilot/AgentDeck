@@ -6,7 +6,12 @@ public struct SnapshotStore: Sendable {
     public let directory: URL
 
     public static var defaultDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        // Env override so the render harness and golden tests can run
+        // against fixtures instead of live production state.
+        if let override = ProcessInfo.processInfo.environment["AGENTDECK_STATE_DIR"] {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AgentDeck/sessions", isDirectory: true)
     }
 

@@ -16,7 +16,13 @@ struct SessionListView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if model.sessions.count > 8 { filterField; Divider() }
+            // keep the field visible while a filter is applied, or a live
+            // event dropping the count below the threshold strands the user
+            // in a filtered list with no way to clear it
+            if model.sessions.count > 8 || !model.filterText.isEmpty {
+                filterField
+                Divider()
+            }
             if rows.isEmpty {
                 emptyState
             } else {
@@ -26,6 +32,12 @@ struct SessionListView: View {
             footer
         }
         .frame(minWidth: 360, maxWidth: 460)
+        // The keyboard cursor must not survive across opens (rows re-sort on
+        // every open, so a stale index points at an arbitrary session and
+        // Return would ack + focus it) nor across filter changes (indices
+        // shift under the highlight).
+        .onChange(of: model.openGeneration) { _, _ in selection = -1 }
+        .onChange(of: model.filterText) { _, _ in selection = -1 }
         .focusable()
         // Focusable is required for onKeyPress, but macOS then paints a blue
         // focus ring around the container. The popover clips it into stray

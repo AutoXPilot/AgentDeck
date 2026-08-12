@@ -35,7 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // app that simply does nothing — show it once, with instructions.
         if !model.helperInstalled || !model.claudeHooksInstalled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.togglePopover()
+                guard let self, !self.popover.isShown else { return }
+                self.togglePopover()
             }
         }
     }
@@ -167,8 +168,13 @@ func renderPopover(to path: String) -> Never {
 }
 
 let app = NSApplication.shared
-if CommandLine.arguments.count > 2,
-   CommandLine.arguments[1] == "--render-popover" {
+if CommandLine.arguments.dropFirst().first == "--render-popover" {
+    guard CommandLine.arguments.count > 2 else {
+        FileHandle.standardError.write(
+            Data("usage: AgentDeck --render-popover <out.png>\n".utf8)
+        )
+        exit(64)
+    }
     app.setActivationPolicy(.prohibited)
     MainActor.assumeIsolated { renderPopover(to: CommandLine.arguments[2]) }
 }

@@ -30,6 +30,9 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var focusProblem: String?
     @Published private(set) var iTermRunning = false
     @Published var filterText = ""
+    /// Bumped on every popover open; the view watches it to reset transient
+    /// state (keyboard selection) that must not survive across opens.
+    @Published private(set) var openGeneration = 0
 
     var onChange: (() -> Void)?
     var onRequestClose: (() -> Void)?
@@ -101,7 +104,10 @@ final class SessionsModel: ObservableObject {
         requestNotificationAuthorization()
         watchDirectory()
         sweepTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in
+                self?.ensureWatching()
+                self?.reload()
+            }
         }
         refreshTerminalTitles()
         reload()
@@ -113,10 +119,27 @@ final class SessionsModel: ObservableObject {
         frozenOrder = nil
         popoverVisible = true
         filterText = ""
+        openGeneration += 1
+        // A focus queued by a click that raced a fast reopen must not fire
+        // on some unrelated close minutes later.
+        pendingFocus = nil
+        // Transient footer messages shouldn't outlive the visit they
+        // belong to.
+        installMessage = nil
+        focusProblem = nil
         codexNames = CodexSessionIndex.load()
-        codexThreads = CodexThreads.load()
         reload()
         refreshTerminalTitles()
+        // sqlite3 spawn off the main thread — it was adding tens of ms of
+        // popover-open latency, unbounded if sqlite ever stalls
+        Task.detached {
+            let threads = CodexThreads.load()
+            Task { @MainActor [weak self] in
+                guard let self, !threads.isEmpty else { return }
+                self.codexThreads = threads
+                self.onChange?()
+            }
+        }
     }
 
     func popoverClosed() {
@@ -150,38 +173,25 @@ final class SessionsModel: ObservableObject {
         all.removeAll { removed.contains($0.key) }
 
         claudeRegistry = ClaudeSessionRegistry.load()
-        all = reconcile(all)
-
-        let sorted = Attention.sorted(all, acks: acks)
-        if popoverVisible {
-            let arranged = RowOrdering.arrange(sorted: sorted, frozenOrder: frozenOrder)
-            sessions = arranged.rows
-            frozenOrder = arranged.frozenOrder
-        } else {
-            sessions = sorted
-            frozenOrder = nil
-        }
-        alertCount = Attention.alertCount(all, acks: acks)
-        doneCount = Attention.doneCount(all, acks: acks)
-        mostUrgent = Attention.mostUrgent(all, acks: acks)
-        escalateLongWaits(all)
+        // All derivation lives in the tested core; this method only reads
+        // files, assigns outputs, and performs side effects.
+        let output = SessionPipeline.run(
+            snapshots: all,
+            registry: claudeRegistry,
+            acks: acks,
+            frozenOrder: frozenOrder,
+            popoverVisible: popoverVisible,
+            now: Date()
+        )
+        sessions = output.rows
+        frozenOrder = popoverVisible ? output.frozenOrder : nil
+        waitingReasons = output.waitingReasons
+        alertCount = output.alertCount
+        doneCount = output.doneCount
+        mostUrgent = output.mostUrgent
+        escalateLongWaits(output.rows)
         refreshHealth()
         onChange?()
-    }
-
-    /// Hooks never fire when a permission prompt is answered, so a `waiting`
-    /// row can outlive the block by hours. Claude's own registry knows, and
-    /// also spots blocks no hook reported. Newer observation wins.
-    private func reconcile(_ snapshots: [SessionSnapshot]) -> [SessionSnapshot] {
-        var reasons: [String: String] = [:]
-        let result: [SessionSnapshot] = snapshots.map { snapshot in
-            let entry = snapshot.agentPid.flatMap { claudeRegistry[$0] }
-            let outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
-            if let reason = outcome.waitingFor { reasons[snapshot.key] = reason }
-            return outcome.snapshot
-        }
-        waitingReasons = reasons
-        return result
     }
 
     var visibleSessions: [SessionSnapshot] {
@@ -192,7 +202,13 @@ final class SessionsModel: ObservableObject {
         }
         // Belt and braces: a duplicate key reaching ForEach renders the same
         // session in several rows, which is confusing and hard to diagnose.
-        return RowOrdering.deduplicated(matching)
+        let unique = RowOrdering.deduplicated(matching)
+        // In dev builds, fail loudly instead of hiding the evidence.
+        assert(
+            unique.count == matching.count,
+            "duplicate ForEach keys: \(Dictionary(grouping: matching, by: \.key).filter { $1.count > 1 }.keys)"
+        )
+        return unique
     }
 
     func needsAttention(_ snapshot: SessionSnapshot) -> Bool {
@@ -217,7 +233,10 @@ final class SessionsModel: ObservableObject {
             return name
         }
         if snapshot.provider == .claude, let pid = snapshot.agentPid,
-           let name = claudeRegistry[pid]?.name, !name.isEmpty {
+           let entry = claudeRegistry[pid], entry.sessionId == snapshot.sessionId,
+           let name = entry.name, !name.isEmpty {
+            // registry files outlive their processes; without the sessionId
+            // check a recycled pid shows another session's name
             return name
         }
         return snapshot.projectName
@@ -229,8 +248,9 @@ final class SessionsModel: ObservableObject {
 
     /// Extra badges: why it's waiting, unsupervised mode, model.
     func detail(for snapshot: SessionSnapshot) -> String? {
+        // reasons arrive pre-humanized from the pipeline
         if snapshot.state == .waiting, let reason = waitingReasons[snapshot.key] {
-            return ITermFocus.humanizeReason(reason)
+            return reason
         }
         return nil
     }
@@ -426,6 +446,9 @@ final class SessionsModel: ObservableObject {
         guard !due.isEmpty else { return }
         for key in due {
             guard let snapshot = snapshots.first(where: { $0.key == key }) else { continue }
+            // A dismissal is "I know, leave me alone" — respect it. The ack
+            // semantics already re-arm on any newer event.
+            guard needsAttention(snapshot) else { continue }
             let heading = "\(snapshot.provider.displayName) is waiting on you"
             var body = title(for: snapshot)
             if let reason = waitingReasons[key] { body += " — \(reason)" }
@@ -573,6 +596,17 @@ final class SessionsModel: ObservableObject {
         source.setCancelHandler { close(fd) }
         source.resume()
         dirWatcher = source
+    }
+
+    /// Called from the sweep tick: if the watcher ever died (open() failure,
+    /// dir vanished), keep trying to re-arm instead of degrading to
+    /// 15s-polling forever.
+    private func ensureWatching() {
+        guard dirWatcher == nil, !readOnly else { return }
+        try? FileManager.default.createDirectory(
+            at: store.directory, withIntermediateDirectories: true
+        )
+        watchDirectory()
     }
 
     private func loadAcks() {

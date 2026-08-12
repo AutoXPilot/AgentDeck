@@ -174,6 +174,37 @@ struct StateReconcilerTests {
         #expect(outcome.waitingFor == "permission prompt")
     }
 
+    @Test func registryCorrectionCarriesItsOwnTimestamp() {
+        // A block detected by the registry AFTER the user acknowledged the
+        // session must out-date the ack, or it can never earn attention.
+        let ackTime = now.addingTimeInterval(-1800)
+        let blockTime = now.addingTimeInterval(-120)
+        var done = snapshot(.done, ageSeconds: 3600)  // hook event long ago
+        done.notificationType = nil
+        let blocked = ClaudeSessionRegistry.Entry(
+            pid: 100, sessionId: "s1", status: "waiting",
+            waitingFor: "permission prompt", statusUpdatedAt: blockTime
+        )
+        let outcome = StateReconciler.normalize(snapshot: done, entry: blocked)
+        #expect(outcome.snapshot.state == .waiting)
+        #expect(outcome.snapshot.updatedAt == blockTime,
+                "corrected state must carry the observation time")
+        #expect(Attention.needsAttention(outcome.snapshot, ackedAt: ackTime),
+                "the new block must beat the old ack")
+        // and WaitingTracker seeds from the real block time, not hook time
+        var tracker = WaitingTracker()
+        let due = tracker.update([outcome.snapshot], now: now, threshold: 300)
+        #expect(due.isEmpty, "a 2-minute-old block must not escalate at a 5m threshold")
+    }
+
+    @Test func uncorrectedSnapshotsKeepTheirTimestamp() {
+        let snap = snapshot(.waiting, ageSeconds: 600)
+        let agreeing = entry("waiting", waitingFor: "input needed", ageSeconds: 60)
+        let outcome = StateReconciler.normalize(snapshot: snap, entry: agreeing)
+        #expect(outcome.snapshot.updatedAt == snap.updatedAt,
+                "agreement is not a correction; the hook time stands")
+    }
+
     @Test func codexKeepsItsOwnReasonWithoutARegistry() {
         var codex = idleWait(pid: nil)
         codex.provider = .codex
