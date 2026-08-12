@@ -41,6 +41,9 @@ final class SessionsModel: ObservableObject {
     private var claudeRegistry: [Int32: ClaudeSessionRegistry.Entry] = [:]
     private var waitingTracker = WaitingTracker()
     private var notificationsAuthorized = false
+    /// Render harness: observe only, never delete/sweep/notify — a second
+    /// instance must not race the live app over shared files.
+    private var readOnly = false
 
     /// While the popover is visible, row ORDER is frozen so live events and
     /// ack-clicks don't reshuffle rows under the cursor; states and times
@@ -74,8 +77,18 @@ final class SessionsModel: ObservableObject {
             .appendingPathComponent("agentdeck-hook")
     }
 
-    func start() {
+    /// `forRendering` = the offscreen --render-popover harness: read
+    /// everything, mutate NOTHING. Without this the harness (running from
+    /// .build/debug) synced the DEBUG helper over the production one and
+    /// fought the live app instance for the file.
+    func start(forRendering: Bool = false) {
         loadAcks()
+        if forRendering {
+            readOnly = true
+            reload()
+            refreshTerminalTitles()
+            return
+        }
         try? FileManager.default.createDirectory(
             at: store.directory, withIntermediateDirectories: true
         )
@@ -120,14 +133,19 @@ final class SessionsModel: ObservableObject {
 
     func reload() {
         var all = store.loadAll()
-        store.sweepOrphans()
         var removed = Set<String>()
-        for key in Liveness.keysToRemove(all) {
-            if let fresh = store.load(key: key), Liveness.keysToRemove([fresh]).isEmpty {
-                continue
+        if readOnly {
+            // hide what the live app would remove, but touch nothing
+            removed = Set(Liveness.keysToRemove(all))
+        } else {
+            store.sweepOrphans()
+            for key in Liveness.keysToRemove(all) {
+                if let fresh = store.load(key: key), Liveness.keysToRemove([fresh]).isEmpty {
+                    continue
+                }
+                store.remove(key: key)
+                removed.insert(key)
             }
-            store.remove(key: key)
-            removed.insert(key)
         }
         all.removeAll { removed.contains($0.key) }
 
@@ -399,6 +417,7 @@ final class SessionsModel: ObservableObject {
     }
 
     private func escalateLongWaits(_ snapshots: [SessionSnapshot]) {
+        guard !readOnly else { return }
         let minutes = waitAlertMinutes
         guard minutes > 0 else { return }
         let due = waitingTracker.update(

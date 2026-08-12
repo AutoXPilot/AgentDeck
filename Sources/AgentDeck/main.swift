@@ -140,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 @MainActor
 func renderPopover(to path: String) -> Never {
     let model = SessionsModel()
-    model.start()
+    model.start(forRendering: true)
     model.popoverOpened()
     // let the async title fetch land before drawing
     RunLoop.main.run(until: Date().addingTimeInterval(2.5))
