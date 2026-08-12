@@ -158,6 +158,13 @@ public enum StateReconciler {
         }
         let outcome = reconcile(snapshot: adjusted, entry: entry)
         adjusted.state = outcome.state
+        // Claude sessions with NO registry entry (pid unknown, older CLI, or
+        // a machine that never writes ~/.claude/sessions) must still explain
+        // their wait from the hook's own notification type — this fallback
+        // used to exist only for Codex, and the golden file-path test caught
+        // the gap.
+        let reason = outcome.waitingFor
+            ?? (adjusted.state == .waiting ? snapshot.notificationType : nil)
         // A correction is an OBSERVATION and must carry its own time.
         // Leaving the old hook timestamp in place made three consumers lie:
         // acks judged the corrected state against the stale time (a
@@ -173,6 +180,6 @@ public enum StateReconciler {
                 adjusted.updatedAt = now
             }
         }
-        return (adjusted, outcome.waitingFor)
+        return (adjusted, reason)
     }
 }
