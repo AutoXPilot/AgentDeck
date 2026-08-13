@@ -62,16 +62,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         let urgent = model.mostUrgent
         let count = model.alertCount
-        let image = NSImage(
+
+        // When something's blocked, bake the colour INTO the image
+        // (palette symbol, isTemplate = false). Template images get
+        // repainted by the menu bar and came out a muted near-black that
+        // didn't read as an alert at all. Idle stays a template so it
+        // adapts politely to light/dark bars.
+        let alertColor: NSColor = urgent == .error ? .systemRed : .systemOrange
+        var image = NSImage(
             systemSymbolName: symbolName(for: urgent),
             accessibilityDescription: "AgentDeck"
         )
+        if count > 0, let base = image {
+            // two-layer symbols (triangle) get white-on-color so the glyph
+            // inside stays legible; single-layer ones take the color alone
+            let palette: [NSColor] = urgent == .error
+                ? [.white, alertColor] : [alertColor]
+            let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .bold)
+                .applying(.init(paletteColors: palette))
+            let colored = base.withSymbolConfiguration(config)
+            colored?.isTemplate = false
+            image = colored ?? base
+        }
         button.image = image
         // An item with neither image nor title has zero width and is simply
         // invisible — never let that happen if a symbol fails to resolve.
-        button.title = count > 0 ? " \(count)" : (image == nil ? "AD" : "")
-        button.contentTintColor = count > 0
-            ? (urgent == .error ? .systemRed : .systemOrange) : nil
+        if count > 0 {
+            button.attributedTitle = NSAttributedString(
+                string: " \(count)",
+                attributes: [
+                    .foregroundColor: alertColor,
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold),
+                ]
+            )
+        } else {
+            button.title = image == nil ? "AD" : ""
+        }
+        button.contentTintColor = nil
         button.toolTip = count > 0
             ? "AgentDeck — \(count) session\(count == 1 ? "" : "s") need you"
             : "AgentDeck — nothing blocked"
