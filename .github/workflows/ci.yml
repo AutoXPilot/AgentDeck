@@ -15,10 +15,15 @@ jobs:
         run: ./test.sh
       - name: SwiftUI footgun lint
         run: |
-          # .id() on list rows fought ForEach's key identity and duplicated
-          # rows under scroll (fixed 2026-08-11). Keep it out mechanically.
-          if grep -nE '\.id\(index\)|id: *\\\.self|id: *\\\.offset' Sources/AgentDeck/SessionListView.swift; then
-            echo "::error::forbidden identity pattern in SessionListView (see RowOrdering comment)"
+          # .id(<positional>) on list rows fought ForEach's key identity and
+          # duplicated rows under scroll (fixed 2026-08-11). Keep the exact
+          # hazard out mechanically: positional identity attached to
+          # session rows. (`id: \.self` over an Int range is fine — the
+          # ⌘1–9 shortcuts are positional BY DESIGN — which is why this
+          # doesn't blanket-ban it; the first version of this lint did, and
+          # flagged legitimate code because it was never run before push.)
+          if grep -nE '\.id\(index\)|\.id\(selection\)|id: *\\\.offset' Sources/AgentDeck/SessionListView.swift; then
+            echo "::error::positional identity attached to session rows (see RowOrdering comment)"
             exit 1
           fi
       - name: App bundle smoke test
