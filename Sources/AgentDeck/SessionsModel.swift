@@ -106,9 +106,13 @@ final class SessionsModel: ObservableObject {
         sweepTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.ensureWatching()
-                self?.reload()
+                self?.reload(sweep: true)  // the one place that sweeps orphans
             }
         }
+        // .common so the 15s sweep keeps firing while a menu/context menu is
+        // tracking the run loop (the dispatch watcher covers live updates,
+        // but the periodic identity re-check shouldn't stall).
+        if let sweepTimer { RunLoop.main.add(sweepTimer, forMode: .common) }
         refreshTerminalTitles()
         reload()
     }
@@ -168,14 +172,30 @@ final class SessionsModel: ObservableObject {
 
     // MARK: - Data
 
-    func reload() {
+    /// Watcher-driven entry point: coalesces a storm of hook-write events
+    /// (dozens/minute at ten sessions) into one reload. Direct calls
+    /// (popover open, clicks, the 15s tick) still use `reload()` immediately.
+    func scheduleReload() {
+        guard reloadDebounce == nil else { return }
+        reloadDebounce = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) {
+            [weak self] _ in
+            Task { @MainActor in
+                self?.reloadDebounce = nil
+                self?.reload()
+            }
+        }
+    }
+
+    func reload(sweep: Bool = false) {
         var all = store.loadAll()
         var removed = Set<String>()
         if readOnly {
             // hide what the live app would remove, but touch nothing
             removed = Set(Liveness.keysToRemove(all))
         } else {
-            store.sweepOrphans()
+            // sweepOrphans stats+re-decodes every file; only the 15s tick
+            // needs it, not every hook-driven reload.
+            if sweep { store.sweepOrphans() }
             for key in Liveness.keysToRemove(all) {
                 if let fresh = store.load(key: key), Liveness.keysToRemove([fresh]).isEmpty {
                     continue
@@ -363,7 +383,7 @@ final class SessionsModel: ObservableObject {
             pendingFocus = nil
             focus()
         }
-        reload()
+        // no reload() here — acknowledge() above already did one
     }
 
     /// Acknowledge without focusing anything.
@@ -570,6 +590,11 @@ final class SessionsModel: ObservableObject {
     private var stableHashCache: (mtime: Date, size: Int, hash: String)?
     private var titleFetchGeneration = 0
     private var codexThreadGeneration = 0
+    private var reloadDebounce: Timer?
+    /// Cache of installer.isInstalled(provider:) keyed by the config file's
+    /// mtime+size — avoids a full JSON parse of settings.json/hooks.json on
+    /// every reload (dozens/minute under load).
+    private var hookInstallCache: [URL: (mtime: Date, size: Int, installed: Bool)] = [:]
     /// The openGeneration in which a transient footer message became visible,
     /// so it clears one open later rather than before it's ever shown.
     private var messageShownAtGen: Int?
@@ -595,14 +620,30 @@ final class SessionsModel: ObservableObject {
         }
         helperInstalled = helperOK
         let installer = HookInstaller(helperPath: Self.helperURL.path)
-        claudeHooksInstalled = installer.isInstalled(
-            provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
+        claudeHooksInstalled = cachedIsInstalled(
+            installer, provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
         )
-        codexHooksInstalled = installer.isInstalled(
-            provider: .codex, in: HookInstaller.defaultCodexHooksURL
+        codexHooksInstalled = cachedIsInstalled(
+            installer, provider: .codex, in: HookInstaller.defaultCodexHooksURL
         )
         iTermRunning = NSWorkspace.shared.runningApplications
             .contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+    }
+
+    /// isInstalled parses the whole config file; cache the result until the
+    /// file's mtime+size changes.
+    private func cachedIsInstalled(
+        _ installer: HookInstaller, provider: Provider, in url: URL
+    ) -> Bool {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? -1
+        if let c = hookInstallCache[url], c.mtime == mtime, c.size == size {
+            return c.installed
+        }
+        let installed = installer.isInstalled(provider: provider, in: url)
+        hookInstallCache[url] = (mtime, size, installed)
+        return installed
     }
 
     private func refreshTerminalTitles() {
@@ -652,7 +693,7 @@ final class SessionsModel: ObservableObject {
                 )
                 self.watchDirectory()
             }
-            self.reload()
+            self.scheduleReload()  // debounced: hook-write storms coalesce
         }
         source.setCancelHandler { close(fd) }
         source.resume()
