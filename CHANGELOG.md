@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.3.0
+
+Deep-review round (three evidence streams + an adversarial plan review).
+
+### Fixed
+
+- **Snapshots could be wrongly deleted or wrongly kept.** Liveness now uses
+  process identity — a live pid is trusted only if that process started at or
+  before the snapshot's last update — so a recycled pid is detected directly.
+  This replaces a `KERN_BOOTTIME` guard that drifts forward across sleep/NTP
+  and could delete a session started right after login (which, if waiting,
+  never came back).
+- **Registry reconciliation silently no-op'd** when Claude omitted
+  `statusUpdatedAt`, resurrecting the 13h-stale-`waiting` bug. It now falls
+  back to the registry file's mtime, using one value for both the comparison
+  and the corrected timestamp (so an unchanged entry can't re-arm an ack).
+- **`idle_prompt` no longer counts as waiting** — an idle agent isn't blocked
+  on you, and counting it inflated the badge.
+- Old snapshots with no `schemaVersion` decode instead of being swept as
+  corrupt. Concurrent `Stop`/`SessionEnd` for one session can no longer
+  resurrect a removed snapshot (per-key lock). A tab closing mid-enumeration
+  no longer aborts the whole title/focus fetch.
+- Focus-failure and status messages set during popover close are now actually
+  shown (they were cleared before first display).
+
+### Changed
+
+- **Notifications: at most one per session per hour**, even across separate
+  blocks (183 banners in 26 days, one session 20×, drove this). Two-phase so
+  an acknowledged session's suppressed alert no longer disarms the episode.
+- **Done sessions auto-acknowledge after 30 minutes** — they stay in the list
+  but leave the attention count and sink in the sort.
+- Empty-state messages are provider-specific and put filter-no-match first.
+- Reloads are debounced (250ms) and hook-install health is cached by file
+  mtime, cutting repeated full parses of settings.json/hooks.json under load.
+- The helper installs itself atomically, ignores `AGENTDECK_STATE_DIR` from
+  the inherited environment (only the app/tests honor it), and `status`
+  reports `helperPresent` (not an implied SHA match).
+
+### Added
+
+- Error rows show the failure kind (rate limit, billing, server); row
+  tooltips show model / effort / tokens.
+- Compatibility verified against Claude Code 2.1.266 and Codex CLI 0.147.0.
+
 ## 0.2.0
 
 ### Fixed

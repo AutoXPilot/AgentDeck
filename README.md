@@ -43,7 +43,9 @@ asserting prompt text is never persisted.
 
 Uninstall: quit the app, remove the hook entries mentioning `agentdeck-hook`
 from the two config files (or restore the newest `.agentdeck-*.bak`), then
-delete `~/Library/Application Support/AgentDeck/` and the app.
+delete `~/Library/Application Support/AgentDeck/` and the app. To also clear
+saved preferences (acknowledgments, `waitAlertMinutes`):
+`defaults delete com.tonyhoang.agentdeck`.
 
 ## Install (Homebrew)
 
@@ -84,17 +86,16 @@ claude / codex lifecycle hooks
 ```
 
 State mapping — Claude: SessionStart→ready, UserPromptSubmit→working,
-PermissionRequest/Notification(permission·idle·elicitation_dialog·
+PermissionRequest/Notification(permission·elicitation_dialog·
 agent_needs_input)→waiting, Stop→done, StopFailure→error, SessionEnd→remove.
-`agent_completed` is deliberately ignored: a background task finishing must
-not flip the main session's state — Stop owns "done".
+`idle_prompt` and `agent_completed` are deliberately ignored: an idle agent
+isn't blocked on you (Claude's own registry calls it `idle`), and a
+background task finishing must not flip the main session — Stop owns "done".
 
 Codex registers SessionStart/UserPromptSubmit/PermissionRequest/Stop/
-SessionEnd (same `hooks.json` schema as Claude's settings). SessionStart,
-UserPromptSubmit, Stop, and SessionEnd verified firing live against
-codex-cli 0.145.0; PermissionRequest is accepted by the config but has not
-been observed firing. No StopFailure → no error state for Codex. A PID
-liveness sweep backstops removal for crashes.
+SessionEnd (same `hooks.json` schema as Claude's settings). All verified
+firing live against codex-cli 0.147.0. No StopFailure → no error state for
+Codex; the liveness sweep backstops removal for crashes.
 
 Sessions are removed when their agent exits (SessionEnd, or the sweep for
 crashed/closed terminals) — except on `/clear` and resume, where the process
@@ -112,11 +113,11 @@ session name and the reason a session is blocked. Codex rows read
 names, model, effort, token totals, branch and approval mode.
 
 Row titles come from the best available source, refreshed on popover open.
-Claude Code writes a descriptive terminal title, so its rows use the live
-iTerm tab title. Codex only ever sets `<folder> (codex)` as its title, but
-records names set via `/rename` in `~/.codex/session_index.jsonl` keyed by
-session id — so Codex rows read from that index (read-only) and fall back
-to the tab title, then the folder name.
+Claude rows prefer the session's own name from its registry (available even
+outside iTerm), then the live iTerm tab title, then the folder. Codex rows
+prefer the `/rename` name from `~/.codex/session_index.jsonl`, then the
+`state_5.sqlite` thread title, then the tab title, then the folder. Model,
+effort and token totals from the Codex store appear in the row tooltip.
 
 ## Hardening notes
 
@@ -125,9 +126,10 @@ to the tab title, then the folder name.
   leave hooks running an old helper. A stale helper shows as unhealthy in
   the footer (`hooks: ● helper ● claude ● codex` = setup health, not
   session activity).
-- Snapshots predating the last boot are dropped (pids are meaningless across
-  reboots); a pid owned by another user counts as dead (agents run as you —
-  that's a recycled pid); a 24h idle cap backstops same-user pid reuse.
+- A snapshot's pid is trusted only if a live process started at or before the
+  snapshot's last update — a recycled pid (which started later) is detected
+  directly, replacing a drift-prone boot-time guard. Live sessions get a
+  7-day idle backstop; pid-less snapshots a 24h one.
 - `session_id` is sanitized before becoming a filename; hook payloads can
   never write outside the sessions directory. Stale temp/corrupt files are
   swept. The sessions-dir watcher re-arms if the directory is recreated.
@@ -150,8 +152,9 @@ sessions need you.
 ## Notifications
 
 A session that stays blocked longer than `waitAlertMinutes` (default 5) posts
-a local notification, once per block. macOS will ask for permission the first
-time the app runs. To change or disable:
+a local notification. To avoid pestering, a given session notifies at most
+once per hour even across separate blocks. macOS will ask for permission the
+first time the app runs. To change or disable:
 
 ```sh
 defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disable
@@ -162,8 +165,8 @@ defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disa
 | Component | Version |
 |---|---|
 | macOS | 14+ (developed on 26.x) |
-| Claude Code | 2.1.220 |
-| Codex CLI | 0.145.0 |
+| Claude Code | 2.1.266 |
+| Codex CLI | 0.147.0 |
 | iTerm2 | 3.6.11 |
 
 Other terminals: rows still appear and states are correct, but there's no
@@ -172,7 +175,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 67 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 143 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

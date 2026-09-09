@@ -63,7 +63,11 @@ public struct SnapshotStore: Sendable {
     }
 
     /// Keys come partly from hook payloads; they must never traverse out of
-    /// the sessions directory.
+    /// the sessions directory. When sanitization actually CHANGES the string,
+    /// a short stable hash of the original is appended so two distinct raw
+    /// ids that sanitize to the same text (e.g. "a/b" and "a-b") can't share
+    /// — and overwrite/remove — one file. Already-safe ids (real UUIDs) are
+    /// returned unchanged, preserving existing files and readability.
     public static func sanitizeKeyComponent(_ raw: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
         var s = String(String.UnicodeScalarView(
@@ -72,7 +76,21 @@ public struct SnapshotStore: Sendable {
         while s.contains("..") {
             s = s.replacingOccurrences(of: "..", with: "-.")
         }
+        if s != raw {
+            s += "-" + String(fnv1a(raw), radix: 16)
+        }
         return s
+    }
+
+    /// Stable (across processes) 32-bit FNV-1a — Swift's Hasher is seeded per
+    /// run, so it can't key a filename.
+    static func fnv1a(_ s: String) -> UInt32 {
+        var h: UInt32 = 2_166_136_261
+        for byte in s.utf8 {
+            h ^= UInt32(byte)
+            h = h &* 16_777_619
+        }
+        return h
     }
 
     public func url(forKey key: String) -> URL {

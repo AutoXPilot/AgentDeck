@@ -18,8 +18,10 @@ The README's "How it works" section is the architecture doc. Ground rules
 learned the hard way (each has a regression test — keep them passing):
 
 - Hook commands must be quoted (paths contain "Application Support").
-- Never match agent processes by p_comm — the claude binary is named after
-  its version; use the executable path.
+- Match agent processes by executable path, not p_comm — the claude binary
+  is named after its version, so p_comm reads e.g. "2.1.266". A `node`/`bun`
+  name is accepted only as a fallback for wrapper-hosted installs, and only
+  above the starting process (never the hook's own shell).
 - Never string-search JSON for paths (JSONSerialization escapes `/`).
 - The helper must always exit 0 and never write to stdout in hook mode.
 - Inside `tell application` blocks, AppleScript constants like `tab` can be

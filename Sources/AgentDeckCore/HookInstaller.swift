@@ -177,9 +177,12 @@ public struct HookInstaller: Sendable {
         if fm.fileExists(atPath: url.path) {
             originalPermissions =
                 (try? fm.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber
-            let backup = URL(fileURLWithPath: url.path + ".agentdeck-\(timestamp()).bak")
-            try? fm.removeItem(at: backup)
-            try fm.copyItem(at: url, to: backup)
+            // UTC + a uniqueness suffix so two saves in the same second (or
+            // across a DST fall-back) can't produce the same name and clobber
+            // each other. Never pre-delete a collision target.
+            let stamp = "\(timestamp())-\(String(UInt32.random(in: 0..<0xFFFF), radix: 16))"
+            let backup = URL(fileURLWithPath: url.path + ".agentdeck-\(stamp).bak")
+            try? fm.copyItem(at: url, to: backup)
             pruneBackups(for: url)
         }
         let data = try JSONSerialization.data(
@@ -210,6 +213,9 @@ public struct HookInstaller: Sendable {
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
         f.locale = Locale(identifier: "en_US_POSIX")
+        // UTC: local wall-clock names sort wrong across a DST change and can
+        // repeat, which the lexicographic prune then mis-orders.
+        f.timeZone = TimeZone(identifier: "UTC")
         return f.string(from: date)
     }
 }

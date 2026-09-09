@@ -65,7 +65,10 @@ public enum Attention {
         return snapshots.sorted {
             let (ra, rb) = (rank($0), rank($1))
             if ra != rb { return ra < rb }
-            return $0.updatedAt > $1.updatedAt
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            // stable final tiebreak on key: Swift's sort isn't stable, so
+            // equal-rank equal-time rows would otherwise swap between opens
+            return $0.key < $1.key
         }
     }
 }

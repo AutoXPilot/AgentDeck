@@ -252,15 +252,10 @@ final class SessionsModel: ObservableObject {
             title(for: $0).lowercased().contains(query)
                 || $0.projectPath.lowercased().contains(query)
         }
-        // Belt and braces: a duplicate key reaching ForEach renders the same
-        // session in several rows, which is confusing and hard to diagnose.
-        let unique = RowOrdering.deduplicated(matching)
-        // In dev builds, fail loudly instead of hiding the evidence.
-        assert(
-            unique.count == matching.count,
-            "duplicate ForEach keys: \(Dictionary(grouping: matching, by: \.key).filter { $1.count > 1 }.keys)"
-        )
-        return unique
+        // `sessions` is already deduplicated by SessionPipeline and filtering
+        // can't introduce duplicates, so no dedupe/assert is needed here (the
+        // guard lives in the pipeline, which has tests for it).
+        return matching
     }
 
     func needsAttention(_ snapshot: SessionSnapshot) -> Bool {

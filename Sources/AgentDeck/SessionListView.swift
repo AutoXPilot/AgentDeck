@@ -175,9 +175,11 @@ struct SessionListView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("AgentDeck").font(.headline)
-            if !model.sessions.isEmpty {
-                let claude = model.sessions.filter { $0.provider == .claude }.count
-                Text("\(claude) CL · \(model.sessions.count - claude) CX")
+            if !rows.isEmpty {
+                // count what's actually shown, so the CL·CX summary matches
+                // the list while a filter is applied
+                let claude = rows.filter { $0.provider == .claude }.count
+                Text("\(claude) CL · \(rows.count - claude) CX")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -295,13 +297,17 @@ struct SessionListView: View {
     /// ⌘1–9 jump straight to a row.
     private var shortcutButtons: some View {
         ForEach(0..<min(rows.count, 9), id: \.self) { index in
-            Button("") { model.activate(rows[index]) }
-                .keyboardShortcut(
-                    KeyEquivalent(Character("\(index + 1)")), modifiers: .command
-                )
-                .opacity(0)
-                .frame(width: 0, height: 0)
-                .accessibilityHidden(true)
+            Button("") {
+                // rows can shrink between render and press (a filter keystroke,
+                // a live removal) — guard against an out-of-range index.
+                if rows.indices.contains(index) { model.activate(rows[index]) }
+            }
+            .keyboardShortcut(
+                KeyEquivalent(Character("\(index + 1)")), modifiers: .command
+            )
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         }
     }
 
