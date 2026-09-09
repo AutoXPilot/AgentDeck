@@ -123,19 +123,33 @@ final class SessionsModel: ObservableObject {
         // A focus queued by a click that raced a fast reopen must not fire
         // on some unrelated close minutes later.
         pendingFocus = nil
-        // Transient footer messages shouldn't outlive the visit they
-        // belong to.
-        installMessage = nil
-        focusProblem = nil
+        // Clear a transient message only AFTER it has been visible for a full
+        // open. focusProblem/installMessage are often set during a CLOSE
+        // (the focus fires ~0.1s after popoverClosed), so eagerly clearing at
+        // open hid them entirely — the whole "failures are visible" feature.
+        if let gen = messageShownAtGen, openGeneration > gen {
+            installMessage = nil
+            focusProblem = nil
+            messageShownAtGen = nil
+        }
+        if installMessage != nil || focusProblem != nil {
+            messageShownAtGen = openGeneration  // this open displays it
+        }
         codexNames = CodexSessionIndex.load()
         reload()
         refreshTerminalTitles()
-        // sqlite3 spawn off the main thread — it was adding tens of ms of
-        // popover-open latency, unbounded if sqlite ever stalls
+        loadCodexThreadsAsync()
+    }
+
+    private func loadCodexThreadsAsync() {
+        // sqlite3 off the main thread; generation-guarded so a slow older read
+        // can't clobber a newer one, and an empty result clears stale rows.
+        codexThreadGeneration += 1
+        let gen = codexThreadGeneration
         Task.detached {
             let threads = CodexThreads.load()
             Task { @MainActor [weak self] in
-                guard let self, !threads.isEmpty else { return }
+                guard let self, gen == self.codexThreadGeneration else { return }
                 self.codexThreads = threads
                 self.onChange?()
             }
@@ -183,12 +197,30 @@ final class SessionsModel: ObservableObject {
             popoverVisible: popoverVisible,
             now: Date()
         )
+        // Auto-acknowledge done sessions finished > 30 min ago so the
+        // done-count reflects only fresh finishes. Persist once, like a
+        // manual ack, so it survives relaunch.
+        if !readOnly {
+            let expired = AutoAck.expiredDoneKeys(output.rows, acks: acks)
+            if !expired.isEmpty {
+                let now = Date()
+                for key in expired { acks[key] = now }
+                saveAcks()
+            }
+        }
+
         sessions = output.rows
         frozenOrder = popoverVisible ? output.frozenOrder : nil
         waitingReasons = output.waitingReasons
         alertCount = output.alertCount
         doneCount = output.doneCount
         mostUrgent = output.mostUrgent
+        // recompute the two acked-dependent counts after auto-ack so the
+        // header reflects it this cycle, not next
+        if !readOnly {
+            doneCount = Attention.doneCount(output.rows, acks: acks)
+            alertCount = Attention.alertCount(output.rows, acks: acks)
+        }
         escalateLongWaits(output.rows)
         refreshHealth()
         onChange?()
@@ -239,20 +271,41 @@ final class SessionsModel: ObservableObject {
             // check a recycled pid shows another session's name
             return name
         }
-        return snapshot.projectName
+        let folder = snapshot.projectName
+        if !folder.isEmpty { return folder }
+        // cwd-less snapshot (a Notification arriving before SessionStart): a
+        // short session id beats a blank, unidentifiable row.
+        return "session " + snapshot.sessionId.prefix(8)
     }
 
     func subtitle(for snapshot: SessionSnapshot) -> String {
         PathFormat.abbreviate(snapshot.projectPath)
     }
 
-    /// Extra badges: why it's waiting, unsupervised mode, model.
+    /// The row's secondary line: why it's waiting, or why it errored.
     func detail(for snapshot: SessionSnapshot) -> String? {
         // reasons arrive pre-humanized from the pipeline
         if snapshot.state == .waiting, let reason = waitingReasons[snapshot.key] {
             return reason
         }
+        if snapshot.state == .error, let kind = snapshot.errorKind {
+            return kind.replacingOccurrences(of: "_", with: " ")
+        }
         return nil
+    }
+
+    /// Model / effort / tokens for the row tooltip — data the hooks already
+    /// captured but nothing surfaced.
+    func metaSummary(for snapshot: SessionSnapshot) -> String? {
+        var parts: [String] = []
+        if let model = snapshot.model { parts.append(model) }
+        else if let t = codexThreads[snapshot.sessionId]?.model { parts.append(t) }
+        if let effort = snapshot.effort { parts.append("effort \(effort)") }
+        else if let e = codexThreads[snapshot.sessionId]?.effort { parts.append("effort \(e)") }
+        if let tokens = codexThreads[snapshot.sessionId]?.tokensUsed {
+            parts.append("\(tokens / 1000)k tokens")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     func isUnsupervised(_ snapshot: SessionSnapshot) -> Bool {
@@ -440,21 +493,24 @@ final class SessionsModel: ObservableObject {
         guard !readOnly else { return }
         let minutes = waitAlertMinutes
         guard minutes > 0 else { return }
-        let due = waitingTracker.update(
+        // Two-phase: get candidates, apply the ack gate, post, THEN commit only
+        // what was posted — so a suppressed post doesn't disarm the episode.
+        let candidates = waitingTracker.candidates(
             snapshots, threshold: TimeInterval(minutes * 60)
         )
-        guard !due.isEmpty else { return }
-        for key in due {
+        var posted: [String] = []
+        for key in candidates {
             guard let snapshot = snapshots.first(where: { $0.key == key }) else { continue }
-            // A dismissal is "I know, leave me alone" — respect it. The ack
-            // semantics already re-arm on any newer event.
+            // A dismissal is "I know, leave me alone" — respect it.
             guard needsAttention(snapshot) else { continue }
             let heading = "\(snapshot.provider.displayName) is waiting on you"
             var body = title(for: snapshot)
             if let reason = waitingReasons[key] { body += " — \(reason)" }
             post(title: heading, body: body, key: key)
+            posted.append(key)
             Self.appLog("notified: \(key) waiting > \(minutes)m")
         }
+        waitingTracker.commit(posted)
     }
 
     private func post(title heading: String, body: String, key: String) {
@@ -513,6 +569,10 @@ final class SessionsModel: ObservableObject {
     }()
     private var stableHashCache: (mtime: Date, size: Int, hash: String)?
     private var titleFetchGeneration = 0
+    private var codexThreadGeneration = 0
+    /// The openGeneration in which a transient footer message became visible,
+    /// so it clears one open later rather than before it's ever shown.
+    private var messageShownAtGen: Int?
 
     private func stableHelperHash() -> String? {
         let path = Self.helperURL.path
@@ -562,9 +622,10 @@ final class SessionsModel: ObservableObject {
                 Self.appLog("titles: fetched \(names.count) session titles")
             case .failure(let err):
                 Self.appLog("titles: fetch FAILED: \(err)")
-                return
+                return  // keep prior titles on failure
             }
-            guard !names.isEmpty else { return }
+            // A SUCCESSFUL empty fetch is authoritative — those sessions are
+            // gone — so apply it rather than leaving stale titles/lock icons.
             Task { @MainActor [weak self] in
                 guard let self, generation == self.titleFetchGeneration else { return }
                 self.terminalTitles = names

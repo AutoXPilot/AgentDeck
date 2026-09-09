@@ -70,18 +70,14 @@ public enum CodexThreads {
     /// callers keep whatever they had.
     public static func load(from url: URL = CodexThreads.defaultURL) -> [String: CodexThread] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [
-            "-readonly", "-separator", "\u{1}", url.path, query,
-        ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do { try process.run() } catch { return [:] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return [:] }
-        return parse(String(decoding: data, as: UTF8.self))
+        // Bounded + concurrently drained: a big threads table used to be able
+        // to fill the pipe and deadlock the drain-after-wait code.
+        let result = BoundedSubprocess.run(
+            "/usr/bin/sqlite3",
+            arguments: ["-readonly", "-separator", "\u{1}", url.path, query],
+            timeout: 5
+        )
+        guard result.status == 0, !result.timedOut else { return [:] }
+        return parse(String(decoding: result.output, as: UTF8.self))
     }
 }

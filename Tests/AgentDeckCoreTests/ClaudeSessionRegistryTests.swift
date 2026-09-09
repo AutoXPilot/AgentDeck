@@ -193,7 +193,7 @@ struct StateReconcilerTests {
                 "the new block must beat the old ack")
         // and WaitingTracker seeds from the real block time, not hook time
         var tracker = WaitingTracker()
-        let due = tracker.update([outcome.snapshot], now: now, threshold: 300)
+        let due = tracker.candidates([outcome.snapshot], now: now, threshold: 300)
         #expect(due.isEmpty, "a 2-minute-old block must not escalate at a 5m threshold")
     }
 

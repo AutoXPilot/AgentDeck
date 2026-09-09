@@ -15,22 +15,30 @@ public enum ITermFocus {
     /// unreliable (observed working, then silently no-oping minutes later —
     /// likely gated by app-to-app URL consent); AppleScript selection is
     /// deterministic. Requires the one-time Automation permission.
+    /// A tab closing mid-traversal throws "Invalid index (-1719)" and aborted
+    /// the whole enumeration (2 logged in production). Per-window/per-tab
+    /// `try` blocks skip the vanished element; the `tell` stays outside them
+    /// so an Automation-denied error still surfaces at the top level.
     public static let focusScript = """
     on run argv
         set targetId to item 1 of argv
         tell application "iTerm2"
             repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        if (id of s) is targetId then
-                            select s
-                            select t
-                            select w
-                            activate
-                            return "focused"
-                        end if
+                try
+                    repeat with t in tabs of w
+                        try
+                            repeat with s in sessions of t
+                                if (id of s) is targetId then
+                                    select s
+                                    select t
+                                    select w
+                                    activate
+                                    return "focused"
+                                end if
+                            end repeat
+                        end try
                     end repeat
-                end repeat
+                end try
             end repeat
         end tell
         return "not-found"
@@ -52,29 +60,17 @@ public enum ITermFocus {
     public static func runAppleScript(
         _ script: String, arguments: [String] = [], timeout: TimeInterval = 20
     ) -> ScriptOutcome {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-"] + arguments
-        let stdin = Pipe(), output = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = output
-        process.standardError = output
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        do { try process.run() } catch { return .failure(error.localizedDescription) }
-        try? stdin.fileHandleForWriting.write(contentsOf: Data(script.utf8))
-        try? stdin.fileHandleForWriting.close()
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            _ = exited.wait(timeout: .now() + 2)
+        let result = BoundedSubprocess.run(
+            "/usr/bin/osascript", arguments: ["-"] + arguments,
+            stdin: Data(script.utf8), timeout: timeout
+        )
+        if result.timedOut {
             return .failure("timed out after \(Int(timeout))s "
                 + "(Automation permission dialog unanswered?)")
         }
-        let data = (try? output.fileHandleForReading.readToEnd()) ?? Data()
-        let text = String(decoding: data, as: UTF8.self)
+        let text = String(decoding: result.output, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard process.terminationStatus == 0 else { return .failure(text) }
-        return .success(text)
+        return result.status == 0 ? .success(text) : .failure(text)
     }
 
     /// Returns "focused", "not-found", or "error: …" — callers can fall
@@ -99,11 +95,15 @@ public enum ITermFocus {
         set out to ""
         tell application "iTerm2"
             repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        set out to out & (id of s) & d & (name of s) & nl
+                try
+                    repeat with t in tabs of w
+                        try
+                            repeat with s in sessions of t
+                                set out to out & (id of s) & d & (name of s) & nl
+                            end repeat
+                        end try
                     end repeat
-                end repeat
+                end try
             end repeat
         end tell
         return out

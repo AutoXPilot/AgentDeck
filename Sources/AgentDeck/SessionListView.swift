@@ -63,6 +63,7 @@ struct SessionListView: View {
                         title: model.title(for: session),
                         subtitle: model.subtitle(for: session),
                         detail: model.detail(for: session),
+                        meta: model.metaSummary(for: session),
                         unsupervised: model.isUnsupervised(session),
                         focusable: model.canFocus(session),
                         needsAttention: model.needsAttention(session),
@@ -87,6 +88,7 @@ struct SessionListView: View {
                             title: model.title(for: session),
                             subtitle: model.subtitle(for: session),
                             detail: model.detail(for: session),
+                            meta: model.metaSummary(for: session),
                             unsupervised: model.isUnsupervised(session),
                             focusable: model.canFocus(session),
                             needsAttention: model.needsAttention(session),
@@ -129,28 +131,38 @@ struct SessionListView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 6) {
-            if !model.helperInstalled || !model.claudeHooksInstalled
-                || !model.codexHooksInstalled {
-                Text("Hooks aren't installed yet")
-                    .font(.callout)
+        let reason = EmptyState.determine(
+            helperInstalled: model.helperInstalled,
+            claudeHooksInstalled: model.claudeHooksInstalled,
+            codexHooksInstalled: model.codexHooksInstalled,
+            filter: model.filterText
+        )
+        return VStack(spacing: 6) {
+            switch reason {
+            case .noFilterMatch(let query):
+                Text("No sessions match “\(query)”")
+                    .font(.callout).foregroundStyle(.secondary)
+            case .coreHooksMissing:
+                Text("Hooks aren't installed yet").font(.callout)
                 Text("Click “Install hooks” below, then start a session.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-            } else if !model.filterText.isEmpty {
-                Text("No sessions match “\(model.filterText)”")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("No active agent sessions")
-                    .font(.callout)
+            case .codexHooksMissing:
+                Text("No active agent sessions").font(.callout)
+                Text(
+                    "Codex hooks aren't installed — Codex sessions won't "
+                    + "appear. Click “Install hooks” to add them."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            case .idle:
+                Text("No active agent sessions").font(.callout)
                 Text(
                     "Start `claude` or `codex` in iTerm2. Sessions started "
                     + "before hooks were installed appear after a restart."
                 )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -317,6 +329,7 @@ struct SessionRow: View {
     let title: String
     let subtitle: String
     let detail: String?
+    let meta: String?
     let unsupervised: Bool
     let focusable: Bool
     let needsAttention: Bool
@@ -376,12 +389,17 @@ struct SessionRow: View {
         }
         .buttonStyle(.plain)
         .opacity(focusable ? 1 : 0.75)
-        .help(focusable
-              ? "Click to focus this iTerm pane"
-              : "No iTerm pane recorded for this session — click just dismisses it")
+        .help(helpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint(focusable ? "Focuses this session's iTerm pane" : "Dismisses it")
+    }
+
+    private var helpText: String {
+        let base = focusable
+            ? "Click to focus this iTerm pane"
+            : "No iTerm pane recorded for this session — click just dismisses it"
+        return meta.map { "\(base)\n\($0)" } ?? base
     }
 
     private var accessibilityLabel: String {
