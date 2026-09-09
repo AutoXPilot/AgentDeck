@@ -1,5 +1,10 @@
 import AgentDeckCore
+import Darwin
 import Foundation
+
+// Writing a snapshot after osascript/pipe peers vanish must not kill the
+// helper with SIGPIPE — treat a broken pipe as a normal error.
+signal(SIGPIPE, SIG_IGN)
 
 // agentdeck-hook — invoked by Claude Code / Codex lifecycle hooks.
 //
@@ -17,9 +22,19 @@ let binDirectory = FileManager.default
 let stableHelperURL = binDirectory.appendingPathComponent("agentdeck-hook")
 
 func currentExecutableURL() -> URL {
-    URL(fileURLWithPath: CommandLine.arguments[0])
-        .resolvingSymlinksInPath()
-        .standardizedFileURL
+    let arg0 = CommandLine.arguments[0]
+    // Invoked by bare name from PATH, argv[0] has no slash and would resolve
+    // against CWD — find the real binary instead.
+    if !arg0.contains("/") {
+        let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
+        for dir in paths {
+            let candidate = "\(dir)/\(arg0)"
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return URL(fileURLWithPath: candidate).resolvingSymlinksInPath().standardizedFileURL
+            }
+        }
+    }
+    return URL(fileURLWithPath: arg0).resolvingSymlinksInPath().standardizedFileURL
 }
 
 func runHookMode(provider: Provider) {
@@ -41,7 +56,10 @@ func runHookMode(provider: Provider) {
         payloadData: data,
         environment: ProcessInfo.processInfo.environment,
         parentPid: getppid(),
-        store: SnapshotStore()
+        // productionDirectory, NOT the env-honoring default: the helper
+        // inherits the agent's environment and must never let a stray
+        // AGENTDECK_STATE_DIR redirect writes away from where the app reads.
+        store: SnapshotStore(directory: SnapshotStore.productionDirectory)
     )
     exit(0)
 }
@@ -52,13 +70,21 @@ func runInstall() {
         try fm.createDirectory(at: binDirectory, withIntermediateDirectories: true)
         let me = currentExecutableURL()
         if me != stableHelperURL {
-            if fm.fileExists(atPath: stableHelperURL.path) {
-                try fm.removeItem(at: stableHelperURL)
-            }
-            try fm.copyItem(at: me, to: stableHelperURL)
-            print("helper: installed at \(stableHelperURL.path)")
+            // Atomic replace (tmp + rename), the same mechanism HelperSync
+            // uses — remove-then-copy left a window where hooks execed an
+            // absent/half-copied file, and two installs could interleave.
+            let changed = try HelperSync.sync(bundled: me, stable: stableHelperURL)
+            print("helper: \(changed ? "installed" : "already current") "
+                + "at \(stableHelperURL.path)")
         } else {
             print("helper: already running from \(stableHelperURL.path)")
+        }
+        // A crash between an earlier copy and its rename can strand a
+        // .helper-*.tmp here; sweepOrphans only scans the sessions dir.
+        if let debris = try? fm.contentsOfDirectory(atPath: binDirectory.path) {
+            for name in debris where name.hasPrefix(".helper-") && name.hasSuffix(".tmp") {
+                try? fm.removeItem(at: binDirectory.appendingPathComponent(name))
+            }
         }
 
         let installer = HookInstaller(helperPath: stableHelperURL.path)
@@ -79,10 +105,13 @@ func runInstall() {
 
 func runStatus() {
     let installer = HookInstaller(helperPath: stableHelperURL.path)
-    let helperOK = FileManager.default.isExecutableFile(atPath: stableHelperURL.path)
+    let helperPresent = FileManager.default.isExecutableFile(atPath: stableHelperURL.path)
+    let store = SnapshotStore(directory: SnapshotStore.productionDirectory)
     let report: [String: Any] = [
         "version": AgentDeckVersion.current,
-        "helperInstalled": helperOK,
+        // "present" (on disk + executable), distinct from the app's stricter
+        // "matches the running build's SHA" — don't imply the latter here.
+        "helperPresent": helperPresent,
         "helperPath": stableHelperURL.path,
         "claudeHooks": installer.isInstalled(
             provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
@@ -90,15 +119,18 @@ func runStatus() {
         "codexHooks": installer.isInstalled(
             provider: .codex, in: HookInstaller.defaultCodexHooksURL
         ),
-        "sessionsDirectory": SnapshotStore.defaultDirectory.path,
-        "activeSessions": SnapshotStore().loadAll().count,
+        "sessionsDirectory": store.directory.path,
+        "activeSessions": store.loadAll().count,
         "bootedAt": Liveness.bootTime().map {
             SnapshotStore.isoFractional.string(from: $0)
         } ?? "unknown",
     ]
-    let data = try! JSONSerialization.data(
+    guard let data = try? JSONSerialization.data(
         withJSONObject: report, options: [.prettyPrinted, .sortedKeys]
-    )
+    ) else {
+        print("{\"version\":\"\(AgentDeckVersion.current)\",\"error\":\"status encode failed\"}")
+        return
+    }
     print(String(decoding: data, as: UTF8.self))
 }
 

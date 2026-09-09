@@ -19,32 +19,72 @@ public enum Liveness {
         return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec))
     }
 
+    /// How the sweep sees a pid. Injectable so the deletion logic is testable
+    /// without spawning real processes — the class of bug that kept escaping
+    /// lived in code that could only be exercised live.
+    public struct ProcessProbe: Sendable {
+        /// Process start time, or nil if the pid is dead/unreadable.
+        public var startTime: @Sendable (Int32) -> Date?
+        public init(startTime: @escaping @Sendable (Int32) -> Date?) {
+            self.startTime = startTime
+        }
+        public static let system = ProcessProbe { pid in
+            isAlive(pid: pid) ? ProcessTree.startTime(of: pid) : nil
+        }
+    }
+
+    /// A snapshot's pid is TRUSTWORTHY if a process is alive at that pid and
+    /// it started at or before the snapshot's last update (+slack). A
+    /// recycled pid fails the second test: the new process necessarily
+    /// started later than the snapshot that recorded the old one.
+    ///
+    /// This replaces the old boot-time guard for live pids. `KERN_BOOTTIME`
+    /// is wall-clock-derived and drifts forward across sleep-wake/NTP, so a
+    /// "snapshot older than boot ⇒ delete" test could wrongly delete a
+    /// session started seconds after login — and a waiting session, emitting
+    /// no further events, could never come back. Start-time identity has no
+    /// such failure mode. `slack` absorbs the gap between a process starting
+    /// and its first hook firing. A live pid whose start time can't be read
+    /// falls back to liveness alone.
+    static func pidIsTrustworthy(
+        _ pid: Int32, forUpdatedAt updatedAt: Date, slack: TimeInterval,
+        probe: ProcessProbe
+    ) -> Bool {
+        guard let started = probe.startTime(pid) else {
+            return isAlive(pid: pid)  // alive but unreadable start time
+        }
+        return started <= updatedAt.addingTimeInterval(slack)
+    }
+
     /// Sessions to drop:
-    /// - snapshots from before the last boot (their pids are meaningless)
-    /// - pid-bearing snapshots whose process is gone (crash, terminal close
-    ///   without SessionEnd)
-    /// - pid-less snapshots idle past `maxIdle`
-    /// - live-pid snapshots idle past `liveMaxIdle`
+    /// - pid-bearing snapshots whose pid is dead OR belongs to a *different*
+    ///   process now (reuse), OR idle past `liveMaxIdle`
+    /// - pid-less snapshots from before the last boot, or idle past `maxIdle`
     ///
     /// The two idle caps differ for a reason discovered in production: a
     /// session blocked on the user emits NO events while it waits, so a 24h
-    /// cap silently deleted live sessions that were waiting overnight — and
-    /// they could never come back, because nothing fires until the user
-    /// answers. Live pids therefore get a much longer backstop, which exists
-    /// only for same-user pid reuse (reboots are already covered by the boot
-    /// guard above, and that's the common reuse vector).
+    /// cap silently deleted live sessions waiting overnight — and they could
+    /// never come back. Live, identity-verified pids get a long backstop.
     public static func keysToRemove(
         _ snapshots: [SessionSnapshot],
         now: Date = Date(),
         maxIdle: TimeInterval = 24 * 3600,
         liveMaxIdle: TimeInterval = 7 * 24 * 3600,
-        bootedAt: Date? = Liveness.bootTime()
+        startSlack: TimeInterval = 120,
+        bootedAt: Date? = Liveness.bootTime(),
+        probe: ProcessProbe = .system
     ) -> [String] {
         snapshots.compactMap { s in
-            if let bootedAt, s.updatedAt < bootedAt { return s.key }
             if let pid = s.agentPid {
-                guard isAlive(pid: pid) else { return s.key }
+                guard pidIsTrustworthy(
+                    pid, forUpdatedAt: s.updatedAt, slack: startSlack, probe: probe
+                ) else { return s.key }
                 return now.timeIntervalSince(s.updatedAt) > liveMaxIdle ? s.key : nil
+            }
+            // no pid to identity-check: the boot guard is the only reuse
+            // defense left, with slack for the login-item race.
+            if let bootedAt, s.updatedAt < bootedAt.addingTimeInterval(-startSlack) {
+                return s.key
             }
             return now.timeIntervalSince(s.updatedAt) > maxIdle ? s.key : nil
         }

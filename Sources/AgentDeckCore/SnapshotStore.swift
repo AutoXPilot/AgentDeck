@@ -5,14 +5,23 @@ import Foundation
 public struct SnapshotStore: Sendable {
     public let directory: URL
 
+    /// The real location, ignoring any environment override. The helper MUST
+    /// use this: it inherits the agent's environment, so honoring
+    /// AGENTDECK_STATE_DIR there would let any env leak silently redirect
+    /// every snapshot write (deck empties, health dots stay green).
+    public static var productionDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AgentDeck/sessions", isDirectory: true)
+    }
+
+    /// App/test/harness entry point: honors AGENTDECK_STATE_DIR so the render
+    /// harness and golden tests can point at fixtures. The app sets its own
+    /// environment, so the override is trusted here — never in the helper.
     public static var defaultDirectory: URL {
-        // Env override so the render harness and golden tests can run
-        // against fixtures instead of live production state.
         if let override = ProcessInfo.processInfo.environment["AGENTDECK_STATE_DIR"] {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentDeck/sessions", isDirectory: true)
+        return productionDirectory
     }
 
     public init(directory: URL = SnapshotStore.defaultDirectory) {
@@ -75,7 +84,27 @@ public struct SnapshotStore: Sendable {
         let data = try Self.encoder().encode(snapshot)
         let tmp = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
         try data.write(to: tmp, options: [])
-        _ = try FileManager.default.replaceItemAt(url(forKey: snapshot.key), withItemAt: tmp)
+        do {
+            _ = try FileManager.default.replaceItemAt(url(forKey: snapshot.key), withItemAt: tmp)
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)  // don't strand debris
+            throw error
+        }
+    }
+
+    /// Serializes a session's load-merge-write/remove against concurrent hook
+    /// processes for the SAME key, so a `Stop` can't read-then-write a
+    /// snapshot back after a racing `SessionEnd` already removed it. flock is
+    /// advisory but every writer is this same code path, so it holds.
+    public func withKeyLock<T>(_ key: String, _ body: () throws -> T) rethrows -> T {
+        let safe = Self.sanitizeKeyComponent(key)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let lockURL = directory.appendingPathComponent(".\(safe).lock")
+        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return try body() }  // best-effort: proceed unlocked
+        flock(fd, LOCK_EX)
+        defer { flock(fd, LOCK_UN); close(fd) }
+        return try body()
     }
 
     public func load(key: String) -> SessionSnapshot? {
@@ -113,7 +142,10 @@ public struct SnapshotStore: Sendable {
             let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))
                 .flatMap(\.contentModificationDate) ?? now
             guard now.timeIntervalSince(mtime) > interval else { continue }
-            if url.lastPathComponent.hasSuffix(".tmp") {
+            // stale .tmp (killed mid-write) and .lock files (one per session
+            // key, otherwise never reclaimed) whose session is long idle
+            if url.lastPathComponent.hasSuffix(".tmp")
+                || url.lastPathComponent.hasSuffix(".lock") {
                 try? FileManager.default.removeItem(at: url)
             } else if url.pathExtension == "json" {
                 let decodable = (try? Data(contentsOf: url))

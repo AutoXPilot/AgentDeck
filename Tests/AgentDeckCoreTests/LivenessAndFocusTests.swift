@@ -31,71 +31,89 @@ struct LivenessAndFocusTests {
         #expect(!Liveness.isAlive(pid: -5))
     }
 
-    @Test func keysToRemove() throws {
-        let deadPid = try exitedProcessPid()
-        let now = Date()
-        let snaps = [
-            SessionSnapshot(provider: .claude, sessionId: "alive", projectPath: "/",
-                            state: .working, event: "x", agentPid: getpid()),
-            SessionSnapshot(provider: .claude, sessionId: "dead", projectPath: "/",
-                            state: .working, event: "x", agentPid: deadPid),
-            SessionSnapshot(provider: .codex, sessionId: "fresh-nopid", projectPath: "/",
-                            state: .done, event: "x", updatedAt: now),
-            SessionSnapshot(provider: .codex, sessionId: "stale-nopid", projectPath: "/",
-                            state: .done, event: "x",
-                            updatedAt: now.addingTimeInterval(-48 * 3600)),
-        ]
-        let removed = Set(Liveness.keysToRemove(snaps, now: now, bootedAt: nil))
-        #expect(removed == ["claude-dead", "codex-stale-nopid"])
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// A probe where each pid has an explicit start time (nil = dead).
+    func probe(_ starts: [Int32: Date]) -> Liveness.ProcessProbe {
+        Liveness.ProcessProbe { starts[$0] }
     }
 
-    @Test func snapshotsFromBeforeBootAreRemovedEvenWithLivePid() {
-        let now = Date()
-        let snap = SessionSnapshot(
-            provider: .claude, sessionId: "preboot", projectPath: "/",
-            state: .waiting, event: "x",
-            updatedAt: now.addingTimeInterval(-3600), agentPid: getpid()
+    func snap(_ id: String, pid: Int32?, updated: Date, state: SessionState = .working)
+        -> SessionSnapshot
+    {
+        SessionSnapshot(
+            provider: .claude, sessionId: id, projectPath: "/",
+            state: state, event: "x", updatedAt: updated, agentPid: pid
         )
-        // pid is alive (it's us) but the snapshot predates boot: pid recycled
-        let removed = Liveness.keysToRemove(
-            [snap], now: now, bootedAt: now.addingTimeInterval(-60)
-        )
-        #expect(removed == ["claude-preboot"])
-        // and kept when it postdates boot
+    }
+
+    @Test func keysToRemoveByIdentityAndIdle() {
+        let live = snap("alive", pid: 100, updated: now)               // started before update
+        let dead = snap("dead", pid: 200, updated: now)                // no start time
+        let freshNoPid = snap("fresh-nopid", pid: nil, updated: now)
+        let staleNoPid = snap("stale-nopid", pid: nil,
+                              updated: now.addingTimeInterval(-48 * 3600))
+        let starts: [Int32: Date] = [100: now.addingTimeInterval(-600)]
+        let removed = Set(Liveness.keysToRemove(
+            [live, dead, freshNoPid, staleNoPid],
+            now: now, bootedAt: nil, probe: probe(starts)
+        ))
+        #expect(removed == ["claude-dead", "claude-stale-nopid"])
+    }
+
+    @Test func recycledPidIsDetectedByStartTime() {
+        // the exact hazard the boot guard used to (imperfectly) cover: pid is
+        // ALIVE, but its process started AFTER the snapshot recorded it — so
+        // it's a different process that reused the number.
+        let s = snap("recycled", pid: 100, updated: now.addingTimeInterval(-3600),
+                     state: .waiting)
+        let reused = probe([100: now.addingTimeInterval(-60)])  // started 59 min later
+        #expect(Liveness.keysToRemove([s], now: now, bootedAt: nil, probe: reused)
+            == ["claude-recycled"])
+        // same pid, original process (started before the snapshot) survives
+        let original = probe([100: now.addingTimeInterval(-7200)])
+        #expect(Liveness.keysToRemove([s], now: now, bootedAt: nil, probe: original).isEmpty)
+    }
+
+    @Test func loginItemRaceSurvivesClockDrift() {
+        // Regression for the KERN_BOOTTIME false-delete: a session started
+        // right after login has updatedAt ≈ boot; a forward clock drift used
+        // to delete it. Identity (start time ≤ update) has no such failure.
+        let s = snap("login", pid: 100, updated: now, state: .waiting)
+        let startedAtLogin = probe([100: now.addingTimeInterval(-5)])  // 5s before first hook
+        // even with bootedAt drifted forward PAST the snapshot, the live,
+        // identity-verified pid keeps the session
         #expect(Liveness.keysToRemove(
-            [snap], now: now, bootedAt: now.addingTimeInterval(-7200)
+            [s], now: now, bootedAt: now.addingTimeInterval(30), probe: startedAtLogin
         ).isEmpty)
     }
 
     @Test func liveSessionSurvivesTheIdleCapThatKillsPidlessOnes() {
-        // Regression for a production bug: a session BLOCKED on the user
-        // emits no events at all, so the 24h idle cap deleted live sessions
-        // (5 of them, verified on a real machine) and they could never
-        // return. Live pids now get the long backstop instead.
-        let now = Date()
-        func snapshot(id: String, pid: Int32?, hoursOld: Double) -> SessionSnapshot {
-            SessionSnapshot(
-                provider: .claude, sessionId: id, projectPath: "/",
-                state: .waiting, event: "x",
-                updatedAt: now.addingTimeInterval(-hoursOld * 3600), agentPid: pid
-            )
-        }
-        let live = snapshot(id: "live", pid: getpid(), hoursOld: 30)
-        let pidless = snapshot(id: "pidless", pid: nil, hoursOld: 30)
-        let removed = Set(Liveness.keysToRemove([live, pidless], now: now, bootedAt: nil))
+        // A session BLOCKED on the user emits no events; it must not be
+        // deleted for going quiet. Its pid started long ago (before the
+        // 30h-old update), so identity holds.
+        let live = snap("live", pid: 100, updated: now.addingTimeInterval(-30 * 3600),
+                        state: .waiting)
+        let pidless = snap("pidless", pid: nil,
+                           updated: now.addingTimeInterval(-30 * 3600), state: .waiting)
+        let starts = probe([100: now.addingTimeInterval(-40 * 3600)])
+        let removed = Set(Liveness.keysToRemove(
+            [live, pidless], now: now, bootedAt: nil, probe: starts))
         #expect(removed == ["claude-pidless"], "a live waiting session must survive")
     }
 
     @Test func livePidsStillExpireAtTheLongBackstop() {
-        // same-user pid reuse is undetectable by probing, so the cap still
-        // exists — just far beyond any plausible wait
-        let now = Date()
-        let ancient = SessionSnapshot(
-            provider: .claude, sessionId: "ancient", projectPath: "/",
-            state: .done, event: "x",
-            updatedAt: now.addingTimeInterval(-8 * 24 * 3600), agentPid: getpid()
-        )
-        #expect(Liveness.keysToRemove([ancient], now: now, bootedAt: nil) == ["claude-ancient"])
+        let ancient = snap("ancient", pid: 100,
+                           updated: now.addingTimeInterval(-8 * 24 * 3600), state: .done)
+        let starts = probe([100: now.addingTimeInterval(-9 * 24 * 3600)])
+        #expect(Liveness.keysToRemove([ancient], now: now, bootedAt: nil, probe: starts)
+            == ["claude-ancient"])
+    }
+
+    @Test func systemProbeReadsRealStartTimes() {
+        // the real probe: our own process is alive with a start time in the past
+        #expect(Liveness.ProcessProbe.system.startTime(getpid()) != nil)
+        #expect(Liveness.ProcessProbe.system.startTime(0) == nil)
     }
 
     @Test func bootTimeIsSane() throws {

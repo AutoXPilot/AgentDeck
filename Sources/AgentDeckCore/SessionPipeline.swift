@@ -26,9 +26,7 @@ public enum SessionPipeline {
         var reasons: [String: String] = [:]
         let normalized: [SessionSnapshot] = snapshots.map { snapshot in
             let entry = snapshot.agentPid.flatMap { registry[$0] }
-            let outcome = StateReconciler.normalize(
-                snapshot: snapshot, entry: entry, now: now
-            )
+            let outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
             if let reason = outcome.waitingFor {
                 reasons[snapshot.key] = ITermFocus.humanizeReason(reason)
             }

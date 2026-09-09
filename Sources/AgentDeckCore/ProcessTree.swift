@@ -21,7 +21,23 @@ public enum ProcessTree {
         var buf = [CChar](repeating: 0, count: 4096)
         let n = proc_pidpath(pid, &buf, UInt32(buf.count))
         guard n > 0 else { return nil }
-        return String(cString: buf)
+        return String(decoding: buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    /// When the process at `pid` started. Combined with the pid, this is a
+    /// stable process IDENTITY: a recycled pid belongs to a process that
+    /// started later than the snapshot that recorded it, so comparing start
+    /// time against the snapshot detects reuse directly — no boot-time
+    /// guessing required.
+    public static func startTime(of pid: pid_t) -> Date? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_starttime
+        guard tv.tv_sec > 0 else { return nil }
+        return Date(timeIntervalSince1970:
+            TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
     }
 
     /// Hooks run under a shell the CLI spawned, so getppid() is usually
@@ -33,15 +49,23 @@ public enum ProcessTree {
         provider: Provider, startingAt pid: pid_t
     ) -> pid_t? {
         var current = pid
-        for _ in 0..<12 {
+        for remaining in stride(from: 12, to: 0, by: -1) {
             guard let (name, ppid) = nameAndParent(of: current) else { return nil }
             let lowerName = name.lowercased()
             let lowerPath = executablePath(of: current)?.lowercased() ?? ""
+            // Match on the executable PATH first (the project's stated rule —
+            // p_comm is the version number for claude). The node/bun name
+            // fallback stays for wrapper-hosted installs where the agent runs
+            // via a JS launcher, but only ABOVE the starting process: the
+            // start pid is the hook's own short-lived shell, and matching it
+            // as "node" would record a pid the liveness sweep deletes at once.
+            let depth = 12 - remaining
             let matches: Bool
             switch provider {
             case .claude:
-                matches = lowerName.contains("claude") || lowerPath.contains("claude")
-                    || lowerName == "node" || lowerName == "bun"
+                let pathMatch = lowerName.contains("claude") || lowerPath.contains("claude")
+                let wrapperMatch = depth > 0 && (lowerName == "node" || lowerName == "bun")
+                matches = pathMatch || wrapperMatch
             case .codex:
                 matches = lowerName.contains("codex") || lowerPath.contains("codex")
             }

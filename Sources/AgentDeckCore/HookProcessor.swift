@@ -56,40 +56,47 @@ public enum HookProcessor {
         )
         let key = "\(provider.rawValue)-\(sessionId)"
 
-        switch action {
-        case .ignore:
-            break
-        case .remove:
-            store.remove(key: key)
-        case .set(let state):
-            let existing = store.load(key: key)
-            // Stop only ever updates: creating on Stop would resurrect a
-            // session that a concurrent SessionEnd hook just removed
-            if event == "Stop" && existing == nil { return .ignore }
-            let terminal = environment["ITERM_SESSION_ID"] ?? existing?.terminalSessionId
-            let cwd = (payload["cwd"] as? String) ?? existing?.projectPath ?? ""
-            let pid = parentPid.flatMap {
-                ProcessTree.findAgentAncestor(provider: provider, startingAt: $0)
-            } ?? existing?.agentPid
-            let snapshot = SessionSnapshot(
-                provider: provider,
-                sessionId: sessionId,
-                projectPath: cwd,
-                state: state,
-                event: event,
-                updatedAt: now,
-                terminalSessionId: terminal,
-                agentPid: pid,
-                // only meaningful while waiting; stale reasons would mislead
-                notificationType: state == .waiting
-                    ? (meta.notificationType ?? existing?.notificationType) : nil,
-                permissionMode: meta.permissionMode ?? existing?.permissionMode,
-                model: meta.model ?? existing?.model,
-                effort: meta.effort ?? existing?.effort,
-                errorKind: state == .error ? meta.errorKind : nil
-            )
-            try? store.write(snapshot)
+        // Serialize the whole load-merge-write/remove for this key so a `Stop`
+        // and a racing `SessionEnd` for the same session can't resurrect a
+        // just-removed snapshot (load and delete were previously unordered).
+        return store.withKeyLock(key) {
+            switch action {
+            case .ignore:
+                break
+            case .remove:
+                store.remove(key: key)
+            case .set(let state):
+                let existing = store.load(key: key)
+                // Stop only ever updates: creating on Stop would resurrect a
+                // session that a concurrent SessionEnd hook just removed
+                if event == "Stop" && existing == nil { return .ignore }
+                let terminal = environment["ITERM_SESSION_ID"] ?? existing?.terminalSessionId
+                // cwd fallback chain ends at the short session id so a
+                // Notification-before-SessionStart can't render a blank row
+                let cwd = (payload["cwd"] as? String) ?? existing?.projectPath ?? ""
+                let pid = parentPid.flatMap {
+                    ProcessTree.findAgentAncestor(provider: provider, startingAt: $0)
+                } ?? existing?.agentPid
+                let snapshot = SessionSnapshot(
+                    provider: provider,
+                    sessionId: sessionId,
+                    projectPath: cwd,
+                    state: state,
+                    event: event,
+                    updatedAt: now,
+                    terminalSessionId: terminal,
+                    agentPid: pid,
+                    // only meaningful while waiting; stale reasons would mislead
+                    notificationType: state == .waiting
+                        ? (meta.notificationType ?? existing?.notificationType) : nil,
+                    permissionMode: meta.permissionMode ?? existing?.permissionMode,
+                    model: meta.model ?? existing?.model,
+                    effort: meta.effort ?? existing?.effort,
+                    errorKind: state == .error ? meta.errorKind : nil
+                )
+                try? store.write(snapshot)
+            }
+            return action
         }
-        return action
     }
 }

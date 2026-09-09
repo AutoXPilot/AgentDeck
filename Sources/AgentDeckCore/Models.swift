@@ -88,4 +88,32 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     public var isUnsupervised: Bool {
         permissionMode == "bypassPermissions" || permissionMode == "dontAsk"
     }
+
+    // A missing `schemaVersion` must not fail the decode: pre-schema-2 files
+    // would otherwise be skipped by loadAll and then deleted as "corrupt" by
+    // the orphan sweep. All schema-2 fields are already optional; only this
+    // one non-optional needs a default.
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, provider, sessionId, projectPath, state, event
+        case updatedAt, terminalSessionId, agentPid, notificationType
+        case permissionMode, model, effort, errorKind
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        provider = try c.decode(Provider.self, forKey: .provider)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        projectPath = try c.decode(String.self, forKey: .projectPath)
+        state = try c.decode(SessionState.self, forKey: .state)
+        event = try c.decode(String.self, forKey: .event)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        terminalSessionId = try c.decodeIfPresent(String.self, forKey: .terminalSessionId)
+        agentPid = try c.decodeIfPresent(Int32.self, forKey: .agentPid)
+        notificationType = try c.decodeIfPresent(String.self, forKey: .notificationType)
+        permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        errorKind = try c.decodeIfPresent(String.self, forKey: .errorKind)
+    }
 }

@@ -23,11 +23,15 @@ public enum ClaudeSessionRegistry {
         /// "interactive" | "bg" | "daemon" | "daemon-worker"
         public var kind: String?
         public var statusUpdatedAt: Date?
+        /// The registry file's mtime, filled in at load time. Fallback for
+        /// `observedAt` when a build omits `statusUpdatedAt` (some Claude
+        /// versions), so reconciliation never silently no-ops.
+        public var fileModifiedAt: Date?
 
         public init(
             pid: Int32, sessionId: String, status: String, waitingFor: String? = nil,
             name: String? = nil, nameSource: String? = nil, kind: String? = nil,
-            statusUpdatedAt: Date? = nil
+            statusUpdatedAt: Date? = nil, fileModifiedAt: Date? = nil
         ) {
             self.pid = pid
             self.sessionId = sessionId
@@ -37,9 +41,17 @@ public enum ClaudeSessionRegistry {
             self.nameSource = nameSource
             self.kind = kind
             self.statusUpdatedAt = statusUpdatedAt
+            self.fileModifiedAt = fileModifiedAt
         }
 
         public var isUserNamed: Bool { name != nil && nameSource != "derived" }
+
+        /// Best available time for "when the registry last observed this
+        /// session's status" — the field if present, else the file mtime.
+        /// Used as the single authority for both the newer-than comparison
+        /// and the corrected snapshot's timestamp, so an unchanged entry can
+        /// never keep re-arming (mtime is stable until the file is rewritten).
+        public var observedAt: Date? { statusUpdatedAt ?? fileModifiedAt }
     }
 
     public static var defaultDirectory: URL {
@@ -50,7 +62,7 @@ public enum ClaudeSessionRegistry {
             .appendingPathComponent(".claude/sessions", isDirectory: true)
     }
 
-    public static func parse(_ data: Data) -> Entry? {
+    public static func parse(_ data: Data, fileModifiedAt: Date? = nil) -> Entry? {
         guard let object = try? JSONSerialization.jsonObject(with: data),
               let dict = object as? [String: Any],
               let pid = (dict["pid"] as? NSNumber)?.int32Value,
@@ -66,7 +78,8 @@ public enum ClaudeSessionRegistry {
             name: dict["name"] as? String,
             nameSource: dict["nameSource"] as? String,
             kind: dict["kind"] as? String,
-            statusUpdatedAt: stamp.map { Date(timeIntervalSince1970: $0 / 1000) }
+            statusUpdatedAt: stamp.map { Date(timeIntervalSince1970: $0 / 1000) },
+            fileModifiedAt: fileModifiedAt
         )
     }
 
@@ -74,11 +87,14 @@ public enum ClaudeSessionRegistry {
         -> [Int32: Entry]
     {
         guard let files = try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return [:] }
         var entries: [Int32: Entry] = [:]
         for url in files where url.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: url), let entry = parse(data) else { continue }
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+            guard let entry = parse(data, fileModifiedAt: mtime) else { continue }
             entries[entry.pid] = entry
         }
         return entries
@@ -111,7 +127,11 @@ public enum StateReconciler {
         guard let entry, entry.sessionId == snapshot.sessionId else {
             return Result(state: snapshot.state, waitingFor: nil, correctedByRegistry: false)
         }
-        let registryIsNewer = (entry.statusUpdatedAt ?? .distantPast) > snapshot.updatedAt
+        // observedAt (statusUpdatedAt ?? file mtime) is the single authority.
+        // Using mtime as the fallback means a build that omits statusUpdatedAt
+        // still reconciles — and because mtime is stable until the file is
+        // actually rewritten, an unchanged entry can't keep re-arming an ack.
+        let registryIsNewer = (entry.observedAt ?? .distantPast) > snapshot.updatedAt
 
         // A prompt was answered and no hook told us.
         if snapshot.state == .waiting, !blockedState(entry.status), registryIsNewer {
@@ -142,8 +162,7 @@ public enum StateReconciler {
     /// let the registry hand back the stale `waiting` and silently undo the
     /// repair — which is exactly the bug this function exists to prevent.
     public static func normalize(
-        snapshot: SessionSnapshot, entry: ClaudeSessionRegistry.Entry?,
-        now: Date = Date()
+        snapshot: SessionSnapshot, entry: ClaudeSessionRegistry.Entry?
     ) -> (snapshot: SessionSnapshot, waitingFor: String?) {
         var adjusted = snapshot
         if adjusted.state == .waiting, let type = snapshot.notificationType,
@@ -165,20 +184,16 @@ public enum StateReconciler {
         // the gap.
         let reason = outcome.waitingFor
             ?? (adjusted.state == .waiting ? snapshot.notificationType : nil)
-        // A correction is an OBSERVATION and must carry its own time.
-        // Leaving the old hook timestamp in place made three consumers lie:
-        // acks judged the corrected state against the stale time (a
-        // registry-detected block on an acked session was permanently
-        // invisible), WaitingTracker seeded its clock hours in the past
-        // (instant escalation), and the row displayed the wrong age.
-        if outcome.correctedByRegistry {
-            if let observed = entry?.statusUpdatedAt, observed > adjusted.updatedAt {
-                adjusted.updatedAt = observed
-            } else if entry?.statusUpdatedAt == nil {
-                // no transition time available: "now" is still closer to the
-                // truth than the hours-old hook time
-                adjusted.updatedAt = now
-            }
+        // A correction is an OBSERVATION and must carry its own time, or
+        // three consumers lie: acks judge the corrected state against the
+        // stale hook time (a registry-detected block on an acked session
+        // stays invisible), WaitingTracker seeds its clock hours in the past
+        // (instant escalation), and the row shows the wrong age. Use the SAME
+        // observedAt the comparison used — a separate `now` would re-arm the
+        // ack on every reload even though nothing changed.
+        if outcome.correctedByRegistry, let observed = entry?.observedAt,
+           observed > adjusted.updatedAt {
+            adjusted.updatedAt = observed
         }
         return (adjusted, reason)
     }

@@ -73,17 +73,22 @@ final class HookProcessorTests {
     }
 
     @Test func traversalSessionIdCannotEscapeDirectory() throws {
+        // .json snapshots only — a per-key .lock dotfile also lives here now
+        func snapshots() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: dir.path)
+                .filter { $0.hasSuffix(".json") }
+        }
         let evil = "../../../../.claude/settings"
         _ = process(.claude, [
             "hook_event_name": "SessionStart", "session_id": evil, "cwd": "/tmp",
         ])
         // whatever was written must be inside the sessions dir
-        let written = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let written = try snapshots()
         #expect(written.count == 1)
         #expect(!written[0].contains(".."))
-        // and removal with the same evil id must not leave the dir either
+        // and removal with the same evil id must not leave a snapshot behind
         _ = process(.claude, ["hook_event_name": "SessionEnd", "session_id": evil])
-        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
+        #expect(try snapshots().isEmpty)
     }
 
     @Test func sessionEndRemovesSnapshot() {

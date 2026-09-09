@@ -197,6 +197,45 @@ struct StateReconcilerTests {
         #expect(due.isEmpty, "a 2-minute-old block must not escalate at a 5m threshold")
     }
 
+    @Test func fileModifiedTimeIsUsedWhenStatusUpdatedAtIsMissing() {
+        // Regression: a build that omits statusUpdatedAt made reconciliation
+        // a silent no-op (registryIsNewer could never be true), so the
+        // 13h-stale-waiting bug returned. observedAt falls back to file mtime.
+        let blockObserved = now.addingTimeInterval(-120)
+        var done = snapshot(.done, ageSeconds: 3600)
+        done.notificationType = nil
+        let noStamp = ClaudeSessionRegistry.Entry(
+            pid: 100, sessionId: "s1", status: "waiting",
+            waitingFor: "permission prompt",
+            statusUpdatedAt: nil, fileModifiedAt: blockObserved
+        )
+        let outcome = StateReconciler.normalize(snapshot: done, entry: noStamp)
+        #expect(outcome.snapshot.state == .waiting, "mtime fallback drives the correction")
+        #expect(outcome.snapshot.updatedAt == blockObserved)
+    }
+
+    @Test func unchangedEntryDoesNotRearmAnAcknowledgedRow() {
+        // The re-arm hazard astra caught: if the correction stamped `now`
+        // every reload, an unchanged registry entry would forever out-date
+        // any ack. mtime is stable until the file is rewritten, so a second
+        // reload with the SAME entry produces the SAME timestamp.
+        let mtime = now.addingTimeInterval(-120)
+        var done = snapshot(.done, ageSeconds: 3600)
+        done.notificationType = nil
+        let entry = ClaudeSessionRegistry.Entry(
+            pid: 100, sessionId: "s1", status: "waiting",
+            statusUpdatedAt: nil, fileModifiedAt: mtime
+        )
+        let first = StateReconciler.normalize(snapshot: done, entry: entry).snapshot
+        // user acks the corrected block
+        let ack = first.updatedAt.addingTimeInterval(1)
+        #expect(!Attention.needsAttention(first, ackedAt: ack))
+        // next reload: feed the corrected snapshot back through the SAME entry
+        let second = StateReconciler.normalize(snapshot: first, entry: entry).snapshot
+        #expect(second.updatedAt == first.updatedAt, "no re-arm from an unchanged entry")
+        #expect(!Attention.needsAttention(second, ackedAt: ack))
+    }
+
     @Test func uncorrectedSnapshotsKeepTheirTimestamp() {
         let snap = snapshot(.waiting, ageSeconds: 600)
         let agreeing = entry("waiting", waitingFor: "input needed", ageSeconds: 60)
