@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **GUI-hosted sessions are now first-class.** Agents launched by an app
+  rather than a terminal — e.g. a Codex session running inside ChatGPT.app —
+  have no iTerm pane, so clicking their row used to just say so. It now
+  brings the owning application to the front, and the tooltip says which
+  ("Click to bring ChatGPT to the front"). Terminal panes still win when
+  present; the apology message is reserved for sessions with neither.
+
 ## 0.3.0
 
 Deep-review round (three evidence streams + an adversarial plan review).

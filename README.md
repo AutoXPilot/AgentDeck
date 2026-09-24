@@ -10,7 +10,9 @@ to that exact iTerm2 tab/pane.
   the glyph shows the most urgent state; finished sessions are a muted count
 - Optional notification when a session has been blocked too long
 - Row titles use each provider's own session name; click = acknowledge +
-  focus the pane. ↑/↓ + Return, ⌘1–9, filter field, right-click actions
+  jump to the session (its iTerm pane, or the app hosting it — a Codex
+  session inside ChatGPT.app brings ChatGPT forward). ↑/↓ + Return, ⌘1–9,
+  filter field, right-click actions
 - A marker on sessions running **unsupervised** (approvals off)
 - Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
 

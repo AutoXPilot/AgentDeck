@@ -309,6 +309,17 @@ final class SessionsModel: ObservableObject {
         return nil
     }
 
+    /// What clicking will do, in words — "Focus this iTerm pane" /
+    /// "Bring ChatGPT to the front" / an explanation when neither applies.
+    func focusDescription(for snapshot: SessionSnapshot) -> String {
+        switch focusTarget(for: snapshot) {
+        case .itermPane: return "Click to focus this iTerm pane"
+        case .application(_, let name): return "Click to bring \(name) to the front"
+        case .none:
+            return "No terminal pane or app recorded — click just dismisses it"
+        }
+    }
+
     /// Model / effort / tokens for the row tooltip — data the hooks already
     /// captured but nothing surfaced.
     func metaSummary(for snapshot: SessionSnapshot) -> String? {
@@ -332,8 +343,28 @@ final class SessionsModel: ObservableObject {
         return false
     }
 
+    /// Where clicking this row should take you: its iTerm pane, or the app
+    /// that hosts it (Codex inside ChatGPT.app has no pane but does have an
+    /// app), or nowhere.
+    func focusTarget(for snapshot: SessionSnapshot) -> FocusTarget {
+        FocusResolver.resolve(
+            terminalSessionId: snapshot.terminalSessionId,
+            owningAppBundlePath: owningAppBundle(for: snapshot)
+        )
+    }
+
+    /// Walking the process tree per row per render is wasteful; the answer
+    /// can't change for a given pid.
+    private func owningAppBundle(for snapshot: SessionSnapshot) -> String? {
+        guard let pid = snapshot.agentPid else { return nil }
+        if let cached = owningAppCache[pid] { return cached }
+        let bundle = ProcessTree.owningApplicationBundle(of: pid)
+        owningAppCache[pid] = .some(bundle)
+        return bundle
+    }
+
     func canFocus(_ snapshot: SessionSnapshot) -> Bool {
-        ITermFocus.sessionGUID(from: snapshot.terminalSessionId) != nil
+        focusTarget(for: snapshot).isActionable
     }
 
     // MARK: - Actions
@@ -342,8 +373,31 @@ final class SessionsModel: ObservableObject {
     /// once the close has actually happened.
     func activate(_ snapshot: SessionSnapshot) {
         acknowledge(snapshot)
-        guard let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId) else {
-            focusProblem = "This session isn't in iTerm2, so there's no pane to focus."
+        let target = focusTarget(for: snapshot)
+        let guid: String
+        switch target {
+        case .itermPane(let paneGuid):
+            guid = paneGuid
+        case .application(let bundlePath, let name):
+            // Agent hosted by a GUI app (e.g. Codex inside ChatGPT.app):
+            // no pane to select, but bringing its app forward is the
+            // equivalent "take me there".
+            Self.appLog("activate key=\(snapshot.key) app=\(name)")
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(
+                at: URL(fileURLWithPath: bundlePath), configuration: config
+            ) { [weak self] _, error in
+                guard let error else { return }
+                Task { @MainActor in
+                    self?.focusProblem = "Couldn't bring \(name) forward: "
+                        + error.localizedDescription
+                }
+            }
+            if popoverVisible { onRequestClose?() }
+            return
+        case .none:
+            focusProblem = "This session isn't in a terminal or app we can focus."
             if popoverVisible { onRequestClose?() }
             return
         }
@@ -586,6 +640,8 @@ final class SessionsModel: ObservableObject {
     private var titleFetchGeneration = 0
     private var codexThreadGeneration = 0
     private var reloadDebounce: Timer?
+    /// pid → owning .app bundle (nil inner value = walked, none found).
+    private var owningAppCache: [Int32: String?] = [:]
     /// Cache of installer.isInstalled(provider:) keyed by the config file's
     /// mtime+size — avoids a full JSON parse of settings.json/hooks.json on
     /// every reload (dozens/minute under load).

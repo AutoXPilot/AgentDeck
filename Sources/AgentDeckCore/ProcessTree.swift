@@ -24,6 +24,31 @@ public enum ProcessTree {
         return String(decoding: buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
+    /// "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" → "/Applications/ChatGPT.app".
+    /// Pure so the parsing is testable without a GUI process.
+    public static func bundlePath(fromExecutablePath path: String) -> String? {
+        guard let marker = path.range(of: ".app/Contents/MacOS/") else { return nil }
+        return String(path[path.startIndex..<marker.lowerBound]) + ".app"
+    }
+
+    /// The nearest ancestor that is a GUI application bundle. Agents launched
+    /// by an app rather than a terminal (e.g. Codex inside ChatGPT.app) have
+    /// no terminal pane, but they do have an app worth bringing to the front.
+    public static func owningApplicationBundle(of pid: pid_t) -> String? {
+        var current = pid
+        for _ in 0..<12 {
+            if let path = executablePath(of: current),
+               let bundle = bundlePath(fromExecutablePath: path) {
+                return bundle
+            }
+            guard let (_, ppid) = nameAndParent(of: current), ppid > 1, ppid != current else {
+                return nil
+            }
+            current = ppid
+        }
+        return nil
+    }
+
     /// When the process at `pid` started. Combined with the pid, this is a
     /// stable process IDENTITY: a recycled pid belongs to a process that
     /// started later than the snapshot that recorded it, so comparing start

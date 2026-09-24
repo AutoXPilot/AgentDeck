@@ -66,6 +66,7 @@ struct SessionListView: View {
                         meta: model.metaSummary(for: session),
                         unsupervised: model.isUnsupervised(session),
                         focusable: model.canFocus(session),
+                        focusDescription: model.focusDescription(for: session),
                         needsAttention: model.needsAttention(session),
                         selected: index == selection,
                         shortcutIndex: index < 9 ? index + 1 : nil
@@ -91,6 +92,7 @@ struct SessionListView: View {
                             meta: model.metaSummary(for: session),
                             unsupervised: model.isUnsupervised(session),
                             focusable: model.canFocus(session),
+                            focusDescription: model.focusDescription(for: session),
                             needsAttention: model.needsAttention(session),
                             selected: index == selection,
                             shortcutIndex: index < 9 ? index + 1 : nil
@@ -338,6 +340,8 @@ struct SessionRow: View {
     let meta: String?
     let unsupervised: Bool
     let focusable: Bool
+    /// What a click will do, in words — pane, app, or nothing.
+    let focusDescription: String
     let needsAttention: Bool
     let selected: Bool
     let shortcutIndex: Int?
@@ -398,14 +402,11 @@ struct SessionRow: View {
         .help(helpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint(focusable ? "Focuses this session's iTerm pane" : "Dismisses it")
+        .accessibilityHint(focusDescription)
     }
 
     private var helpText: String {
-        let base = focusable
-            ? "Click to focus this iTerm pane"
-            : "No iTerm pane recorded for this session — click just dismisses it"
-        return meta.map { "\(base)\n\($0)" } ?? base
+        meta.map { "\(focusDescription)\n\($0)" } ?? focusDescription
     }
 
     private var accessibilityLabel: String {
