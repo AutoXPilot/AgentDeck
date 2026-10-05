@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0
+
 ### Added
 
 - **Each row shows the model it's running** — "Opus 5.5", "Opus 5.5 1M",
