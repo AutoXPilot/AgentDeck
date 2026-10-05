@@ -24,6 +24,8 @@ final class SessionsModel: ObservableObject {
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
     @Published private(set) var codexThreads: [String: CodexThread] = [:]
+    /// Claude session id → model from its transcript's last assistant turn.
+    @Published private(set) var claudeModels: [String: String] = [:]
     /// Why a session is blocked, once we know: "permission prompt", …
     @Published private(set) var waitingReasons: [String: String] = [:]
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
@@ -143,6 +145,7 @@ final class SessionsModel: ObservableObject {
         reload()
         refreshTerminalTitles()
         loadCodexThreadsAsync()
+        loadClaudeModelsAsync()
     }
 
     private func loadCodexThreadsAsync() {
@@ -152,9 +155,50 @@ final class SessionsModel: ObservableObject {
         let gen = codexThreadGeneration
         Task.detached {
             let threads = CodexThreads.load()
+            let readAt = Date()
             Task { @MainActor [weak self] in
                 guard let self, gen == self.codexThreadGeneration else { return }
                 self.codexThreads = threads
+                self.codexThreadsLoadedAt = readAt
+                self.onChange?()
+            }
+        }
+    }
+
+    /// Reads each Claude session's transcript for the model of its last
+    /// assistant turn. Off the main thread, and transcripts whose mtime+size
+    /// haven't moved since the last read are not re-opened.
+    private func loadClaudeModelsAsync() {
+        claudeModelGeneration += 1
+        let gen = claudeModelGeneration
+        let wanted = sessions
+            .filter { $0.provider == .claude }
+            .map { (id: $0.sessionId, path: $0.projectPath) }
+        guard !wanted.isEmpty else { return }
+        let knownFingerprints = claudeModelFingerprints
+        let knownModels = claudeModels
+        Task.detached {
+            var models: [String: String] = [:]
+            var fingerprints: [String: String] = [:]
+            for session in wanted {
+                guard let url = ClaudeTranscript.url(
+                    sessionId: session.id, projectPath: session.path
+                ) else { continue }
+                let fingerprint = ClaudeTranscript.fingerprint(of: url)
+                if let fingerprint, fingerprint == knownFingerprints[session.id],
+                   let cached = knownModels[session.id] {
+                    models[session.id] = cached
+                    fingerprints[session.id] = fingerprint
+                    continue
+                }
+                guard let model = ClaudeTranscript.latestModel(at: url) else { continue }
+                models[session.id] = model
+                fingerprints[session.id] = fingerprint
+            }
+            Task { @MainActor [weak self] in
+                guard let self, gen == self.claudeModelGeneration else { return }
+                self.claudeModels = models
+                self.claudeModelFingerprints = fingerprints
                 self.onChange?()
             }
         }
@@ -320,26 +364,39 @@ final class SessionsModel: ObservableObject {
         }
     }
 
-    /// The model this session is using, in readable form ("Opus 5.5",
-    /// "Astra 6"). For Codex the sqlite thread row is preferred: it tracks
-    /// the CURRENT model, whereas the snapshot's copy is whatever was set
-    /// when the session started.
-    func modelLabel(for snapshot: SessionSnapshot) -> String? {
-        let raw: String?
-        if snapshot.provider == .codex {
-            raw = codexThreads[snapshot.sessionId]?.model ?? snapshot.model
-        } else {
-            raw = snapshot.model
+    /// The raw model identifier. Which source wins, and why, is decided in
+    /// `ModelSource` — it's the part worth testing.
+    func rawModel(for snapshot: SessionSnapshot) -> String? {
+        switch snapshot.provider {
+        case .claude:
+            return ModelSource.claude(
+                payload: snapshot.model,
+                transcript: claudeModels[snapshot.sessionId]
+            )
+        case .codex:
+            return ModelSource.codex(
+                payload: snapshot.model,
+                cached: codexThreads[snapshot.sessionId]?.model,
+                cacheReadAt: codexThreadsLoadedAt,
+                snapshotUpdatedAt: snapshot.updatedAt
+            )
         }
-        guard let raw, !raw.isEmpty else { return nil }
-        return ModelName.display(raw)
+    }
+
+    /// The model this session is using, in readable form ("Opus 5.5",
+    /// "Astra 6").
+    func modelLabel(for snapshot: SessionSnapshot) -> String? {
+        rawModel(for: snapshot).map(ModelName.display)
     }
 
     /// Model / effort / tokens for the row tooltip — the fuller picture
-    /// behind the compact label shown in the row.
+    /// behind the compact label shown in the row. The model appears here as
+    /// its RAW id: the row already shows the pretty name, and this is where
+    /// you go to tell two dated snapshots apart or to check what the
+    /// formatter was handed.
     func metaSummary(for snapshot: SessionSnapshot) -> String? {
         var parts: [String] = []
-        if let model = modelLabel(for: snapshot) { parts.append(model) }
+        if let model = rawModel(for: snapshot) { parts.append(model) }
         if let effort = snapshot.effort { parts.append("effort \(effort)") }
         else if let e = codexThreads[snapshot.sessionId]?.effort { parts.append("effort \(e)") }
         if let tokens = codexThreads[snapshot.sessionId]?.tokensUsed {
@@ -653,6 +710,12 @@ final class SessionsModel: ObservableObject {
     private var stableHashCache: (mtime: Date, size: Int, hash: String)?
     private var titleFetchGeneration = 0
     private var codexThreadGeneration = 0
+    /// When the Codex thread cache was read — see `ModelSource.codex`.
+    private var codexThreadsLoadedAt: Date?
+    private var claudeModelGeneration = 0
+    /// Claude session id → the transcript mtime+size the model came from, so
+    /// an unchanged (often multi-megabyte) transcript is never re-read.
+    private var claudeModelFingerprints: [String: String] = [:]
     private var reloadDebounce: Timer?
     /// pid → owning .app bundle (nil inner value = walked, none found).
     private var owningAppCache: [Int32: String?] = [:]

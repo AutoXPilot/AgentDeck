@@ -39,9 +39,15 @@ events. It writes **metadata-only** snapshots — provider, session id, working
 directory, state, timestamp, terminal pane id, agent pid — to
 `~/Library/Application Support/AgentDeck/sessions/`.
 
-**Privacy:** no prompts, no responses, no transcripts, no credentials are
-read or stored, and nothing leaves your machine. There is a test in the suite
-asserting prompt text is never persisted.
+**Privacy:** nothing leaves your machine, and no prompt, response or
+credential is ever stored. The helper writes metadata only — there is a test
+in the suite asserting prompt text is never persisted.
+
+The app itself reads two things it does not store: the tail of each Claude
+session transcript (`~/.claude/projects/…/<session>.jsonl`), from which it
+takes only the `model` field of the last assistant message, and Codex's
+`state_5.sqlite`, read-only. Conversation content is parsed past but never
+retained, logged, or displayed.
 
 Uninstall: quit the app, remove the hook entries mentioning `agentdeck-hook`
 from the two config files (or restore the newest `.agentdeck-*.bak`), then
@@ -121,10 +127,16 @@ prefer the `/rename` name from `~/.codex/session_index.jsonl`, then the
 `state_5.sqlite` thread title, then the tab title, then the folder.
 
 Each row shows the model it's running next to the path ("Opus 5.5",
-"Astra 6"); effort and token totals stay in the tooltip. Codex reads the
-live value from `state_5.sqlite`, so it tracks `/model` changes; Claude's
-comes from the last hook event that carried it, so switching mid-session
-can show the previous model until the next event.
+"Astra 6"); the raw identifier, effort and token totals are in the tooltip.
+
+No single source gets the model right. Claude's hook payload sometimes
+names a model the session isn't running (seen: `claude-fable-5-1` reported
+for a session whose transcript was 160/160 `claude-opus-5-5`), while the
+session transcript never records the `[1m]` long-context qualifier that
+the payload does. AgentDeck takes the model from the transcript's last
+assistant turn and the qualifier from the payload when the two agree on
+which model it is. Codex's `state_5.sqlite` is read when the popover
+opens, so a hook event arriving after that read wins over the cache.
 
 ## Hardening notes
 
@@ -182,7 +194,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 156 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 175 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

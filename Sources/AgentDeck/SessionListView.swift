@@ -374,9 +374,10 @@ struct SessionRow: View {
                         }
                     }
                     HStack(spacing: 4) {
+                        // The path is the least important thing on this line
+                        // and already truncates in the middle, so the model
+                        // and the reason-for-waiting outrank it for space.
                         if let modelName {
-                            // layoutPriority so a long path truncates around
-                            // the model name rather than squeezing it out
                             Text(modelName)
                                 .font(.caption2.weight(.medium))
                                 .foregroundStyle(.secondary)
@@ -397,6 +398,7 @@ struct SessionRow: View {
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                                 .lineLimit(1)
+                                .layoutPriority(1)
                         }
                     }
                 }

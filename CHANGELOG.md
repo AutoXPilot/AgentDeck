@@ -5,12 +5,22 @@
 ### Added
 
 - **Each row shows the model it's running** — "Opus 5.5", "Opus 5.5 1M",
-  "Fable 5.1", "Astra 6", "Sol 6.1" — instead of hiding it in the tooltip.
-  Names are derived by rule rather than from a lookup table, so a model
-  that ships tomorrow still renders sensibly. Codex rows read the live
-  value from `state_5.sqlite`; Claude rows use the model recorded by the
-  last hook event, so switching with `/model` mid-session can show the
-  previous model until the next event.
+  "Fable 5.1", "Astra 6", "Sol 6.1" — instead of hiding it in the tooltip,
+  which still carries the raw identifier. Names are derived by rule rather
+  than from a lookup table, so a model that ships tomorrow still renders
+  sensibly, and an id in a shape the rules don't cover is passed through
+  untouched rather than mangled.
+
+  Picking the model turned out to be the hard part, because each available
+  source is wrong in a different way. Measured across 23 live sessions:
+  Claude's hook payload and its transcript agreed 19 times; of the rest,
+  one payload reported `claude-fable-5-1` for a session whose transcript
+  was 160 of 160 `claude-opus-5-5` (confirmed wrong by the person running
+  it), and three payloads carried a `[1m]` long-context qualifier the
+  transcript never records. So the transcript names the model and the
+  payload contributes the qualifier when both agree on which model it is.
+  For Codex, `state_5.sqlite` is read when the popover opens, so a hook
+  event that lands after that read wins over the cache.
 - **GUI-hosted sessions are now first-class.** Agents launched by an app
   rather than a terminal — e.g. a Codex session running inside ChatGPT.app —
   have no iTerm pane, so clicking their row used to just say so. It now
