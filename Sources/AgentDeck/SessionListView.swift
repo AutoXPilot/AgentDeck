@@ -63,6 +63,7 @@ struct SessionListView: View {
                         title: model.title(for: session),
                         subtitle: model.subtitle(for: session),
                         detail: model.detail(for: session),
+                        modelName: model.modelLabel(for: session),
                         meta: model.metaSummary(for: session),
                         unsupervised: model.isUnsupervised(session),
                         focusable: model.canFocus(session),
@@ -89,6 +90,7 @@ struct SessionListView: View {
                             title: model.title(for: session),
                             subtitle: model.subtitle(for: session),
                             detail: model.detail(for: session),
+                            modelName: model.modelLabel(for: session),
                             meta: model.metaSummary(for: session),
                             unsupervised: model.isUnsupervised(session),
                             focusable: model.canFocus(session),
@@ -337,6 +339,8 @@ struct SessionRow: View {
     let title: String
     let subtitle: String
     let detail: String?
+    /// Readable model name ("Opus 5.5", "Astra 6"); nil when unknown.
+    let modelName: String?
     let meta: String?
     let unsupervised: Bool
     let focusable: Bool
@@ -370,6 +374,19 @@ struct SessionRow: View {
                         }
                     }
                     HStack(spacing: 4) {
+                        if let modelName {
+                            // layoutPriority so a long path truncates around
+                            // the model name rather than squeezing it out
+                            Text(modelName)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .layoutPriority(1)
+                        }
                         Text(subtitle)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -411,6 +428,7 @@ struct SessionRow: View {
 
     private var accessibilityLabel: String {
         var parts = [session.provider.displayName, title, session.state.rawValue]
+        if let modelName { parts.append(modelName) }
         if let detail { parts.append(detail) }
         if unsupervised { parts.append("unsupervised") }
         parts.append(TimeFormat.compactAge(of: session.updatedAt))

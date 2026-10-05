@@ -118,8 +118,13 @@ Row titles come from the best available source, refreshed on popover open.
 Claude rows prefer the session's own name from its registry (available even
 outside iTerm), then the live iTerm tab title, then the folder. Codex rows
 prefer the `/rename` name from `~/.codex/session_index.jsonl`, then the
-`state_5.sqlite` thread title, then the tab title, then the folder. Model,
-effort and token totals from the Codex store appear in the row tooltip.
+`state_5.sqlite` thread title, then the tab title, then the folder.
+
+Each row shows the model it's running next to the path ("Opus 5.5",
+"Astra 6"); effort and token totals stay in the tooltip. Codex reads the
+live value from `state_5.sqlite`, so it tracks `/model` changes; Claude's
+comes from the last hook event that carried it, so switching mid-session
+can show the previous model until the next event.
 
 ## Hardening notes
 
@@ -177,7 +182,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 143 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 156 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

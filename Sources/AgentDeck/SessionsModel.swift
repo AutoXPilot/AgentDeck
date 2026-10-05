@@ -320,12 +320,26 @@ final class SessionsModel: ObservableObject {
         }
     }
 
-    /// Model / effort / tokens for the row tooltip — data the hooks already
-    /// captured but nothing surfaced.
+    /// The model this session is using, in readable form ("Opus 5.5",
+    /// "Astra 6"). For Codex the sqlite thread row is preferred: it tracks
+    /// the CURRENT model, whereas the snapshot's copy is whatever was set
+    /// when the session started.
+    func modelLabel(for snapshot: SessionSnapshot) -> String? {
+        let raw: String?
+        if snapshot.provider == .codex {
+            raw = codexThreads[snapshot.sessionId]?.model ?? snapshot.model
+        } else {
+            raw = snapshot.model
+        }
+        guard let raw, !raw.isEmpty else { return nil }
+        return ModelName.display(raw)
+    }
+
+    /// Model / effort / tokens for the row tooltip — the fuller picture
+    /// behind the compact label shown in the row.
     func metaSummary(for snapshot: SessionSnapshot) -> String? {
         var parts: [String] = []
-        if let model = snapshot.model { parts.append(model) }
-        else if let t = codexThreads[snapshot.sessionId]?.model { parts.append(t) }
+        if let model = modelLabel(for: snapshot) { parts.append(model) }
         if let effort = snapshot.effort { parts.append("effort \(effort)") }
         else if let e = codexThreads[snapshot.sessionId]?.effort { parts.append("effort \(e)") }
         if let tokens = codexThreads[snapshot.sessionId]?.tokensUsed {

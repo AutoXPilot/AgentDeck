@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Each row shows the model it's running** — "Opus 5.5", "Opus 5.5 1M",
+  "Fable 5.1", "Astra 6", "Sol 6.1" — instead of hiding it in the tooltip.
+  Names are derived by rule rather than from a lookup table, so a model
+  that ships tomorrow still renders sensibly. Codex rows read the live
+  value from `state_5.sqlite`; Claude rows use the model recorded by the
+  last hook event, so switching with `/model` mid-session can show the
+  previous model until the next event.
 - **GUI-hosted sessions are now first-class.** Agents launched by an app
   rather than a terminal — e.g. a Codex session running inside ChatGPT.app —
   have no iTerm pane, so clicking their row used to just say so. It now
