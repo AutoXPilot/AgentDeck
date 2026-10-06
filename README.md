@@ -146,8 +146,15 @@ for a session whose transcript was 160/160 `claude-opus-5-5`), while the
 session transcript never records the `[1m]` long-context qualifier that
 the payload does. AgentDeck takes the model from the transcript's last
 assistant turn and the qualifier from the payload when the two agree on
-which model it is. Codex's `state_5.sqlite` is read when the popover
-opens, so a hook event arriving after that read wins over the cache.
+which model it is. Transcript-derived facts refresh while the popover is
+open, not only when it opens, so a mid-session `/model` switch shows up.
+
+Codex's `state_5.sqlite` is read when the popover opens, and a hook event
+that supplied a model *after* that read wins over the cache. The
+comparison uses when the model was last actually reported, not when the
+snapshot was last written — events that omit the model still touch the
+snapshot while carrying the old model forward, so the write time says
+nothing about how current the model is.
 
 ## Hardening notes
 
@@ -205,7 +212,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 178 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 184 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

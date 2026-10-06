@@ -84,14 +84,27 @@ public enum ClaudeTranscript {
         defer { try? handle.close() }
         guard let end = try? handle.seekToEnd() else { return nil }
         let start = end > UInt64(tailBytes) ? end - UInt64(tailBytes) : 0
-        guard (try? handle.seek(toOffset: start)) != nil,
-              let data = try? handle.readToEnd(), !data.isEmpty else { return nil }
+        // Read one byte before the window when there is one: whether the
+        // first entry is a fragment or a whole record is decided entirely
+        // by that byte, and guessing from the window's own first byte gets
+        // it wrong whenever the window happens to open on a record start.
+        let probe = start > 0 ? start - 1 : 0
+        guard (try? handle.seek(toOffset: probe)) != nil,
+              var data = try? handle.readToEnd(), !data.isEmpty else { return nil }
 
+        // The first record is whole if the window is preceded by a newline
+        // OR opens on one; it is a fragment only when neither holds.
+        var openedMidRecord = false
+        if start > 0 {
+            let newline = UInt8(ascii: "\n")
+            let previous = data.first
+            data = data.dropFirst()
+            openedMidRecord = previous != newline && data.first != newline
+        }
         var lines = data.split(
             separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true
         )
-        // starting mid-file leaves a truncated first line
-        if start > 0, !lines.isEmpty { lines.removeFirst() }
+        if openedMidRecord, !lines.isEmpty { lines.removeFirst() }
 
         let needle = Data("\"model\"".utf8)
         for line in lines.reversed() {
@@ -103,7 +116,13 @@ public enum ClaudeTranscript {
                     as? [String: Any] else { continue }
             // a subagent's model isn't the session's model
             if object["isSidechain"] as? Bool == true { continue }
-            guard let message = object["message"] as? [String: Any],
+            // Only an assistant turn reports what actually ran. Without
+            // this a `"type":"user"` record carrying a `model` key was
+            // accepted, which would mislabel both the model and — via
+            // sessionKind on the same record — the focus explanation.
+            guard object["type"] as? String == "assistant",
+                  let message = object["message"] as? [String: Any],
+                  message["role"] as? String == "assistant",
                   let model = message["model"] as? String else { continue }
             let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
             // "<synthetic>" marks a locally generated turn, not an inference

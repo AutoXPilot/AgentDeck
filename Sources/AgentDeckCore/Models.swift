@@ -40,6 +40,13 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     /// "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions"
     public var permissionMode: String?
     public var model: String?
+    /// When `model` was last *supplied by a payload* — not when the snapshot
+    /// was last touched. Events that omit the model still advance
+    /// `updatedAt` while carrying the old value forward, so `updatedAt`
+    /// says nothing about how current the model is, and using it to rank
+    /// sources let a stale model outrank a fresher one. Nil on snapshots
+    /// written before this field existed.
+    public var modelObservedAt: Date?
     /// Reasoning effort level, e.g. "high".
     public var effort: String?
     /// StopFailure classification: "rate_limit", "billing_error", …
@@ -58,6 +65,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         notificationType: String? = nil,
         permissionMode: String? = nil,
         model: String? = nil,
+        modelObservedAt: Date? = nil,
         effort: String? = nil,
         errorKind: String? = nil
     ) {
@@ -73,6 +81,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.notificationType = notificationType
         self.permissionMode = permissionMode
         self.model = model
+        self.modelObservedAt = modelObservedAt
         self.effort = effort
         self.errorKind = errorKind
     }

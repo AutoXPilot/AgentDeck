@@ -91,6 +91,10 @@ public enum HookProcessor {
                         ? (meta.notificationType ?? existing?.notificationType) : nil,
                     permissionMode: meta.permissionMode ?? existing?.permissionMode,
                     model: meta.model ?? existing?.model,
+                    // only a payload that actually carried a model refreshes
+                    // this; carrying the old value forward must not make it
+                    // look newly observed
+                    modelObservedAt: meta.model != nil ? now : existing?.modelObservedAt,
                     effort: meta.effort ?? existing?.effort,
                     errorKind: state == .error ? meta.errorKind : nil
                 )

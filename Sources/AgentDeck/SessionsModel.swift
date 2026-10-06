@@ -157,8 +157,13 @@ final class SessionsModel: ObservableObject {
         codexThreadGeneration += 1
         let gen = codexThreadGeneration
         Task.detached {
-            let threads = CodexThreads.load()
+            // Stamped BEFORE the read, not after. The database state we are
+            // about to observe is at least this old, and a hook that lands
+            // while sqlite3 is still running would otherwise be timestamped
+            // earlier than the cache that missed it — letting the older
+            // value win.
             let readAt = Date()
+            let threads = CodexThreads.load()
             Task { @MainActor [weak self] in
                 guard let self, gen == self.codexThreadGeneration else { return }
                 self.codexThreads = threads
@@ -177,7 +182,16 @@ final class SessionsModel: ObservableObject {
         let wanted = sessions
             .filter { $0.provider == .claude }
             .map { (id: $0.sessionId, path: $0.projectPath) }
-        guard !wanted.isEmpty else { return }
+        guard !wanted.isEmpty else {
+            // no Claude rows left: drop the caches rather than letting them
+            // outlive the sessions they describe
+            claudeModels = [:]
+            claudeSessionKinds = [:]
+            claudeModelFingerprints = [:]
+            claudeModelsAttempted = []
+            return
+        }
+        let attempted = Set(wanted.map(\.id))
         let knownFingerprints = claudeModelFingerprints
         let knownModels = claudeModels
         let knownKinds = claudeSessionKinds
@@ -189,7 +203,11 @@ final class SessionsModel: ObservableObject {
                 guard let url = ClaudeTranscript.url(
                     sessionId: session.id, projectPath: session.path
                 ) else { continue }
+                // the path is part of the identity: the same id can resolve
+                // to a different transcript, and two files can share a
+                // size and mtime
                 let fingerprint = ClaudeTranscript.fingerprint(of: url)
+                    .map { "\(url.path)|\($0)" }
                 if let fingerprint, fingerprint == knownFingerprints[session.id],
                    let cached = knownModels[session.id] {
                     models[session.id] = cached
@@ -207,6 +225,7 @@ final class SessionsModel: ObservableObject {
                 self.claudeModels = models
                 self.claudeSessionKinds = kinds
                 self.claudeModelFingerprints = fingerprints
+                self.claudeModelsAttempted = attempted
                 self.onChange?()
             }
         }
@@ -295,6 +314,18 @@ final class SessionsModel: ObservableObject {
         }
         escalateLongWaits(output.rows)
         refreshHealth()
+        // Transcript-derived facts (model, background-session kind) used to
+        // refresh only on popover open, so a /model switch or a newly
+        // arrived background row stayed wrong for as long as the popover
+        // stayed up. Refresh while it's visible, and whenever a Claude
+        // session appears that we know nothing about. Unchanged transcripts
+        // cost one stat each, not a read.
+        // keyed on *attempted*, not on a successful read: a session with no
+        // transcript would otherwise re-trigger a load on every reload
+        let unknown = output.rows.contains {
+            $0.provider == .claude && !claudeModelsAttempted.contains($0.sessionId)
+        }
+        if popoverVisible || unknown { loadClaudeModelsAsync() }
         onChange?()
     }
 
@@ -394,6 +425,7 @@ final class SessionsModel: ObservableObject {
         case .codex:
             return ModelSource.codex(
                 payload: snapshot.model,
+                payloadObservedAt: snapshot.modelObservedAt,
                 cached: codexThreads[snapshot.sessionId]?.model,
                 cacheReadAt: codexThreadsLoadedAt,
                 snapshotUpdatedAt: snapshot.updatedAt
@@ -737,6 +769,9 @@ final class SessionsModel: ObservableObject {
     /// Claude session id → the transcript mtime+size the model came from, so
     /// an unchanged (often multi-megabyte) transcript is never re-read.
     private var claudeModelFingerprints: [String: String] = [:]
+    /// Claude session ids a transcript read has been attempted for, whether
+    /// or not one was found.
+    private var claudeModelsAttempted: Set<String> = []
     private var reloadDebounce: Timer?
     /// pid → owning .app bundle (nil inner value = walked, none found).
     private var owningAppCache: [Int32: String?] = [:]

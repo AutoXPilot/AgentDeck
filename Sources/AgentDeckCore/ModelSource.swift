@@ -28,18 +28,28 @@ public enum ModelSource {
     }
 
     /// Codex's sqlite store is a genuine second source, but it's a cache
-    /// read when the popover opens. A hook event landing after that read is
-    /// the newer observation — the helper overwrites `model` on every event
-    /// that carries one — so the cache can't simply outrank the snapshot.
+    /// read when the popover opens, so it can't simply outrank the payload.
+    ///
+    /// The comparison is against when the *model* was observed, not when the
+    /// snapshot was last written. An event that omits the model still
+    /// advances `updatedAt` while carrying the old model forward, so ranking
+    /// on `updatedAt` let a stale model beat a fresher sqlite read for as
+    /// long as the session kept emitting events.
+    ///
+    /// `payloadObservedAt` is nil on snapshots predating that field; falling
+    /// back to `snapshotUpdatedAt` restores the old (worse) behaviour for
+    /// those rather than discarding them.
     public static func codex(
         payload: String?,
+        payloadObservedAt: Date? = nil,
         cached: String?,
         cacheReadAt: Date?,
         snapshotUpdatedAt: Date
     ) -> String? {
         guard let cached = normalized(cached) else { return normalized(payload) }
         guard let payload = normalized(payload) else { return cached }
-        return (cacheReadAt ?? .distantPast) >= snapshotUpdatedAt ? cached : payload
+        let observedAt = payloadObservedAt ?? snapshotUpdatedAt
+        return (cacheReadAt ?? .distantPast) >= observedAt ? cached : payload
     }
 
     private static func normalized(_ value: String?) -> String? {

@@ -129,18 +129,66 @@ struct ClaudeTranscriptTests {
     }
 
     @Test func aTruncatedFirstLineIsDiscardedNotMisparsed() throws {
-        // only the tail of a multi-megabyte transcript is read, so the first
-        // line in the window is usually cut in half
-        let filler = String(repeating: "x", count: 4_000)
+        // Only the tail of a multi-megabyte transcript is read, so the first
+        // entry in the window is usually cut in half. The fragment must be
+        // dropped rather than half-parsed — and it is a *valid-looking*
+        // assistant record here, so a test using invalid-JSON filler would
+        // pass even without the drop.
+        let head = assistant("claude-haiku-4-5") + String(repeating: " ", count: 4_000)
+        let root = try makeProjects([(
+            dir: "-p", session: "s",
+            lines: [head, assistant("claude-opus-5-5")]
+        )])
+        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)!
+        #expect(ClaudeTranscript.latestModel(at: url, tailBytes: 512) == "claude-opus-5-5")
+    }
+
+    @Test func entriesOlderThanTheWindowAreNotRead() throws {
+        // Proves the read is actually bounded: an implementation that
+        // scanned the whole file would still find the newest entry, so the
+        // fixture needs an older entry that a full scan would have to skip
+        // past — and a window too small to contain it.
+        let filler = String(repeating: "y", count: 4_000)
         let root = try makeProjects([(
             dir: "-p", session: "s",
             lines: [
+                assistant("claude-haiku-4-5"),
                 #"{"type":"user","message":{"role":"user","content":""# + filler + #""}}"#,
-                assistant("claude-opus-5-5"),
             ]
         )])
-        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)
-        #expect(ClaudeTranscript.latestModel(at: url!, tailBytes: 512) == "claude-opus-5-5")
+        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)!
+        #expect(ClaudeTranscript.latestModel(at: url, tailBytes: 256) == nil,
+                "the only assistant turn is outside the window")
+        #expect(ClaudeTranscript.latestModel(at: url) == "claude-haiku-4-5",
+                "and is found when the window covers it")
+    }
+
+    @Test func aWindowOpeningExactlyOnANewlineKeepsItsFirstLine() throws {
+        // The truncated-first-line rule assumed the window always opens
+        // mid-line. Land it on the newline instead and the first entry is
+        // whole — dropping it lost the only turn in the window.
+        let root = try makeProjects([(
+            dir: "-p", session: "s",
+            lines: [assistant("claude-opus-5"), assistant("claude-opus-5-5")]
+        )])
+        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)!
+        let oneLine = assistant("claude-opus-5-5").utf8.count
+        // the window opens on the newline terminating the first entry…
+        #expect(ClaudeTranscript.latestModel(at: url, tailBytes: oneLine + 1)
+                == "claude-opus-5-5")
+        // …and on the very first byte of the final entry, which is the case
+        // the first fix missed: the record is whole, not a fragment
+        #expect(ClaudeTranscript.latestModel(at: url, tailBytes: oneLine)
+                == "claude-opus-5-5")
+    }
+
+    @Test func aTurnLargerThanTheWindowReportsNothingRatherThanGuessing() throws {
+        let root = try makeProjects([(
+            dir: "-p", session: "s", lines: [assistant("claude-opus-5-5")]
+        )])
+        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)!
+        // no complete line fits — fall back to the payload, don't invent one
+        #expect(ClaudeTranscript.latestModel(at: url, tailBytes: 20) == nil)
     }
 
     @Test func noAssistantTurnInTheWindowReportsNothing() throws {
@@ -155,22 +203,52 @@ struct ClaudeTranscriptTests {
         ) == nil)
     }
 
-    @Test func readsSessionKindOffTheSameEntryAsTheModel() throws {
-        // a daemonized background session: no terminal, no window
-        let bg = try makeProjects([(
+    @Test func modelAndKindComeFromTheSameSelectedRecord() throws {
+        // Both fields must be read off the *chosen* entry. With one record
+        // per fixture this passes even if they're sourced independently —
+        // so the older entry disagrees on both.
+        let root = try makeProjects([(
             dir: "-p", session: "s",
-            lines: [assistant("claude-opus-5", kind: "bg")]
+            lines: [
+                assistant("claude-opus-5", kind: "bg"),
+                assistant("claude-fable-5-1"),
+            ]
         )])
-        let bgURL = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: bg)!
-        #expect(ClaudeTranscript.latest(at: bgURL)?.sessionKind == "bg")
-        #expect(ClaudeTranscript.latest(at: bgURL)?.model == "claude-opus-5")
+        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)!
+        let reading = ClaudeTranscript.latest(at: url)
+        #expect(reading?.model == "claude-fable-5-1")
+        #expect(reading?.sessionKind == nil, "kind must not leak from the older entry")
 
-        // an ordinary interactive session records no sessionKind at all
-        let plain = try makeProjects([(
-            dir: "-p", session: "t", lines: [assistant("claude-opus-5-5")]
+        let reversed = try makeProjects([(
+            dir: "-p", session: "s",
+            lines: [
+                assistant("claude-fable-5-1"),
+                assistant("claude-opus-5", kind: "bg"),
+            ]
         )])
-        let plainURL = ClaudeTranscript.url(sessionId: "t", projectPath: "", projectsDirectory: plain)!
-        #expect(ClaudeTranscript.latest(at: plainURL)?.sessionKind == nil)
+        let bgURL = ClaudeTranscript.url(
+            sessionId: "s", projectPath: "", projectsDirectory: reversed
+        )!
+        let bg = ClaudeTranscript.latest(at: bgURL)
+        #expect(bg?.model == "claude-opus-5")
+        #expect(bg?.sessionKind == "bg")
+    }
+
+    @Test func onlyAnAssistantTurnReportsTheModel() throws {
+        // A non-assistant record carrying a `model` key was accepted, which
+        // mislabelled the model and — via sessionKind on the same record —
+        // the focus explanation too.
+        let root = try makeProjects([(
+            dir: "-p", session: "s",
+            lines: [
+                assistant("claude-opus-5-5"),
+                #"{"type":"user","sessionKind":"bg","message":{"role":"user","model":"gpt-9-fake"}}"#,
+            ]
+        )])
+        let url = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: root)!
+        let reading = ClaudeTranscript.latest(at: url)
+        #expect(reading?.model == "claude-opus-5-5")
+        #expect(reading?.sessionKind == nil)
     }
 
     @Test func fingerprintChangesWhenTheTranscriptGrows() throws {
@@ -216,6 +294,46 @@ struct ModelSourceTests {
         // dangling separator
         #expect(ModelSource.claude(payload: "   ", transcript: nil) == nil)
         #expect(ModelSource.claude(payload: "  ", transcript: " x ") == "x")
+    }
+
+    @Test func anEventThatOmitsTheModelDoesNotRefreshItsAge() {
+        // The bug this field exists for: the session switched to astra,
+        // sqlite saw it, then a later hook arrived carrying no model. The
+        // helper advanced updatedAt while carrying the OLD model forward,
+        // so ranking on updatedAt let the stale value win — and keep
+        // winning for as long as the session kept emitting events.
+        let read = Date(timeIntervalSince1970: 1_000)
+        #expect(ModelSource.codex(
+            payload: "gpt-5.6-sol",
+            payloadObservedAt: read.addingTimeInterval(-60),   // observed BEFORE the read
+            cached: "gpt-6-astra",
+            cacheReadAt: read,
+            snapshotUpdatedAt: read.addingTimeInterval(600)    // but touched after
+        ) == "gpt-6-astra")
+
+        // and a payload that genuinely carried a newer model still wins
+        #expect(ModelSource.codex(
+            payload: "gpt-6-astra",
+            payloadObservedAt: read.addingTimeInterval(60),
+            cached: "gpt-5.6-sol",
+            cacheReadAt: read,
+            snapshotUpdatedAt: read.addingTimeInterval(60)
+        ) == "gpt-6-astra")
+    }
+
+    @Test func snapshotsPredatingTheObservedAtFieldStillResolve() {
+        let read = Date(timeIntervalSince1970: 1_000)
+        // nil observedAt falls back to updatedAt rather than dropping the row
+        #expect(ModelSource.codex(
+            payload: "gpt-5.6-sol", payloadObservedAt: nil,
+            cached: "gpt-6-astra", cacheReadAt: read,
+            snapshotUpdatedAt: read.addingTimeInterval(-60)
+        ) == "gpt-6-astra")
+        #expect(ModelSource.codex(
+            payload: "gpt-5.6-sol", payloadObservedAt: nil,
+            cached: "gpt-6-astra", cacheReadAt: read,
+            snapshotUpdatedAt: read.addingTimeInterval(60)
+        ) == "gpt-5.6-sol")
     }
 
     @Test func codexCacheLosesToASnapshotWrittenAfterItWasRead() {

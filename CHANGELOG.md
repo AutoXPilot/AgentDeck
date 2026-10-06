@@ -12,6 +12,25 @@
   answered: the agents panel of the session that spawned it. Detected via
   the `sessionKind` Claude records in the transcript, read off the same
   entry the model already comes from.
+- **A stale model could outrank a fresher one indefinitely.** Ranking the
+  hook payload against Codex's sqlite used the snapshot's write time, but
+  an event that omits the model still advances that while carrying the old
+  model forward — so once the two disagreed, the stale value kept winning
+  for as long as the session stayed active. Snapshots now record when the
+  model was actually *reported*, and the sqlite read is timestamped before
+  it runs rather than after, so a hook landing mid-read can't be ranked
+  older than the cache that missed it.
+- **Transcript facts refresh while the popover is open**, not only when it
+  opens — a `/model` switch, or a background session appearing, used to
+  stay wrong until the popover was reopened.
+- **Only an assistant turn can report the model.** A transcript record of
+  another type carrying a `model` key was accepted, which would have
+  mislabelled both the model and (via `sessionKind` on the same record)
+  the focus explanation. Verified against 48,694 real records.
+- **The oldest entry in the read window could be dropped.** The tail read
+  assumed it always began mid-record and discarded the first one; when the
+  window opened on a record boundary that threw away a real turn, and a
+  window holding only that turn came back empty.
 - The README described stale `waiting` as a Codex-only limitation. It
   applies to Claude background sessions too — they write no
   `~/.claude/sessions/<pid>.json`, so there's no registry entry to
