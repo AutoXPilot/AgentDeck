@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A blocked background session no longer reports a dead end.** A Claude
+  session started from a slash command runs as `claude --bg-pty-host`
+  reparented to launchd: no terminal pane, no window, nothing to focus.
+  Clicking it said so — accurately, and uselessly, while the session sat
+  on a permission prompt. Those rows now say where the prompt is actually
+  answered: the agents panel of the session that spawned it. Detected via
+  the `sessionKind` Claude records in the transcript, read off the same
+  entry the model already comes from.
+- The README described stale `waiting` as a Codex-only limitation. It
+  applies to Claude background sessions too — they write no
+  `~/.claude/sessions/<pid>.json`, so there's no registry entry to
+  reconcile against.
+
 ## 0.4.0
 
 ### Added

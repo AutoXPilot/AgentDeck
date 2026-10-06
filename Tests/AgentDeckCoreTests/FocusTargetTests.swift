@@ -32,6 +32,30 @@ struct FocusTargetTests {
             terminalSessionId: "w0t0p0:", owningAppBundlePath: nil) == .none)
     }
 
+    @Test func anUnfocusableBackgroundSessionSaysWhereToAnswerIt() {
+        // Observed live: a session blocked on a permission prompt, started
+        // via slash command as `claude --bg-pty-host` and reparented to
+        // launchd. Correct that it can't be focused; useless to stop there.
+        let message = FocusResolver.describe(.none, sessionKind: "bg")
+        #expect(message.contains("agents panel"))
+        #expect(!message.contains("No terminal pane or app recorded"))
+        #expect(FocusResolver.isBackground(sessionKind: "bg"))
+        #expect(FocusResolver.isBackground(sessionKind: "BG"))
+        #expect(!FocusResolver.isBackground(sessionKind: "interactive"))
+        #expect(!FocusResolver.isBackground(sessionKind: nil))
+    }
+
+    @Test func focusableRowsDescribeTheirDestination() {
+        #expect(FocusResolver.describe(.itermPane(guid: "G")).contains("iTerm pane"))
+        #expect(FocusResolver.describe(
+            .application(bundlePath: "/Applications/ChatGPT.app", name: "ChatGPT")
+        ) == "Click to bring ChatGPT to the front")
+        // a pane always wins, even for a background-kind session
+        #expect(FocusResolver.describe(.itermPane(guid: "G"), sessionKind: "bg")
+            .contains("iTerm pane"))
+        #expect(FocusResolver.describe(.none).contains("click just dismisses it"))
+    }
+
     @Test func appNameExtraction() {
         #expect(FocusResolver.appName(fromBundlePath: "/Applications/ChatGPT.app") == "ChatGPT")
         #expect(FocusResolver.appName(fromBundlePath: "/Users/x/Applications/AgentDeck.app")

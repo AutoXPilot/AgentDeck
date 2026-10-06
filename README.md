@@ -45,9 +45,9 @@ in the suite asserting prompt text is never persisted.
 
 The app itself reads two things it does not store: the tail of each Claude
 session transcript (`~/.claude/projects/…/<session>.jsonl`), from which it
-takes only the `model` field of the last assistant message, and Codex's
-`state_5.sqlite`, read-only. Conversation content is parsed past but never
-retained, logged, or displayed.
+takes only two fields off the last assistant message — `model` and
+`sessionKind` — and Codex's `state_5.sqlite`, read-only. Conversation
+content is parsed past but never retained, logged, or displayed.
 
 Uninstall: quit the app, remove the hook entries mentioning `agentdeck-hook`
 from the two config files (or restore the newest `.agentdeck-*.bak`), then
@@ -119,6 +119,17 @@ preferring whichever observation is newer. That registry also supplies the
 session name and the reason a session is blocked. Codex rows read
 `~/.codex/session_index.jsonl` and `~/.codex/state_5.sqlite` (read-only) for
 names, model, effort, token totals, branch and approval mode.
+
+Two kinds of session have no such second source, so their `waiting` clears
+only on the next hook event and can read stale in between: Codex sessions
+(no registry exists), and Claude **background** sessions — `claude
+--bg-pty-host`, started from a slash command and reparented to launchd,
+which write no `~/.claude/sessions/<pid>.json` entry at all. Background
+sessions also have no terminal pane and no window, so they can't be
+focused; their rows say where the prompt is actually answered (the agents
+panel of the session that spawned them) instead of just reporting the dead
+end. AgentDeck spots them by the `sessionKind` Claude records in the
+session transcript.
 
 Row titles come from the best available source, refreshed on popover open.
 Claude rows prefer the session's own name from its registry (available even
@@ -194,7 +205,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 175 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 178 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

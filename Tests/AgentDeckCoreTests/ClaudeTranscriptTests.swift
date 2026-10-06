@@ -23,12 +23,15 @@ struct ClaudeTranscriptTests {
         return root
     }
 
-    private func assistant(_ model: String, sidechain: Bool = false) -> String {
-        let object: [String: Any] = [
+    private func assistant(
+        _ model: String, sidechain: Bool = false, kind: String? = nil
+    ) -> String {
+        var object: [String: Any] = [
             "type": "assistant",
             "isSidechain": sidechain,
             "message": ["model": model, "role": "assistant"],
         ]
+        if let kind { object["sessionKind"] = kind }
         let data = try! JSONSerialization.data(withJSONObject: object)
         return String(decoding: data, as: UTF8.self)
     }
@@ -150,6 +153,24 @@ struct ClaudeTranscriptTests {
         #expect(ClaudeTranscript.latestModel(
             at: URL(fileURLWithPath: "/nonexistent/x.jsonl")
         ) == nil)
+    }
+
+    @Test func readsSessionKindOffTheSameEntryAsTheModel() throws {
+        // a daemonized background session: no terminal, no window
+        let bg = try makeProjects([(
+            dir: "-p", session: "s",
+            lines: [assistant("claude-opus-5", kind: "bg")]
+        )])
+        let bgURL = ClaudeTranscript.url(sessionId: "s", projectPath: "", projectsDirectory: bg)!
+        #expect(ClaudeTranscript.latest(at: bgURL)?.sessionKind == "bg")
+        #expect(ClaudeTranscript.latest(at: bgURL)?.model == "claude-opus-5")
+
+        // an ordinary interactive session records no sessionKind at all
+        let plain = try makeProjects([(
+            dir: "-p", session: "t", lines: [assistant("claude-opus-5-5")]
+        )])
+        let plainURL = ClaudeTranscript.url(sessionId: "t", projectPath: "", projectsDirectory: plain)!
+        #expect(ClaudeTranscript.latest(at: plainURL)?.sessionKind == nil)
     }
 
     @Test func fingerprintChangesWhenTheTranscriptGrows() throws {

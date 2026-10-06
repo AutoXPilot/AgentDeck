@@ -26,6 +26,9 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var codexThreads: [String: CodexThread] = [:]
     /// Claude session id → model from its transcript's last assistant turn.
     @Published private(set) var claudeModels: [String: String] = [:]
+    /// Claude session id → how it was launched ("bg" = daemonized
+    /// background session, which has no window to focus).
+    @Published private(set) var claudeSessionKinds: [String: String] = [:]
     /// Why a session is blocked, once we know: "permission prompt", …
     @Published private(set) var waitingReasons: [String: String] = [:]
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
@@ -177,8 +180,10 @@ final class SessionsModel: ObservableObject {
         guard !wanted.isEmpty else { return }
         let knownFingerprints = claudeModelFingerprints
         let knownModels = claudeModels
+        let knownKinds = claudeSessionKinds
         Task.detached {
             var models: [String: String] = [:]
+            var kinds: [String: String] = [:]
             var fingerprints: [String: String] = [:]
             for session in wanted {
                 guard let url = ClaudeTranscript.url(
@@ -188,16 +193,19 @@ final class SessionsModel: ObservableObject {
                 if let fingerprint, fingerprint == knownFingerprints[session.id],
                    let cached = knownModels[session.id] {
                     models[session.id] = cached
+                    kinds[session.id] = knownKinds[session.id]
                     fingerprints[session.id] = fingerprint
                     continue
                 }
-                guard let model = ClaudeTranscript.latestModel(at: url) else { continue }
-                models[session.id] = model
+                guard let reading = ClaudeTranscript.latest(at: url) else { continue }
+                models[session.id] = reading.model
+                kinds[session.id] = reading.sessionKind
                 fingerprints[session.id] = fingerprint
             }
             Task { @MainActor [weak self] in
                 guard let self, gen == self.claudeModelGeneration else { return }
                 self.claudeModels = models
+                self.claudeSessionKinds = kinds
                 self.claudeModelFingerprints = fingerprints
                 self.onChange?()
             }
@@ -356,12 +364,22 @@ final class SessionsModel: ObservableObject {
     /// What clicking will do, in words — "Focus this iTerm pane" /
     /// "Bring ChatGPT to the front" / an explanation when neither applies.
     func focusDescription(for snapshot: SessionSnapshot) -> String {
-        switch focusTarget(for: snapshot) {
-        case .itermPane: return "Click to focus this iTerm pane"
-        case .application(_, let name): return "Click to bring \(name) to the front"
-        case .none:
-            return "No terminal pane or app recorded — click just dismisses it"
-        }
+        FocusResolver.describe(
+            focusTarget(for: snapshot), sessionKind: sessionKind(for: snapshot)
+        )
+    }
+
+    /// How Claude launched this session ("bg" for a daemonized background
+    /// session). Read from the transcript, which is the only place that
+    /// records it — background sessions write no entry in
+    /// `~/.claude/sessions/`.
+    func sessionKind(for snapshot: SessionSnapshot) -> String? {
+        guard snapshot.provider == .claude else { return nil }
+        return claudeSessionKinds[snapshot.sessionId]
+    }
+
+    func isBackgroundSession(_ snapshot: SessionSnapshot) -> Bool {
+        FocusResolver.isBackground(sessionKind: sessionKind(for: snapshot))
     }
 
     /// The raw model identifier. Which source wins, and why, is decided in
@@ -468,7 +486,10 @@ final class SessionsModel: ObservableObject {
             if popoverVisible { onRequestClose?() }
             return
         case .none:
-            focusProblem = "This session isn't in a terminal or app we can focus."
+            focusProblem = isBackgroundSession(snapshot)
+                ? "Background session — it has no window. Answer it in the "
+                    + "agents panel of the session that started it."
+                : "This session isn't in a terminal or app we can focus."
             if popoverVisible { onRequestClose?() }
             return
         }

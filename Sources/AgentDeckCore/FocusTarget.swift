@@ -33,4 +33,33 @@ public enum FocusResolver {
         }
         return .none
     }
+
+    /// Claude's `sessionKind` for a daemonized background session —
+    /// `claude --bg-pty-host`, started from a slash command and reparented
+    /// to launchd.
+    public static let backgroundSessionKind = "bg"
+
+    public static func isBackground(sessionKind: String?) -> Bool {
+        sessionKind?.lowercased() == backgroundSessionKind
+    }
+
+    /// What a click will do, in words.
+    ///
+    /// An unfocusable row still has to be useful. "Not in a terminal or app
+    /// we can focus" is true of a background session but leaves you stuck
+    /// in front of a permission prompt with nowhere to go — the prompt is
+    /// answered in the agents panel of whichever session spawned it.
+    public static func describe(_ target: FocusTarget, sessionKind: String? = nil) -> String {
+        switch target {
+        case .itermPane:
+            return "Click to focus this iTerm pane"
+        case .application(_, let name):
+            return "Click to bring \(name) to the front"
+        case .none where isBackground(sessionKind: sessionKind):
+            return "Background session — no window to focus. "
+                + "Answer it in the agents panel of the session that started it."
+        case .none:
+            return "No terminal pane or app recorded — click just dismisses it"
+        }
+    }
 }

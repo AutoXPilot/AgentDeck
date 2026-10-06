@@ -54,12 +54,32 @@ public enum ClaudeTranscript {
         return "\(mtime)-\(size)"
     }
 
-    /// The model on the most recent main-thread assistant message.
+    public struct Reading: Sendable, Equatable {
+        public let model: String
+        /// Claude's own word for how the session was launched. "bg" is a
+        /// daemonized background session started from a slash command: it
+        /// has no terminal and no window, so there is nothing to focus.
+        /// Absent on ordinary interactive sessions.
+        public let sessionKind: String?
+
+        public init(model: String, sessionKind: String?) {
+            self.model = model
+            self.sessionKind = sessionKind
+        }
+    }
+
+    public static func latestModel(at url: URL, tailBytes: Int = 512 * 1024) -> String? {
+        latest(at: url, tailBytes: tailBytes)?.model
+    }
+
+    /// The most recent main-thread assistant message's model, and the kind
+    /// of session that produced it — both read off the same entry, so this
+    /// costs one backward scan rather than two.
     ///
     /// Transcripts reach megabytes, so only the tail is read and scanned
     /// backwards; a session whose last assistant turn predates that window
     /// reports nothing rather than dragging the whole file through JSON.
-    public static func latestModel(at url: URL, tailBytes: Int = 512 * 1024) -> String? {
+    public static func latest(at url: URL, tailBytes: Int = 512 * 1024) -> Reading? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let end = try? handle.seekToEnd() else { return nil }
@@ -88,7 +108,10 @@ public enum ClaudeTranscript {
             let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
             // "<synthetic>" marks a locally generated turn, not an inference
             guard !trimmed.isEmpty, !trimmed.hasPrefix("<") else { continue }
-            return trimmed
+            let kind = (object["sessionKind"] as? String)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+            return Reading(model: trimmed, sessionKind: kind)
         }
         return nil
     }
