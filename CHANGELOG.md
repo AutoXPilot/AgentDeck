@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.1
+
+Patch release for 0.4.0, whose row-model feature shipped with a
+provenance bug: once the two sources for a Codex model disagreed, the
+stale one kept winning. Found by an adversarial review of the 0.4.0 code,
+along with four more in the same area.
+
 ### Fixed
 
 - **A blocked background session no longer reports a dead end.** A Claude
