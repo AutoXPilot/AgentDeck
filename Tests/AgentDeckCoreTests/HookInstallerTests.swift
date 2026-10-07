@@ -30,6 +30,60 @@ final class HookInstallerTests {
         ]
     }
 
+    @Test func aConcurrentSaveIsDetectedInsteadOfOverwritten() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        try write(fixtureSettings(), to: url)
+        let basis = try Data(contentsOf: url)
+
+        // someone (Claude, an editor) saves between our read and our write
+        var theirs = fixtureSettings()
+        theirs["model"] = "claude-opus-5-5"
+        try write(theirs, to: url)
+
+        #expect(throws: InstallerError.self) {
+            try HookInstaller.backupAndWrite(["hooks": [:]], to: url, basis: basis)
+        }
+        // their save survived untouched
+        let after = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        #expect((after as? [String: Any])?["model"] as? String == "claude-opus-5-5")
+    }
+
+    /// Note: this pins the *committed* file's mode and the absence of
+    /// stranded staging files. The related fix — creating the temp 0600 so
+    /// a copy of a private config is never briefly world-readable — is not
+    /// directly observable from here, since the temp is gone by the time
+    /// the call returns. It passes with or without that change.
+    @Test func aPrivateConfigStaysPrivateAndLeavesNoCopies() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        try write(fixtureSettings(), to: url)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: url.path
+        )
+        let basis = try Data(contentsOf: url)
+        try HookInstaller.backupAndWrite(fixtureSettings(), to: url, basis: basis)
+
+        let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]
+                    as? NSNumber)?.intValue ?? 0
+        #expect(mode & 0o077 == 0, "config must stay private")
+        // and no copy of it is left lying around
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            .filter { $0.hasSuffix(".tmp") }
+        #expect(leftovers.isEmpty, "staging files must not be stranded")
+    }
+
+    @Test func aFailedEditLeavesNoBackupAndNoTempFile() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        try write(fixtureSettings(), to: url)
+        // a basis mismatch aborts before writing anything
+        #expect(throws: InstallerError.self) {
+            try HookInstaller.backupAndWrite(["hooks": [:]], to: url, basis: Data("stale".utf8))
+        }
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        #expect(!names.contains { $0.contains(".agentdeck-") && $0.hasSuffix(".bak") },
+                "a backup implies an edit that did not happen")
+        #expect(!names.contains { $0.hasSuffix(".tmp") })
+    }
+
     func write(_ obj: [String: Any], to url: URL) throws {
         try JSONSerialization.data(withJSONObject: obj).write(to: url)
     }

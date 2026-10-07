@@ -268,11 +268,19 @@ final class SessionsModel: ObservableObject {
             // needs it, not every hook-driven reload.
             if sweep { store.sweepOrphans() }
             for key in Liveness.keysToRemove(all) {
-                if let fresh = store.load(key: key), Liveness.keysToRemove([fresh]).isEmpty {
-                    continue
+                // Re-read and delete under the SAME lock the helper writes
+                // under. Unlocked, a helper could publish a fresh event in
+                // the gap between the re-read and the delete, and we would
+                // delete that fresh event — losing a live session's row.
+                let deleted = store.withKeyLock(key) { () -> Bool in
+                    if let fresh = store.load(key: key),
+                       Liveness.keysToRemove([fresh]).isEmpty {
+                        return false
+                    }
+                    store.remove(key: key)
+                    return true
                 }
-                store.remove(key: key)
-                removed.insert(key)
+                if deleted { removed.insert(key) }
             }
         }
         all.removeAll { removed.contains($0.key) }
@@ -354,9 +362,11 @@ final class SessionsModel: ObservableObject {
            entry.isUserNamed, let name = entry.name {
             return name
         }
-        if snapshot.provider == .codex {
-            if let name = codexNames[snapshot.sessionId], !name.isEmpty { return name }
-            if let title = codexThreads[snapshot.sessionId]?.displayTitle { return title }
+        if snapshot.provider == .codex,
+           let name = codexNames[snapshot.sessionId], !name.isEmpty {
+            // only `/rename` — the sqlite title is the first user message
+            // when a thread was never renamed, so it is never consulted
+            return name
         }
         if let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId),
            let name = terminalTitles[guid], !name.isEmpty {

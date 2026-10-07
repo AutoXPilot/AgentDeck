@@ -4,6 +4,39 @@
 
 ### Fixed
 
+- **Prompt text could appear in a row title and a notification.** Codex
+  fills `threads.title` with the user's first message unless the thread
+  was renamed, and nothing in its schema distinguishes the two. AgentDeck
+  displayed any such title under 60 characters, on the theory that short
+  text is a label — but length is not provenance, and "Help me research
+  this problem" is a prompt at 29 characters. The column is no longer
+  selected at all, so prompt text never enters the process; a Codex row is
+  named only by an explicit `/rename`. This contradicted the README's
+  metadata-only promise, which is now accurate and notes the old
+  behaviour.
+- **Editing your CLI config could lose a concurrent save, and could skip
+  its own backup.** The installer read the whole config, modified it in
+  memory and wrote it back with no check that it hadn't changed meanwhile,
+  so a save by Claude or an editor in that window was overwritten —
+  atomic replacement prevents a torn file, not a lost update. The backup
+  was taken with `try?`, so a failure to write it didn't stop the edit,
+  and old backups were pruned before the new write succeeded. Now: edits
+  abort if the file changed, a backup must succeed first, pruning happens
+  only after the edit commits, a failed edit strands neither a temp file
+  nor a misleading backup, concurrent AgentDeck installs are serialized by
+  a lock, and the staging file is created private so a copy of a `0600`
+  config is never briefly world-readable.
+- **A session's lock could be deleted while held.** Neither `open()` nor
+  `flock()` updates mtime, so a long-lived session's lock file aged past
+  the one-hour sweep and got unlinked underneath its holder; the next
+  helper then created the same path, got a different inode, and locked
+  that — two writers each believing they were serialized. Acquiring a lock
+  now refreshes it, and the sweep only reclaims locks it can prove are
+  unheld.
+- **The app could delete a snapshot a helper had just written.** Its
+  re-read-then-delete ran outside the lock the helper writes under, so an
+  event arriving in that gap was discarded — losing a live session's row.
+  Both steps now happen under that lock.
 - **`--version` did nothing.** The README documented it, but the app
   binary never handled it: the flag fell through to "run the app". So did
   every unrecognised `--flag`, which meant a typo silently started a

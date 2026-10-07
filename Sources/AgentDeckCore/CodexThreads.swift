@@ -3,28 +3,28 @@ import Foundation
 /// Codex keeps per-thread metadata in a SQLite DB, keyed by the same thread
 /// id its hooks report: model, reasoning effort, cumulative tokens, git
 /// branch, sandbox policy and approval mode. Read strictly read-only.
+/// The `threads.title` column is deliberately **not** read.
+///
+/// Codex fills it with the first user message whenever a thread was never
+/// renamed, and nothing in the schema distinguishes the two cases. This
+/// code used to read it and show anything under 60 characters, on the
+/// theory that short text is a label — but length is not provenance, and
+/// "Help me research this problem" is a prompt at 29 characters. It was
+/// reaching row titles and notification bodies, against a README promising
+/// metadata only.
+///
+/// A renamed thread's name comes from `CodexSessionIndex` instead, where
+/// `thread_name` exists only because someone typed `/rename`. Not reading
+/// the column makes "conversation content is never retained" true by
+/// construction rather than by a filter someone has to keep correct.
 public struct CodexThread: Equatable, Sendable {
     public var id: String
-    public var title: String?
     public var model: String?
     public var effort: String?
     public var tokensUsed: Int?
     public var gitBranch: String?
     public var approvalMode: String?
     public var sandboxPolicy: String?
-
-    /// Codex auto-generates `title` from the first user message when the
-    /// thread was never renamed, so it can be an entire prompt. Anything
-    /// this long is content, not a label — don't display it.
-    public static let maxSensibleTitleLength = 60
-
-    public var displayTitle: String? {
-        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty, title.count <= Self.maxSensibleTitleLength,
-              !title.contains("\n")
-        else { return nil }
-        return title
-    }
 
     /// Codex acting without asking: no sandbox and approvals off.
     public var isUnsupervised: Bool {
@@ -39,8 +39,10 @@ public enum CodexThreads {
             .appendingPathComponent(".codex/state_5.sqlite")
     }
 
+    /// `title` is not selected — see the note on `CodexThread`. Keeping it
+    /// out of the query means prompt text never enters this process.
     static let query = """
-        select id, title, model, reasoning_effort, tokens_used, git_branch, \
+        select id, model, reasoning_effort, tokens_used, git_branch, \
         approval_mode, sandbox_policy from threads
         """
 
@@ -49,17 +51,20 @@ public enum CodexThreads {
         var threads: [String: CodexThread] = [:]
         for line in output.split(separator: "\n") {
             let cols = line.components(separatedBy: separator)
-            guard cols.count >= 8, !cols[0].isEmpty else { continue }
+            // Exactly the shape `query` asks for. A looser `>=` let a row
+            // with an extra column shift its contents one place left,
+            // which is how a thread title could land in `model` — drop the
+            // row instead of trusting a misaligned one.
+            guard cols.count == 7, !cols[0].isEmpty else { continue }
             func value(_ i: Int) -> String? { cols[i].isEmpty ? nil : cols[i] }
             threads[cols[0]] = CodexThread(
                 id: cols[0],
-                title: value(1),
-                model: value(2),
-                effort: value(3),
-                tokensUsed: value(4).flatMap { Int($0) },
-                gitBranch: value(5),
-                approvalMode: value(6),
-                sandboxPolicy: value(7)
+                model: value(1),
+                effort: value(2),
+                tokensUsed: value(3).flatMap { Int($0) },
+                gitBranch: value(4),
+                approvalMode: value(5),
+                sandboxPolicy: value(6)
             )
         }
         return threads

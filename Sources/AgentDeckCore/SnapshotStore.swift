@@ -118,9 +118,15 @@ public struct SnapshotStore: Sendable {
         let safe = Self.sanitizeKeyComponent(key)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let lockURL = directory.appendingPathComponent(".\(safe).lock")
-        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o644)
+        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else { return try body() }  // best-effort: proceed unlocked
         flock(fd, LOCK_EX)
+        // Mark the lock as in use. Neither open() nor flock() touches mtime,
+        // so a long-lived session's lock aged past the sweep's threshold and
+        // got unlinked while a helper still held it — after which the next
+        // helper created the same path, got a DIFFERENT inode, and locked
+        // that instead. Two "serialized" writers, running at once.
+        futimens(fd, nil)
         defer { flock(fd, LOCK_UN); close(fd) }
         return try body()
     }
@@ -151,6 +157,18 @@ public struct SnapshotStore: Sendable {
     /// Removes debris that would otherwise live forever: temp files from
     /// helpers killed mid-write, and undecodable .json that loadAll skips
     /// (which the liveness sweep therefore can never remove).
+    /// Unlink a lock file only after proving nobody holds it. An idle-looking
+    /// lock can still be held — mtime says when it was last *acquired*, not
+    /// whether the holder is still inside the critical section.
+    private func reclaimLockIfUnheld(_ url: URL) {
+        let fd = open(url.path, O_RDWR)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return }  // in use
+        try? FileManager.default.removeItem(at: url)
+        flock(fd, LOCK_UN)
+    }
+
     public func sweepOrphans(olderThan interval: TimeInterval = 3600, now: Date = Date()) {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
@@ -162,8 +180,9 @@ public struct SnapshotStore: Sendable {
             guard now.timeIntervalSince(mtime) > interval else { continue }
             // stale .tmp (killed mid-write) and .lock files (one per session
             // key, otherwise never reclaimed) whose session is long idle
-            if url.lastPathComponent.hasSuffix(".tmp")
-                || url.lastPathComponent.hasSuffix(".lock") {
+            if url.lastPathComponent.hasSuffix(".lock") {
+                reclaimLockIfUnheld(url)
+            } else if url.lastPathComponent.hasSuffix(".tmp") {
                 try? FileManager.default.removeItem(at: url)
             } else if url.pathExtension == "json" {
                 let decodable = (try? Data(contentsOf: url))

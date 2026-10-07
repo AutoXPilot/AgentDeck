@@ -88,6 +88,51 @@ final class SnapshotStoreTests {
         #expect(remaining == ["claude-keep.json"])
     }
 
+    @Test func anAgedButHeldLockIsNotReclaimed() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Acquire the lock, age it past the sweep threshold, and sweep from
+        // another thread while it is still held. Unlinking here gave the
+        // next helper a different inode for the same path — two writers
+        // both believing they were serialized.
+        let lockPath = dir.appendingPathComponent(".claude-held.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
+        #expect(fd >= 0)
+        #expect(flock(fd, LOCK_EX) == 0)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-7200)],
+            ofItemAtPath: lockPath
+        )
+        store.sweepOrphans()
+        #expect(FileManager.default.fileExists(atPath: lockPath),
+                "a held lock must survive the sweep")
+        flock(fd, LOCK_UN)
+        close(fd)
+
+        // once released and still old, it is reclaimable
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-7200)],
+            ofItemAtPath: lockPath
+        )
+        store.sweepOrphans()
+        #expect(!FileManager.default.fileExists(atPath: lockPath),
+                "an unheld, aged lock should be reclaimed")
+    }
+
+    @Test func usingALockKeepsItFromAgingOut() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let lockPath = dir.appendingPathComponent(".claude-busy.lock").path
+        _ = store.withKeyLock("claude-busy") { 0 }
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-7200)],
+            ofItemAtPath: lockPath
+        )
+        // a session active again right now must not look idle for an hour
+        _ = store.withKeyLock("claude-busy") { 0 }
+        store.sweepOrphans()
+        #expect(FileManager.default.fileExists(atPath: lockPath),
+                "acquiring the lock must refresh its mtime")
+    }
+
     @Test func concurrentWritesNeverExposePartialJSON() throws {
         let store = self.store
         DispatchQueue.concurrentPerform(iterations: 100) { i in

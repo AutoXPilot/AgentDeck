@@ -46,14 +46,34 @@ in the suite asserting prompt text is never persisted.
 The app itself reads two things it does not store: the tail of each Claude
 session transcript (`~/.claude/projects/…/<session>.jsonl`), from which it
 takes only two fields off the last assistant message — `model` and
-`sessionKind` — and Codex's `state_5.sqlite`, read-only. Conversation
-content is parsed past but never retained, logged, or displayed.
+`sessionKind` — and Codex's `state_5.sqlite`, from which it selects only
+metadata columns, read-only. `threads.title` is deliberately **not**
+selected: Codex fills it with the user's first message unless the thread
+was renamed, so the column is treated as conversation content and never
+enters the process. A Codex row is named only by an explicit `/rename`.
 
-Uninstall: quit the app, remove the hook entries mentioning `agentdeck-hook`
-from the two config files (or restore the newest `.agentdeck-*.bak`), then
-delete `~/Library/Application Support/AgentDeck/` and the app. To also clear
-saved preferences (acknowledgments, `waitAlertMinutes`):
-`defaults delete com.tonyhoang.agentdeck`.
+Conversation content is parsed past but never retained, logged, or
+displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
+thread's title — i.e. a prompt — could appear as a row title and in a
+notification if it was under 60 characters.)
+
+### Uninstall
+
+1. Quit AgentDeck and remove it from System Settings → General → Login
+   Items if you added it there.
+2. Edit `~/.claude/settings.json` and `~/.codex/hooks.json` and delete the
+   hook entries whose `command` mentions `agentdeck-hook`.
+3. `rm -rf ~/Library/Application\ Support/AgentDeck/` and delete the app.
+4. Optional: `defaults delete com.tonyhoang.agentdeck` (acknowledgments,
+   `waitAlertMinutes`); remove the `*.agentdeck-*.bak` files beside the two
+   configs; `brew uninstall agentdeck && brew untap AutoXPilot/tap`.
+
+**Don't uninstall by restoring a `.bak`.** Those are whole-file snapshots
+taken before each edit, so the newest one can *contain* AgentDeck hooks
+from a previous install — restoring it reinstalls them, pointed at a
+helper you're about to delete. It would also discard anything you changed
+in that file since the backup was taken. Backups are for recovering a
+config AgentDeck damaged, not for uninstalling it.
 
 ## Install (Homebrew)
 
@@ -134,8 +154,9 @@ session transcript.
 Row titles come from the best available source, refreshed on popover open.
 Claude rows prefer the session's own name from its registry (available even
 outside iTerm), then the live iTerm tab title, then the folder. Codex rows
-prefer the `/rename` name from `~/.codex/session_index.jsonl`, then the
-`state_5.sqlite` thread title, then the tab title, then the folder.
+use the `/rename` name from `~/.codex/session_index.jsonl`, then the tab
+title, then the folder — never the `state_5.sqlite` thread title, which is
+the user's first message on any thread that wasn't renamed.
 
 Each row shows the model it's running next to the path ("Opus 5.5",
 "Astra 6"); the raw identifier, effort and token totals are in the tooltip.
@@ -212,7 +233,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 189 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 194 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

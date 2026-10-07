@@ -2,11 +2,19 @@ import Foundation
 
 public enum InstallerError: Error, CustomStringConvertible {
     case notAJSONObject(String)
+    /// Someone else wrote the file between reading and writing it.
+    case changedWhileInstalling(String)
+    case writeFailed(String)
 
     public var description: String {
         switch self {
         case .notAJSONObject(let path):
             return "\(path) exists but is not a JSON object; refusing to modify it"
+        case .changedWhileInstalling(let path):
+            return "\(path) changed while installing — nothing was written. "
+                + "Close anything editing it and try again."
+        case .writeFailed(let path):
+            return "couldn't create \(path) — nothing was written"
         }
     }
 }
@@ -82,6 +90,18 @@ public struct HookInstaller: Sendable {
     // MARK: - Internals
 
     private func install(provider: Provider, fileURL: URL) throws -> Bool {
+        // Serialize AgentDeck's own installs. Two of them racing would each
+        // read, modify and write the whole file, and the loser's hooks
+        // would vanish.
+        try Self.withInstallLock(for: fileURL) {
+            try self.installLocked(provider: provider, fileURL: fileURL)
+        }
+    }
+
+    private func installLocked(provider: Provider, fileURL: URL) throws -> Bool {
+        // the exact bytes this edit is based on, so a change by anyone else
+        // between here and the write is detected instead of overwritten
+        let basis = try? Data(contentsOf: fileURL)
         var root = try Self.readJSONObject(at: fileURL)
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         let canonical = command(for: provider)
@@ -117,9 +137,23 @@ public struct HookInstaller: Sendable {
         }
         if changed {
             root["hooks"] = hooks
-            try Self.backupAndWrite(root, to: fileURL)
+            try Self.backupAndWrite(root, to: fileURL, basis: basis)
         }
         return changed
+    }
+
+    /// flock on a sidecar beside the config. Held only for the
+    /// read-modify-write, and never created inside the config file itself.
+    static func withInstallLock<T>(for url: URL, _ body: () throws -> T) throws -> T {
+        let fm = FileManager.default
+        let dir = url.deletingLastPathComponent()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let lock = dir.appendingPathComponent(".\(url.lastPathComponent).agentdeck-install.lock")
+        let fd = open(lock.path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { return try body() }  // best-effort
+        flock(fd, LOCK_EX)
+        defer { flock(fd, LOCK_UN); close(fd) }
+        return try body()
     }
 
     static func readJSONObject(at url: URL) throws -> [String: Any] {
@@ -168,12 +202,31 @@ public struct HookInstaller: Sendable {
         return da != nil && da == db
     }
 
-    static func backupAndWrite(_ object: [String: Any], to url: URL) throws {
+    /// Replace `url`'s contents, but only if it still holds `basis`.
+    ///
+    /// Three things here are load-bearing, and each was previously wrong:
+    /// the backup must *succeed* before anything is overwritten (it was
+    /// `try?`, so a full disk silently skipped it while the README promised
+    /// one); the staging file holds the user's entire config and so must be
+    /// created private rather than at the mercy of umask; and the file must
+    /// not have changed since we read it, or a concurrent save by Claude or
+    /// an editor is destroyed. Atomic replacement prevents a *torn* file —
+    /// it does nothing about a lost update.
+    static func backupAndWrite(
+        _ object: [String: Any], to url: URL, basis: Data? = nil
+    ) throws {
         let fm = FileManager.default
         try fm.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
+
+        let current = try? Data(contentsOf: url)
+        if current != basis {
+            throw InstallerError.changedWhileInstalling(url.path)
+        }
+
         var originalPermissions: NSNumber?
+        var backup: URL?
         if fm.fileExists(atPath: url.path) {
             originalPermissions =
                 (try? fm.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber
@@ -181,21 +234,42 @@ public struct HookInstaller: Sendable {
             // across a DST fall-back) can't produce the same name and clobber
             // each other. Never pre-delete a collision target.
             let stamp = "\(timestamp())-\(String(UInt32.random(in: 0..<0xFFFF), radix: 16))"
-            let backup = URL(fileURLWithPath: url.path + ".agentdeck-\(stamp).bak")
-            try? fm.copyItem(at: url, to: backup)
-            pruneBackups(for: url)
+            let destination = URL(fileURLWithPath: url.path + ".agentdeck-\(stamp).bak")
+            // not `try?`: no backup, no edit
+            try fm.copyItem(at: url, to: destination)
+            backup = destination
         }
+
         let data = try JSONSerialization.data(
             withJSONObject: object, options: [.prettyPrinted, .sortedKeys]
         )
         let tmp = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        try data.write(to: tmp)
-        _ = try fm.replaceItemAt(url, withItemAt: tmp)
+        do {
+            // create private, then write: a default-permission temp copy of
+            // a 0600 config is readable by anyone who can traverse the dir
+            guard fm.createFile(
+                atPath: tmp.path, contents: nil,
+                attributes: [.posixPermissions: originalPermissions ?? NSNumber(value: 0o600)]
+            ) else {
+                throw InstallerError.writeFailed(tmp.path)
+            }
+            try data.write(to: tmp)
+            _ = try fm.replaceItemAt(url, withItemAt: tmp)
+        } catch {
+            // never strand a copy of the config, and don't leave a backup
+            // implying an edit that didn't happen
+            try? fm.removeItem(at: tmp)
+            if let backup { try? fm.removeItem(at: backup) }
+            throw error
+        }
         // a previously locked-down config (0600) must not come back 0644
         if let originalPermissions {
             try? fm.setAttributes([.posixPermissions: originalPermissions], ofItemAtPath: url.path)
         }
+        // only once the edit is committed, or a failed install prunes the
+        // history that would have let the user recover
+        pruneBackups(for: url)
     }
 
     static func pruneBackups(for url: URL, keep: Int = 5) {
