@@ -195,15 +195,21 @@ func renderPopover(to path: String) -> Never {
 }
 
 let app = NSApplication.shared
-if CommandLine.arguments.dropFirst().first == "--render-popover" {
-    guard CommandLine.arguments.count > 2 else {
-        FileHandle.standardError.write(
-            Data("usage: AgentDeck --render-popover <out.png>\n".utf8)
-        )
-        exit(64)
-    }
+switch LaunchArguments.parse(Array(CommandLine.arguments.dropFirst())) {
+case .printVersion:
+    print(AgentDeckVersion.current)
+    exit(0)
+case .printHelp:
+    print(LaunchArguments.helpText(version: AgentDeckVersion.current))
+    exit(0)
+case .renderPopover(let path):
     app.setActivationPolicy(.prohibited)
-    MainActor.assumeIsolated { renderPopover(to: CommandLine.arguments[2]) }
+    MainActor.assumeIsolated { renderPopover(to: path) }
+case .usageError(let message):
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+    exit(64)
+case .runApp:
+    break
 }
 let delegate = AppDelegate()
 app.delegate = delegate

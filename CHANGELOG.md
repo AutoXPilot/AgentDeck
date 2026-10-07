@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`--version` did nothing.** The README documented it, but the app
+  binary never handled it: the flag fell through to "run the app". So did
+  every unrecognised `--flag`, which meant a typo silently started a
+  second menu-bar instance racing the live one over the same state files.
+  Both now exit — `--version`/`-v` print, `--help`/`-h` print usage, and
+  an unknown long option exits 64. Single-dash arguments still launch
+  normally, since LaunchServices and Xcode pass their own (`-psn_…`).
+
 ## 0.4.1
 
 Patch release for 0.4.0, whose row-model feature shipped with a
