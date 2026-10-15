@@ -17,11 +17,41 @@ public enum ProcessTree {
     /// Full executable path. p_comm alone is useless for the claude CLI:
     /// its binary is named after the version (~/.local/share/claude/versions/2.1.220),
     /// so p_comm reads "2.1.220".
+    ///
+    /// Falls back to argv[0] when the path can't be read. That is not an
+    /// edge case here: Claude Code installs each release as a versioned
+    /// file and prunes old ones on update, so a session that has been
+    /// running a while is executing a binary that no longer exists, and
+    /// `proc_pidpath` returns ENOENT for it. Losing the path loses pid
+    /// attribution, and a pid-less snapshot falls under the 24-hour idle
+    /// cap instead of the 7-day live one — so the longest-running sessions,
+    /// the ones most worth keeping on screen, were the ones being deleted.
     public static func executablePath(of pid: pid_t) -> String? {
         var buf = [CChar](repeating: 0, count: 4096)
         let n = proc_pidpath(pid, &buf, UInt32(buf.count))
-        guard n > 0 else { return nil }
-        return String(decoding: buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        if n > 0 {
+            return String(decoding: buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
+        return launchPath(of: pid)
+    }
+
+    /// argv[0] via `KERN_PROCARGS2`. Survives the executable being replaced
+    /// or deleted, because it is a copy made at exec time.
+    ///
+    /// Layout: `int argc`, the executable path, NUL padding, then argc
+    /// NUL-separated arguments. Only the path is read.
+    public static func launchPath(of pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size
+        else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else { return nil }
+        let start = MemoryLayout<Int32>.size
+        guard let end = buffer[start..<size].firstIndex(of: 0), end > start else { return nil }
+        let path = String(decoding: buffer[start..<end], as: UTF8.self)
+        return path.isEmpty ? nil : path
     }
 
     /// "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" → "/Applications/ChatGPT.app".

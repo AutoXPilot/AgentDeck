@@ -217,4 +217,38 @@ struct LivenessAndFocusTests {
         let info = try #require(ProcessTree.nameAndParent(of: getpid()))
         #expect(!info.name.isEmpty)
     }
+
+    @Test func launchPathReadsArgvZero() throws {
+        let own = try #require(ProcessTree.launchPath(of: getpid()))
+        #expect(own.hasPrefix("/"))
+        // a pid that cannot exist has no argv
+        #expect(ProcessTree.launchPath(of: 0) == nil)
+    }
+
+    @Test func executablePathSurvivesTheBinaryBeingDeleted() throws {
+        // The real condition, not a hypothetical: Claude Code installs each
+        // release as `versions/<version>` and prunes old ones on update, so
+        // a long-running session executes a binary that no longer exists
+        // and proc_pidpath returns ENOENT. Losing the path loses pid
+        // attribution, which drops the snapshot from the 7-day live cap to
+        // the 24-hour idle one — deleting exactly the sessions worth
+        // keeping. Observed live on a session running since July.
+        let fm = FileManager.default
+        let copy = fm.temporaryDirectory
+            .appendingPathComponent("agentdeck-sleep-\(UUID().uuidString)")
+        try fm.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: copy)
+
+        let child = Process()
+        child.executableURL = copy
+        child.arguments = ["30"]
+        try child.run()
+        defer { child.terminate() }
+
+        try fm.removeItem(at: copy)   // the update that prunes the old build
+        #expect(!fm.fileExists(atPath: copy.path))
+
+        let resolved = ProcessTree.executablePath(of: child.processIdentifier)
+        #expect(resolved != nil, "a deleted binary must not cost us the pid")
+        #expect(resolved?.hasSuffix(copy.lastPathComponent) == true)
+    }
 }

@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Long-running sessions disappeared from the list.** Claude Code
+  installs each release as `~/.local/share/claude/versions/<version>` and
+  prunes old ones on update, so a session that has been running a while
+  is executing a binary that no longer exists — and `proc_pidpath`
+  returns ENOENT for it. That cost the snapshot its pid, which dropped it
+  from the 7-day live cap to the 24-hour idle one, so any session quiet
+  for a day was deleted. The effect was backwards from what you'd want:
+  the longer a session ran, the more likely it was to vanish. Observed on
+  a session running since July, on a build pruned in October. The
+  executable path now falls back to argv[0] (`KERN_PROCARGS2`), which is
+  copied at exec time and survives the binary being replaced or removed.
 - **Prompt text could appear in a row title and a notification.** Codex
   fills `threads.title` with the user's first message unless the thread
   was renamed, and nothing in its schema distinguishes the two. AgentDeck
