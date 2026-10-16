@@ -15,16 +15,20 @@
   (`~/.claude/sessions/<pid>.json`) on every reload but only consulted
   it through a snapshot's pid, so sessions without a snapshot fell
   through. It now also treats that registry as a discovery source,
-  filtered to genuinely live processes — a live pid *and* a matching
-  start time, because those files outlive their process and a recycled
-  pid would otherwise resurrect a dead session forever.
+  filtered to live processes whose start time is consistent with the
+  session's — enough to reject an obviously recycled pid, though not a
+  proof of identity, so a stale row remains possible.
 
   A snapshot always wins where both exist; `done` and `error` are never
   inferred from a registry status. No subprocess is involved:
-  `claude agents --json` returns exactly this set, but shelling out from
-  a GUI app would mean finding a binary at a version-named path that
-  gets pruned on update. Codex has no equivalent registry and stays
-  hook-only.
+  `claude agents --json` returned exactly this set when compared on a
+  36-session machine, but shelling out from a GUI app would mean finding
+  a binary at a version-named path that gets pruned on update. Codex has
+  no equivalent registry and stays hook-only.
+
+  Clicking a row now only marks it handled when it can actually take you
+  to the session. Discovered rows have no recorded pane, so otherwise a
+  click would clear a blocked session's badge and leave you elsewhere.
 
   Sessions already blocked when this first runs don't all fire a
   notification at once — the backlog starts its cooldown instead.
@@ -40,8 +44,9 @@
   ranking by the snapshot's write time — the exact behaviour the field
   was added to replace. The tests passed because they called the
   decision function directly and never went through the store; there is
-  now a round-trip assertion over a fully-populated snapshot, so the
-  next field that misses `CodingKeys` fails loudly.
+  now a round-trip assertion over a populated snapshot covering today's
+  fields. (It is not automatic: a future optional field left nil in the
+  fixture could still slip through.)
 - **Long-running sessions disappeared from the list.** Claude Code
   installs each release as `~/.local/share/claude/versions/<version>` and
   prunes old ones on update, so a session that has been running a while

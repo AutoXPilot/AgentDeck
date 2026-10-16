@@ -335,7 +335,18 @@ final class SessionsModel: ObservableObject {
         // that have been waiting for weeks.
         if !didSeedWaitingBacklog {
             didSeedWaitingBacklog = true
-            if !readOnly { waitingTracker.suppressExistingBacklog(output.rows) }
+            // Only sessions discovered from the registry. Seeding every
+            // waiting row would also mute hook-reported ones, so a session
+            // blocked at launch couldn't notify for a full hour even with
+            // waitAlertMinutes=5 — which is a behaviour change nobody asked
+            // for. The burst risk is specific to rows that were previously
+            // invisible.
+            let discoveredBacklog = output.rows.filter {
+                $0.event == "RegistryDiscovery"
+            }
+            if !readOnly, !discoveredBacklog.isEmpty {
+                waitingTracker.suppressExistingBacklog(discoveredBacklog)
+            }
         }
         escalateLongWaits(output.rows)
         refreshHealth()
@@ -519,9 +530,21 @@ final class SessionsModel: ObservableObject {
 
     /// Row click: acknowledge, close the popover, then focus the iTerm pane
     /// once the close has actually happened.
+    ///
+    /// A click only acknowledges when it can actually *take you there*. A
+    /// pane is precise; an app or a dead end is not. Acknowledging anyway
+    /// would clear the badge for a session still blocked on you and leave
+    /// you somewhere else — silently losing the one alert this app exists
+    /// to raise. That became the common case once discovery started
+    /// surfacing sessions with no recorded pane. Right-click → Dismiss is
+    /// still there when you do mean "I've handled it".
     func activate(_ snapshot: SessionSnapshot) {
-        acknowledge(snapshot)
         let target = focusTarget(for: snapshot)
+        let reachable: Bool
+        if case .itermPane = target { reachable = true } else { reachable = false }
+        if reachable || !Attention.needsAttention(snapshot, ackedAt: acks[snapshot.key]) {
+            acknowledge(snapshot)
+        }
         let guid: String
         switch target {
         case .itermPane(let paneGuid):

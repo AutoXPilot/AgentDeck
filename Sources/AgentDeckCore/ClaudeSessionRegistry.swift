@@ -145,12 +145,22 @@ public enum ClaudeSessionRegistry {
         return live
     }
 
+    /// Best-effort pid-reuse rejection, not proof of identity.
+    ///
+    /// It catches the ordinary case — a long-dead session whose pid has been
+    /// handed to something that started much later — and nothing stronger.
+    /// Known holes, accepted because the failure mode is one stale row
+    /// rather than a wrong action:
+    ///  - an entry with no `startedAt` is accepted on liveness alone;
+    ///  - a replacement that started inside `slack` is accepted, and then
+    ///    stays accepted for as long as it lives;
+    ///  - no check that the process is even Claude.
+    /// Tightening this needs to know what Claude's `startedAt` actually
+    /// measures, which isn't documented.
     static func isLive(
         _ entry: Entry, probe: Liveness.ProcessProbe, slack: TimeInterval
     ) -> Bool {
         guard let started = probe.startTime(entry.pid) else { return false }
-        // The process at this pid must not have started meaningfully after
-        // the session did; if it has, the pid was reused by something else.
         guard let claimed = entry.startedAt else { return true }
         return started <= claimed.addingTimeInterval(slack)
     }
