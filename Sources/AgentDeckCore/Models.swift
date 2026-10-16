@@ -102,10 +102,16 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     // would otherwise be skipped by loadAll and then deleted as "corrupt" by
     // the orphan sweep. All schema-2 fields are already optional; only this
     // one non-optional needs a default.
+    // Every stored property must be listed here. An explicit CodingKeys also
+    // drives the synthesized `encode(to:)`, so a property omitted from this
+    // enum is silently dropped on write — which is exactly what happened to
+    // `modelObservedAt`: set on every hook event, never persisted, so the
+    // reader always saw nil and fell back to the behaviour it was added to
+    // replace. `roundTripsEveryField` guards this.
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, provider, sessionId, projectPath, state, event
         case updatedAt, terminalSessionId, agentPid, notificationType
-        case permissionMode, model, effort, errorKind
+        case permissionMode, model, modelObservedAt, effort, errorKind
     }
 
     public init(from decoder: any Decoder) throws {
@@ -122,6 +128,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         notificationType = try c.decodeIfPresent(String.self, forKey: .notificationType)
         permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
         model = try c.decodeIfPresent(String.self, forKey: .model)
+        modelObservedAt = try c.decodeIfPresent(Date.self, forKey: .modelObservedAt)
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         errorKind = try c.decodeIfPresent(String.self, forKey: .errorKind)
     }

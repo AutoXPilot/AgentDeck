@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **The 0.4.1 Codex model-freshness fix was inert.** `modelObservedAt`
+  was set on every hook event but left out of `CodingKeys`, and since an
+  explicit `CodingKeys` also drives the synthesized encoder, it was
+  dropped on write. The reader therefore always saw nil and fell back to
+  ranking by the snapshot's write time — the exact behaviour the field
+  was added to replace. The tests passed because they called the
+  decision function directly and never went through the store; there is
+  now a round-trip assertion over a fully-populated snapshot, so the
+  next field that misses `CodingKeys` fails loudly.
 - **Long-running sessions disappeared from the list.** Claude Code
   installs each release as `~/.local/share/claude/versions/<version>` and
   prunes old ones on update, so a session that has been running a while

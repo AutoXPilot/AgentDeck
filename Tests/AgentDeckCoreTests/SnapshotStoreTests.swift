@@ -36,6 +36,63 @@ final class SnapshotStoreTests {
         #expect(abs(loaded.updatedAt.timeIntervalSince(snap.updatedAt)) < 1.0)
     }
 
+    /// Every field the helper sets must survive a write/read.
+    ///
+    /// `modelObservedAt` did not: it was populated on every hook event but
+    /// left out of `CodingKeys`, and because an explicit `CodingKeys` also
+    /// drives the synthesized encoder, it was dropped on write. The reader
+    /// therefore always saw nil and fell back to ranking by `updatedAt` —
+    /// the exact behaviour the field was added to replace. Shipped inert in
+    /// 0.4.1, because the tests exercised the decision function directly
+    /// and never went through the store.
+    ///
+    /// This asserts on a fully-populated snapshot rather than one field, so
+    /// the next addition that misses `CodingKeys` fails here.
+    @Test func roundTripsEveryField() throws {
+        let observed = Date(timeIntervalSince1970: 1_700_000_000)
+        let snap = SessionSnapshot(
+            provider: .codex,
+            sessionId: "full",
+            projectPath: "/tmp/full",
+            state: .waiting,
+            event: "Notification",
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_500),
+            terminalSessionId: "w1t2p3:GUID-9",
+            agentPid: 4242,
+            notificationType: "permission_prompt",
+            permissionMode: "acceptEdits",
+            model: "gpt-6-astra",
+            modelObservedAt: observed,
+            effort: "high",
+            errorKind: nil
+        )
+        try store.write(snap)
+        let loaded = try #require(store.load(key: snap.key))
+
+        #expect(loaded.provider == .codex)
+        #expect(loaded.sessionId == "full")
+        #expect(loaded.projectPath == "/tmp/full")
+        #expect(loaded.state == .waiting)
+        #expect(loaded.event == "Notification")
+        #expect(loaded.terminalSessionId == "w1t2p3:GUID-9")
+        #expect(loaded.agentPid == 4242)
+        #expect(loaded.notificationType == "permission_prompt")
+        #expect(loaded.permissionMode == "acceptEdits")
+        #expect(loaded.model == "gpt-6-astra")
+        #expect(loaded.effort == "high")
+        #expect(loaded.errorKind == nil)
+        #expect(loaded.modelObservedAt != nil, "modelObservedAt was silently dropped on write")
+        #expect(abs((loaded.modelObservedAt ?? .distantPast)
+            .timeIntervalSince(observed)) < 1.0)
+
+        // and the field must actually reach the on-disk JSON, not just
+        // survive an in-memory copy
+        let raw = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: store.url(forKey: snap.key))
+        ) as? [String: Any]
+        #expect(raw?["modelObservedAt"] != nil)
+    }
+
     @Test func removeDeletesFile() throws {
         let snap = makeSnapshot()
         try store.write(snap)
