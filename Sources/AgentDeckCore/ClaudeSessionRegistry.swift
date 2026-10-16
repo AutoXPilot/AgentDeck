@@ -176,6 +176,40 @@ public enum StateReconciler {
         (status == "busy" || status == "shell") ? .working : .ready
     }
 
+    /// A row for a live session the hooks never reported — one that started
+    /// before the hooks were installed, or whose snapshot was swept while it
+    /// sat idle. Without this they are simply invisible, which on one real
+    /// machine meant 15 rows for 36 live sessions, two of them blocked on
+    /// the user.
+    ///
+    /// Deliberately NOT set:
+    /// - `notificationType`: `normalize` downgrades a `.waiting` row whose
+    ///   notification type isn't a recognised blocking prefix, so putting
+    ///   the registry's free-text `waitingFor` there would silently un-block
+    ///   the row. The reason travels in the pipeline's `waitingReasons`.
+    /// - `.done` / `.error`: neither can be inferred from a status. They are
+    ///   hook-only facts, and guessing them would fake a completion.
+    public static func discoveredSnapshot(
+        from entry: ClaudeSessionRegistry.Entry
+    ) -> SessionSnapshot {
+        SessionSnapshot(
+            provider: .claude,
+            sessionId: entry.sessionId,
+            projectPath: entry.cwd ?? "",
+            state: blockedState(entry.status) ? .waiting : unblockedState(entry.status),
+            event: "RegistryDiscovery",
+            // Never `now`: a timestamp that advances on every scan re-arms
+            // acknowledged waits through Attention's ack comparison, so an
+            // acknowledged session would nag again on the next reload.
+            updatedAt: entry.observedAt ?? entry.startedAt ?? .distantPast,
+            terminalSessionId: nil,
+            agentPid: entry.pid,
+            permissionMode: nil,
+            model: nil,
+            effort: nil
+        )
+    }
+
     public static func reconcile(
         snapshot: SessionSnapshot, entry: ClaudeSessionRegistry.Entry?
     ) -> Result {

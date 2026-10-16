@@ -47,7 +47,11 @@ final class SessionsModel: ObservableObject {
     private var dirWatcher: DispatchSourceFileSystemObject?
     private var sweepTimer: Timer?
     private var claudeRegistry: [Int32: ClaudeSessionRegistry.Entry] = [:]
+    /// Live sessions by session id — the discovery source that makes rows
+    /// appear for sessions the hooks never saw.
+    private(set) var claudeLiveSessions: [String: ClaudeSessionRegistry.Entry] = [:]
     private var waitingTracker = WaitingTracker()
+    private var didSeedWaitingBacklog = false
     private var notificationsAuthorized = false
     /// Render harness: observe only, never delete/sweep/notify — a second
     /// instance must not race the live app over shared files.
@@ -286,11 +290,16 @@ final class SessionsModel: ObservableObject {
         all.removeAll { removed.contains($0.key) }
 
         claudeRegistry = ClaudeSessionRegistry.load()
+        // Sessions Claude knows are running, whether or not a hook ever
+        // reported them. Same files, filtered to live processes — no
+        // subprocess, so this is safe on the reload path.
+        claudeLiveSessions = ClaudeSessionRegistry.liveSessions()
         // All derivation lives in the tested core; this method only reads
         // files, assigns outputs, and performs side effects.
         let output = SessionPipeline.run(
             snapshots: all,
             registry: claudeRegistry,
+            liveSessions: claudeLiveSessions,
             acks: acks,
             frozenOrder: frozenOrder,
             popoverVisible: popoverVisible,
@@ -319,6 +328,14 @@ final class SessionsModel: ObservableObject {
         if !readOnly {
             doneCount = Attention.doneCount(output.rows, acks: acks)
             alertCount = Attention.alertCount(output.rows, acks: acks)
+        }
+        // The first reload of a process must not fire a banner for every
+        // session that was already blocked before the app started — which
+        // discovery makes a real possibility, since it surfaces sessions
+        // that have been waiting for weeks.
+        if !didSeedWaitingBacklog {
+            didSeedWaitingBacklog = true
+            if !readOnly { waitingTracker.suppressExistingBacklog(output.rows) }
         }
         escalateLongWaits(output.rows)
         refreshHealth()

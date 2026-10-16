@@ -101,8 +101,9 @@ git clone https://github.com/AutoXPilot/AgentDeck && cd AgentDeck
   works: AppleScript session select; the `iterm2:///reveal` URL scheme is
   only a fallback because it can silently stop working).
 - **Codex hook trust** on its next launch after installing hooks.
-- Sessions started **before** the hooks were installed won't report until
-  restarted (Claude picks up hooks live; Codex needs a restart).
+- Codex sessions started **before** the hooks were installed won't report
+  until restarted. Claude sessions appear either way — see discovery
+  below.
 
 ## How it works
 
@@ -129,6 +130,20 @@ Sessions are removed when their agent exits (SessionEnd, or the sweep for
 crashed/closed terminals) — except on `/clear` and resume, where the process
 keeps running. Row order freezes while the popover is open so live events
 don't reshuffle rows under your cursor; each open re-sorts.
+
+**Hooks alone aren't enough to know a session exists.** They only report
+sessions that were running when they fired, so a session started before
+the hooks were installed — or one whose snapshot aged out while it sat
+idle — was simply absent. On the development machine that meant 15 rows
+for 36 live sessions, two of them blocked on the user, one for 72 days.
+AgentDeck now also reads Claude's own registry
+(`~/.claude/sessions/<pid>.json`), filters it to processes that are
+genuinely alive (live pid *and* a matching start time, since those files
+outlive their process), and shows any live session that has no snapshot.
+A snapshot always wins where both exist — it carries the pane id and the
+hook-derived state. `done` and `error` are never inferred this way;
+they are facts only a hook can supply. Codex has no equivalent registry,
+so it remains hook-only.
 
 **Hooks alone aren't enough to know if a session is blocked.** Nothing fires
 when a permission prompt is *answered*, so a `waiting` row could outlive the
@@ -233,7 +248,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 197 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 206 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

@@ -19,7 +19,36 @@ public struct WaitingTracker: Sendable {
     /// Keys announced within the CURRENT episode (cleared when the wait ends).
     private var announcedThisEpisode: Set<String> = []
 
+    /// Keys seen at least once, so a session that was already blocked
+    /// before this tracker existed can be distinguished from one that
+    /// became blocked while we were watching.
+    private var seen: Set<String> = []
+
     public init() {}
+
+    /// Treat the currently-blocked sessions as already handled, without
+    /// posting anything.
+    ///
+    /// Needed because `candidates` deliberately trusts a snapshot's own
+    /// timestamp so a session already waiting at launch doesn't restart its
+    /// clock at zero — which is right for a restart, but means the first
+    /// run after a change that makes *new* sessions visible would escalate
+    /// every one of them at once. On one real machine that was two sessions
+    /// blocked since August, both firing the moment the feature shipped.
+    ///
+    /// This starts their cooldown rather than marking the episode
+    /// announced, so a session that stays blocked still notifies later —
+    /// it just doesn't all arrive in the first second.
+    public mutating func suppressExistingBacklog(
+        _ snapshots: [SessionSnapshot], now: Date = Date()
+    ) {
+        for snapshot in snapshots where snapshot.state == .waiting {
+            guard !seen.contains(snapshot.key) else { continue }
+            seen.insert(snapshot.key)
+            waitingSince[snapshot.key] = min(snapshot.updatedAt, now)
+            lastAnnounced[snapshot.key] = now
+        }
+    }
 
     public func waitingDuration(forKey key: String, now: Date = Date()) -> TimeInterval? {
         waitingSince[key].map { now.timeIntervalSince($0) }
@@ -44,6 +73,8 @@ public struct WaitingTracker: Sendable {
             waitingSince[key] = nil
             announcedThisEpisode.remove(key)
         }
+
+        for snapshot in blocked { seen.insert(snapshot.key) }
 
         var due: [String] = []
         for snapshot in blocked {

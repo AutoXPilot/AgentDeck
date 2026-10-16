@@ -2,6 +2,62 @@ import Foundation
 import Testing
 @testable import AgentDeckCore
 
+struct WaitingBacklogTests {
+    let now = Date(timeIntervalSince1970: 1_785_000_000)
+
+    func waiting(_ id: String, ageSeconds: TimeInterval) -> SessionSnapshot {
+        SessionSnapshot(
+            provider: .claude, sessionId: id, projectPath: "/p",
+            state: .waiting, event: "Notification",
+            updatedAt: now.addingTimeInterval(-ageSeconds),
+            notificationType: "permission_prompt"
+        )
+    }
+
+    @Test func existingBacklogDoesNotAllFireAtOnce() {
+        // Discovery surfaces sessions blocked for weeks. candidates()
+        // deliberately trusts the snapshot's own timestamp so a restart
+        // doesn't reset the clock — which, the first time those rows
+        // appear, means every one of them is instantly overdue.
+        let backlog = [
+            waiting("old-1", ageSeconds: 60 * 86_400),
+            waiting("old-2", ageSeconds: 30 * 86_400),
+        ]
+        var unsuppressed = WaitingTracker()
+        #expect(unsuppressed.candidates(backlog, now: now, threshold: 300).count == 2,
+                "this is the burst being prevented")
+
+        var tracker = WaitingTracker()
+        tracker.suppressExistingBacklog(backlog, now: now)
+        #expect(tracker.candidates(backlog, now: now, threshold: 300).isEmpty)
+    }
+
+    @Test func suppressionIsOnlyForWhatWasAlreadyBlocked() {
+        var tracker = WaitingTracker()
+        tracker.suppressExistingBacklog([waiting("old", ageSeconds: 86_400)], now: now)
+        // a session that blocks later still notifies normally
+        let later = now.addingTimeInterval(3_600)
+        let fresh = SessionSnapshot(
+            provider: .claude, sessionId: "new", projectPath: "/p",
+            state: .waiting, event: "Notification",
+            updatedAt: later.addingTimeInterval(-600),
+            notificationType: "permission_prompt"
+        )
+        #expect(tracker.candidates([fresh], now: later, threshold: 300) == ["claude-new"])
+    }
+
+    @Test func aSuppressedSessionStillNotifiesAfterTheCooldown() {
+        // suppression starts the cooldown rather than silencing forever —
+        // a session blocked all week should still nag eventually
+        var tracker = WaitingTracker()
+        let old = [waiting("old", ageSeconds: 86_400)]
+        tracker.suppressExistingBacklog(old, now: now)
+        #expect(tracker.candidates(old, now: now, threshold: 300).isEmpty)
+        let afterCooldown = now.addingTimeInterval(3_601)
+        #expect(tracker.candidates(old, now: afterCooldown, threshold: 300) == ["claude-old"])
+    }
+}
+
 struct WaitingTrackerTests {
     let now = Date(timeIntervalSince1970: 1_785_000_000)
 

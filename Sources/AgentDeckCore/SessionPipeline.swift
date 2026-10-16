@@ -18,6 +18,7 @@ public enum SessionPipeline {
     public static func run(
         snapshots: [SessionSnapshot],
         registry: [Int32: ClaudeSessionRegistry.Entry],
+        liveSessions: [String: ClaudeSessionRegistry.Entry] = [:],
         acks: [String: Date],
         frozenOrder: [String]?,
         popoverVisible: Bool,
@@ -33,7 +34,27 @@ public enum SessionPipeline {
             return outcome.snapshot
         }
 
-        let sorted = Attention.sorted(normalized, acks: acks)
+        // Live sessions the hooks never reported. A snapshot always wins —
+        // it carries the pane id and the hook-derived state — so these are
+        // added only where no row exists for that session id.
+        let known = Set(normalized.map(\.key))
+        let discovered: [SessionSnapshot] = liveSessions.values
+            .map(StateReconciler.discoveredSnapshot(from:))
+            .filter { !known.contains($0.key) }
+            .map { row in
+                if row.state == .waiting,
+                   let reason = liveSessions[row.sessionId]?.waitingFor {
+                    reasons[row.key] = ITermFocus.humanizeReason(reason)
+                }
+                return row
+            }
+
+        // Dedupe before the counts, not after: alertCount/doneCount used to
+        // be computed from a list that could still contain duplicates while
+        // only `rows` was deduplicated, so a doubled session counted twice
+        // in the badge.
+        let all = RowOrdering.deduplicated(normalized + discovered)
+        let sorted = Attention.sorted(all, acks: acks)
         var rows = sorted
         var order: [String]?
         if popoverVisible {
@@ -44,9 +65,9 @@ public enum SessionPipeline {
         return Output(
             rows: RowOrdering.deduplicated(rows),
             frozenOrder: order,
-            alertCount: Attention.alertCount(normalized, acks: acks),
-            doneCount: Attention.doneCount(normalized, acks: acks),
-            mostUrgent: Attention.mostUrgent(normalized, acks: acks),
+            alertCount: Attention.alertCount(all, acks: acks),
+            doneCount: Attention.doneCount(all, acks: acks),
+            mostUrgent: Attention.mostUrgent(all, acks: acks),
             waitingReasons: reasons
         )
     }

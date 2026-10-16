@@ -29,6 +29,85 @@ struct SessionPipelineTests {
         )
     }
 
+    @Test func liveSessionsWithNoSnapshotBecomeRows() {
+        // The 15-rows-for-36-live-sessions bug: the pipeline only ever saw
+        // the registry through snapshot.agentPid, so a session the hooks
+        // never reported had no row at all — including one blocked on the
+        // user since August.
+        let snapshots = [snap("known", .working, pid: 1)]
+        let live = [
+            "known": entry(pid: 1, id: "known", "busy"),
+            "unseen-idle": entry(pid: 9, id: "unseen-idle", "idle"),
+            "unseen-block": entry(pid: 10, id: "unseen-block", "waiting",
+                                  waitingFor: "permission prompt"),
+        ]
+        let out = SessionPipeline.run(
+            snapshots: snapshots, registry: [1: live["known"]!],
+            liveSessions: live, acks: [:], frozenOrder: nil,
+            popoverVisible: false, now: now
+        )
+        #expect(Set(out.rows.map(\.sessionId))
+                == ["known", "unseen-idle", "unseen-block"])
+        // a session with a snapshot must not be duplicated by discovery
+        #expect(out.rows.filter { $0.sessionId == "known" }.count == 1)
+        // discovery can report a block the hooks never saw
+        let blocked = try? #require(out.rows.first { $0.sessionId == "unseen-block" })
+        #expect(blocked?.state == .waiting)
+        #expect(out.waitingReasons["claude-unseen-block"] != nil)
+        #expect(out.alertCount == 1)
+    }
+
+    @Test func discoveredRowsCarryTheirDirectoryAndNotTheClock() {
+        let observed = now.addingTimeInterval(-9_000)
+        var e = entry(pid: 7, id: "s", "idle")
+        e.cwd = "/Users/t/Code/version2"
+        e.statusUpdatedAt = observed
+        let out = SessionPipeline.run(
+            snapshots: [], registry: [:], liveSessions: ["s": e],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now
+        )
+        let row = try? #require(out.rows.first)
+        #expect(row?.projectPath == "/Users/t/Code/version2",
+                "cwd is what makes a discovered row resumable")
+        // using `now` here would re-arm acks on every single reload
+        #expect(row?.updatedAt == observed)
+        #expect(row?.agentPid == 7)
+    }
+
+    @Test func aSnapshotAlwaysBeatsDiscovery() {
+        // the snapshot carries the pane id and hook-derived state; the
+        // registry entry knows neither
+        let withPane = SessionSnapshot(
+            provider: .claude, sessionId: "s", projectPath: "/real",
+            state: .done, event: "Stop", updatedAt: now,
+            terminalSessionId: "w0t0p0:GUID", agentPid: 5
+        )
+        var e = entry(pid: 5, id: "s", "idle")
+        e.cwd = "/from-registry"
+        let out = SessionPipeline.run(
+            snapshots: [withPane], registry: [:], liveSessions: ["s": e],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now
+        )
+        #expect(out.rows.count == 1)
+        #expect(out.rows[0].state == .done, "discovery must not fake away a completion")
+        #expect(out.rows[0].terminalSessionId == "w0t0p0:GUID")
+        #expect(out.rows[0].projectPath == "/real")
+    }
+
+    @Test func discoveryNeverInventsDoneOrError() {
+        // `.done`/`.error` are hook-only facts; a status of idle is not a
+        // finished turn
+        for status in ["idle", "busy", "shell", "waiting", "something-new"] {
+            let e = entry(pid: 3, id: "s", status)
+            let out = SessionPipeline.run(
+                snapshots: [], registry: [:], liveSessions: ["s": e],
+                acks: [:], frozenOrder: nil, popoverVisible: false, now: now
+            )
+            let state = out.rows.first?.state
+            #expect(state != .done && state != .error, "status \(status) produced \(state!)")
+        }
+    }
+
     @Test func fullDerivationOrdering() {
         // one of everything: an idle fake-wait, a registry-cleared wait,
         // a registry-detected block, a genuine hook wait, a worker

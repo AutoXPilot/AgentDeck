@@ -2,8 +2,37 @@
 
 ## Unreleased
 
+### Added
+
+- **Every live Claude session is listed, not just the ones hooks saw.**
+  Hooks only report sessions running when they fire, so a session
+  started before the hooks were installed — or one whose snapshot aged
+  out while it sat idle — was invisible. The development machine showed
+  **15 rows for 36 live sessions**, and two of the missing ones were
+  blocked waiting on the user, one of them for 72 days.
+
+  AgentDeck already read Claude's registry
+  (`~/.claude/sessions/<pid>.json`) on every reload but only consulted
+  it through a snapshot's pid, so sessions without a snapshot fell
+  through. It now also treats that registry as a discovery source,
+  filtered to genuinely live processes — a live pid *and* a matching
+  start time, because those files outlive their process and a recycled
+  pid would otherwise resurrect a dead session forever.
+
+  A snapshot always wins where both exist; `done` and `error` are never
+  inferred from a registry status. No subprocess is involved:
+  `claude agents --json` returns exactly this set, but shelling out from
+  a GUI app would mean finding a binary at a version-named path that
+  gets pruned on update. Codex has no equivalent registry and stays
+  hook-only.
+
+  Sessions already blocked when this first runs don't all fire a
+  notification at once — the backlog starts its cooldown instead.
+
 ### Fixed
 
+- Session counts in the menu-bar badge were computed before duplicate
+  rows were removed, so a doubled session could be counted twice.
 - **The 0.4.1 Codex model-freshness fix was inert.** `modelObservedAt`
   was set on every hook event but left out of `CodingKeys`, and since an
   explicit `CodingKeys` also drives the synthesized encoder, it was
