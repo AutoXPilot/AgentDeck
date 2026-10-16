@@ -22,6 +22,13 @@ public enum ClaudeSessionRegistry {
         public var nameSource: String?
         /// "interactive" | "bg" | "daemon" | "daemon-worker"
         public var kind: String?
+        /// The session's working directory. Durable across a reboot and the
+        /// only thing besides `sessionId` that resuming needs.
+        public var cwd: String?
+        /// When the process started, per Claude's own record. Paired with
+        /// `pid` this is a process identity, which is what makes it safe to
+        /// trust a registry file whose process may have exited.
+        public var startedAt: Date?
         public var statusUpdatedAt: Date?
         /// The registry file's mtime, filled in at load time. Fallback for
         /// `observedAt` when a build omits `statusUpdatedAt` (some Claude
@@ -31,6 +38,7 @@ public enum ClaudeSessionRegistry {
         public init(
             pid: Int32, sessionId: String, status: String, waitingFor: String? = nil,
             name: String? = nil, nameSource: String? = nil, kind: String? = nil,
+            cwd: String? = nil, startedAt: Date? = nil,
             statusUpdatedAt: Date? = nil, fileModifiedAt: Date? = nil
         ) {
             self.pid = pid
@@ -40,6 +48,8 @@ public enum ClaudeSessionRegistry {
             self.name = name
             self.nameSource = nameSource
             self.kind = kind
+            self.cwd = cwd
+            self.startedAt = startedAt
             self.statusUpdatedAt = statusUpdatedAt
             self.fileModifiedAt = fileModifiedAt
         }
@@ -70,6 +80,7 @@ public enum ClaudeSessionRegistry {
               let status = dict["status"] as? String
         else { return nil }
         let stamp = (dict["statusUpdatedAt"] as? NSNumber)?.doubleValue
+        let started = (dict["startedAt"] as? NSNumber)?.doubleValue
         return Entry(
             pid: pid,
             sessionId: sessionId,
@@ -78,6 +89,8 @@ public enum ClaudeSessionRegistry {
             name: dict["name"] as? String,
             nameSource: dict["nameSource"] as? String,
             kind: dict["kind"] as? String,
+            cwd: (dict["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            startedAt: started.map { Date(timeIntervalSince1970: $0 / 1000) },
             statusUpdatedAt: stamp.map { Date(timeIntervalSince1970: $0 / 1000) },
             fileModifiedAt: fileModifiedAt
         )
@@ -98,6 +111,48 @@ public enum ClaudeSessionRegistry {
             entries[entry.pid] = entry
         }
         return entries
+    }
+
+    /// The sessions Claude believes are running right now, keyed by session id.
+    ///
+    /// This is the same set `claude agents --json` returns — verified on a
+    /// machine with 36 live sessions, zero differences in either direction —
+    /// without spawning anything. That matters: the `claude` binary lives at
+    /// a version-named path that gets pruned on update, a GUI app does not
+    /// inherit the shell's PATH, and a subprocess on the reload path would
+    /// block the main actor.
+    ///
+    /// Registry files outlive their process, so every entry is checked
+    /// against a live pid AND that pid's start time. Without the second
+    /// check a recycled pid would resurrect a dead session forever.
+    public static func liveSessions(
+        from directory: URL = ClaudeSessionRegistry.defaultDirectory,
+        probe: Liveness.ProcessProbe = .system,
+        slack: TimeInterval = 120
+    ) -> [String: Entry] {
+        var live: [String: Entry] = [:]
+        for entry in load(from: directory).values {
+            guard isLive(entry, probe: probe, slack: slack) else { continue }
+            // One session id can only have one live process. If two files
+            // claim it, prefer the one that started later — the older is a
+            // stale file whose pid has been reused.
+            if let existing = live[entry.sessionId],
+               (existing.startedAt ?? .distantPast) >= (entry.startedAt ?? .distantPast) {
+                continue
+            }
+            live[entry.sessionId] = entry
+        }
+        return live
+    }
+
+    static func isLive(
+        _ entry: Entry, probe: Liveness.ProcessProbe, slack: TimeInterval
+    ) -> Bool {
+        guard let started = probe.startTime(entry.pid) else { return false }
+        // The process at this pid must not have started meaningfully after
+        // the session did; if it has, the pid was reused by something else.
+        guard let claimed = entry.startedAt else { return true }
+        return started <= claimed.addingTimeInterval(slack)
     }
 }
 

@@ -20,6 +20,67 @@ struct ClaudeSessionRegistryTests {
         #expect(entry.kind == "interactive")
         #expect(entry.isUserNamed)
         #expect(entry.statusUpdatedAt?.timeIntervalSince1970 == 1785509271.809)
+        // cwd + startedAt are what makes this file a resume handle, not
+        // just a status report
+        #expect(entry.cwd == "/Users/x/Code/version2")
+        #expect(entry.startedAt?.timeIntervalSince1970 == 1785417531.289)
+    }
+
+    @Test func liveSessionsFiltersDeadAndRecycledPids() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentdeck-reg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let started = Date(timeIntervalSince1970: 1_000_000)
+        func write(_ name: String, pid: Int32, session: String, startedAt: Date) throws {
+            let ms = startedAt.timeIntervalSince1970 * 1000
+            try Data("""
+            {"pid":\(pid),"sessionId":"\(session)","status":"idle",
+             "cwd":"/tmp/\(session)","startedAt":\(ms)}
+            """.utf8).write(to: dir.appendingPathComponent(name))
+        }
+        try write("1.json", pid: 101, session: "alive", startedAt: started)
+        try write("2.json", pid: 102, session: "dead", startedAt: started)
+        try write("3.json", pid: 103, session: "recycled", startedAt: started)
+
+        let probe = Liveness.ProcessProbe { pid in
+            switch pid {
+            case 101: return started                                  // same process
+            case 103: return started.addingTimeInterval(10_000)        // reused pid
+            default: return nil                                        // exited
+            }
+        }
+        let live = ClaudeSessionRegistry.liveSessions(from: dir, probe: probe)
+        #expect(Set(live.keys) == ["alive"])
+        #expect(live["alive"]?.cwd == "/tmp/alive",
+                "the inventory must carry cwd — resume needs it")
+        // registry files outlive their process; an unfiltered load would
+        // show both of these forever
+        #expect(ClaudeSessionRegistry.load(from: dir).count == 3)
+    }
+
+    @Test func liveSessionsPrefersTheNewerFileForADuplicateSessionId() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentdeck-reg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let old = Date(timeIntervalSince1970: 1_000_000)
+        let new = Date(timeIntervalSince1970: 2_000_000)
+        try Data("""
+        {"pid":201,"sessionId":"dup","status":"idle","cwd":"/old",
+         "startedAt":\(old.timeIntervalSince1970 * 1000)}
+        """.utf8).write(to: dir.appendingPathComponent("a.json"))
+        try Data("""
+        {"pid":202,"sessionId":"dup","status":"busy","cwd":"/new",
+         "startedAt":\(new.timeIntervalSince1970 * 1000)}
+        """.utf8).write(to: dir.appendingPathComponent("b.json"))
+
+        let probe = Liveness.ProcessProbe { pid in pid == 201 ? old : new }
+        let live = ClaudeSessionRegistry.liveSessions(from: dir, probe: probe)
+        #expect(live.count == 1)
+        #expect(live["dup"]?.cwd == "/new")
     }
 
     @Test func parsesWaitingWithReason() throws {
