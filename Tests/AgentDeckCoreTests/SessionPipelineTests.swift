@@ -108,6 +108,25 @@ struct SessionPipelineTests {
         }
     }
 
+    @Test func aBlockIsFoundEvenWhenTheSnapshotHasNoPid() {
+        // Reconciliation used to look the registry up only through
+        // snapshot.agentPid. A snapshot whose ancestor walk failed has no
+        // pid at all — which is routine, since a pruned claude binary
+        // breaks the walk — so the registry was never consulted and a
+        // session it *knew* was blocked raised no alert.
+        let noPid = snap("s", .working, pid: nil, ageSeconds: 600)
+        var live = entry(pid: 77, id: "s", "waiting", waitingFor: "permission prompt")
+        live.statusUpdatedAt = now.addingTimeInterval(-60)   // newer than the snapshot
+        let out = SessionPipeline.run(
+            snapshots: [noPid], registry: [:], liveSessions: ["s": live],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now
+        )
+        #expect(out.rows.count == 1)
+        #expect(out.rows[0].state == .waiting)
+        #expect(out.alertCount == 1)
+        #expect(out.waitingReasons["claude-s"] != nil)
+    }
+
     @Test func fullDerivationOrdering() {
         // one of everything: an idle fake-wait, a registry-cleared wait,
         // a registry-detected block, a genuine hook wait, a worker

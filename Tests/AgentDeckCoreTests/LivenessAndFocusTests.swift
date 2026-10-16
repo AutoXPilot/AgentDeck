@@ -47,6 +47,37 @@ struct LivenessAndFocusTests {
         )
     }
 
+    @Test func aConfirmedLiveSessionKeepsItsSnapshot() {
+        // Aging out a snapshot whose session is demonstrably still running
+        // no longer hides it — discovery re-adds the row — but it strips
+        // the pane id and hook state, so the row silently stops being
+        // clickable. The downgrade is invisible: same key, same position,
+        // acks intact.
+        let stale = snap("s", pid: nil, updated: now.addingTimeInterval(-48 * 3600))
+        #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
+                                      probe: probe([:])) == ["claude-s"])
+        #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
+                                      confirmedLive: ["s"],
+                                      probe: probe([:])).isEmpty)
+        // a different session being live protects nothing
+        #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
+                                      confirmedLive: ["other"],
+                                      probe: probe([:])) == ["claude-s"])
+    }
+
+    @Test func confirmationDoesNotProtectCodexRows() {
+        // the registry is Claude's; a Codex session id must not be
+        // protected by a same-named Claude entry
+        let codex = SessionSnapshot(
+            provider: .codex, sessionId: "s", projectPath: "/",
+            state: .working, event: "x",
+            updatedAt: now.addingTimeInterval(-48 * 3600)
+        )
+        #expect(Liveness.keysToRemove([codex], now: now, bootedAt: nil,
+                                      confirmedLive: ["s"],
+                                      probe: probe([:])) == ["codex-s"])
+    }
+
     @Test func keysToRemoveByIdentityAndIdle() {
         let live = snap("alive", pid: 100, updated: now)               // started before update
         let dead = snap("dead", pid: 200, updated: now)                // no start time

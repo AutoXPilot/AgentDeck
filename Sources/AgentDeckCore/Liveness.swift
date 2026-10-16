@@ -65,6 +65,12 @@ public enum Liveness {
     /// session blocked on the user emits NO events while it waits, so a 24h
     /// cap silently deleted live sessions waiting overnight — and they could
     /// never come back. Live, identity-verified pids get a long backstop.
+    /// `confirmedLive` names sessions another source has independently
+    /// verified as running (Claude's registry). Their snapshots are never
+    /// aged out: deleting one doesn't hide the session any more — discovery
+    /// re-adds it on the same key — it just silently strips the pane id,
+    /// permission mode and hook-derived state, leaving a row that looks
+    /// fine but can no longer be clicked to its terminal.
     public static func keysToRemove(
         _ snapshots: [SessionSnapshot],
         now: Date = Date(),
@@ -72,9 +78,11 @@ public enum Liveness {
         liveMaxIdle: TimeInterval = 7 * 24 * 3600,
         startSlack: TimeInterval = 120,
         bootedAt: Date? = Liveness.bootTime(),
+        confirmedLive: Set<String> = [],
         probe: ProcessProbe = .system
     ) -> [String] {
         snapshots.compactMap { s in
+            if s.provider == .claude, confirmedLive.contains(s.sessionId) { return nil }
             if let pid = s.agentPid {
                 guard pidIsTrustworthy(
                     pid, forUpdatedAt: s.updatedAt, slack: startSlack, probe: probe

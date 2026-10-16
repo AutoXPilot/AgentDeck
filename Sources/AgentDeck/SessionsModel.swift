@@ -263,22 +263,34 @@ final class SessionsModel: ObservableObject {
 
     func reload(sweep: Bool = false) {
         var all = store.loadAll()
+
+        // Read the registry BEFORE deciding what to delete. Expiring a
+        // snapshot whose session is demonstrably still running no longer
+        // hides the row — discovery re-adds it — but it does throw away
+        // the pane id and hook state, leaving a row that can't be clicked
+        // to its terminal. Loading this first lets the sweep skip them.
+        claudeRegistry = ClaudeSessionRegistry.load()
+        claudeLiveSessions = ClaudeSessionRegistry.liveSessions()
+        let confirmedLive = Set(claudeLiveSessions.keys)
+
         var removed = Set<String>()
         if readOnly {
             // hide what the live app would remove, but touch nothing
-            removed = Set(Liveness.keysToRemove(all))
+            removed = Set(Liveness.keysToRemove(all, confirmedLive: confirmedLive))
         } else {
             // sweepOrphans stats+re-decodes every file; only the 15s tick
             // needs it, not every hook-driven reload.
             if sweep { store.sweepOrphans() }
-            for key in Liveness.keysToRemove(all) {
+            for key in Liveness.keysToRemove(all, confirmedLive: confirmedLive) {
                 // Re-read and delete under the SAME lock the helper writes
                 // under. Unlocked, a helper could publish a fresh event in
                 // the gap between the re-read and the delete, and we would
                 // delete that fresh event — losing a live session's row.
                 let deleted = store.withKeyLock(key) { () -> Bool in
                     if let fresh = store.load(key: key),
-                       Liveness.keysToRemove([fresh]).isEmpty {
+                       Liveness.keysToRemove(
+                           [fresh], confirmedLive: confirmedLive
+                       ).isEmpty {
                         return false
                     }
                     store.remove(key: key)
@@ -289,11 +301,6 @@ final class SessionsModel: ObservableObject {
         }
         all.removeAll { removed.contains($0.key) }
 
-        claudeRegistry = ClaudeSessionRegistry.load()
-        // Sessions Claude knows are running, whether or not a hook ever
-        // reported them. Same files, filtered to live processes — no
-        // subprocess, so this is safe on the reload path.
-        claudeLiveSessions = ClaudeSessionRegistry.liveSessions()
         // All derivation lives in the tested core; this method only reads
         // files, assigns outputs, and performs side effects.
         let output = SessionPipeline.run(
