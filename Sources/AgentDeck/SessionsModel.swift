@@ -51,7 +51,7 @@ final class SessionsModel: ObservableObject {
     /// Sessions a restore has launched that aren't visible as running yet.
     /// A resumed session takes seconds to write its registry file, so a
     /// liveness check alone can't stop a second click double-launching it.
-    private var restoreInFlight: Set<String> = []
+    private var restoreInFlight: [String: Date] = [:]
     private let workspaceStore = WorkspaceStore()
     private let bootID = WorkspaceStore.currentBootID()
     private static let dismissedRestoreOfferKey = "dismissedRestoreOfferBoot"
@@ -374,6 +374,7 @@ final class SessionsModel: ObservableObject {
         }
         escalateLongWaits(output.rows)
         recordWorkspaceGeneration(output.rows)
+        releaseConfirmedRestores(output.rows)
         refreshHealth()
         // Transcript-derived facts (model, background-session kind) used to
         // refresh only on popover open, so a /model switch or a newly
@@ -575,9 +576,13 @@ final class SessionsModel: ObservableObject {
     /// still there when you do mean "I've handled it".
     func activate(_ snapshot: SessionSnapshot) {
         let target = focusTarget(for: snapshot)
-        let reachable: Bool
-        if case .itermPane = target { reachable = true } else { reachable = false }
-        if reachable || !Attention.needsAttention(snapshot, ackedAt: acks[snapshot.key]) {
+        // A pane is acknowledged once the focus script reports it reached
+        // it, not before: a pane id can be stale (the tab closed, or a
+        // tty-matched pane went away), and acknowledging up front cleared
+        // a blocked session's badge while leaving you somewhere else.
+        let isPane: Bool
+        if case .itermPane = target { isPane = true } else { isPane = false }
+        if !isPane, !Attention.needsAttention(snapshot, ackedAt: acks[snapshot.key]) {
             acknowledge(snapshot)
         }
         let guid: String
@@ -629,6 +634,7 @@ final class SessionsModel: ObservableObject {
                 guard let self else { return }
                 if result == "focused" {
                     self.focusProblem = nil
+                    self.acknowledge(snapshot)
                 } else {
                     self.focusProblem = SessionsModel.describeFocusFailure(result)
                     if let fallbackURL { NSWorkspace.shared.open(fallbackURL) }
@@ -641,7 +647,7 @@ final class SessionsModel: ObservableObject {
             pendingFocus = nil
             focus()
         }
-        // no reload() here — acknowledge() above already did one
+        reload()
     }
 
     /// Acknowledge without focusing anything.
@@ -1002,16 +1008,26 @@ final class SessionsModel: ObservableObject {
 // MARK: - Workspaces
 
 struct RestoreOffer: Identifiable, Equatable {
-    enum Kind: Equatable { case recentlyClosed, beforeRestart }
+    enum Kind: Equatable { case recentlyClosed(Date), beforeRestart(Date) }
     var kind: Kind
+    var bootID: String
     var entries: [WorkspaceEntry]
-    var id: Kind { kind }
+    var id: String { bootID }
 
     var title: String {
         switch kind {
-        case .recentlyClosed: return "Recently closed"
-        case .beforeRestart: return "Open before restart"
+        case .recentlyClosed(let when):
+            // the latest batch of closures, however old — say when
+            return "Closed " + when.formatted(date: Calendar.current.isDateInToday(when)
+                                              ? .omitted : .abbreviated, time: .shortened)
+        case .beforeRestart(let when):
+            return "Before restart, " + when.formatted(date: .abbreviated, time: .shortened)
         }
+    }
+
+    var isBeforeRestart: Bool {
+        if case .beforeRestart = kind { return true }
+        return false
     }
 }
 
@@ -1065,27 +1081,30 @@ extension SessionsModel {
         }
     }
 
+    /// One offer per retained boot, newest first. Every prior boot stays
+    /// reachable: offering only the latest meant that restoring part of a
+    /// set — or just starting one session — and then rebooting again hid
+    /// everything else from the boot before.
     func refreshWorkspaces() {
         let live = Set(sessions.map(\.key))
-        let generations = workspaceStore.generations()
         var offers: [RestoreOffer] = []
-        if let current = generations.first(where: { $0.bootID == bootID }) {
-            let closed = current.recentlyClosed(live: live)
-            if !closed.isEmpty { offers.append(.init(kind: .recentlyClosed, entries: closed)) }
-        }
-        if let previous = generations.first(where: { $0.bootID != bootID }) {
-            let closed = previous.recentlyClosed(live: live)
-            if !closed.isEmpty { offers.append(.init(kind: .beforeRestart, entries: closed)) }
+        for generation in workspaceStore.generations() {
+            let closed = generation.recentlyClosed(live: live)
+            guard !closed.isEmpty else { continue }
+            let when = closed.map(\.lastSeen).max() ?? generation.updatedAt
+            let kind: RestoreOffer.Kind = generation.bootID == bootID
+                ? .recentlyClosed(when) : .beforeRestart(when)
+            offers.append(.init(kind: kind, bootID: generation.bootID, entries: closed))
         }
         if offers != restoreOffers { restoreOffers = offers }
         let named = workspaceStore.named()
         if named != namedWorkspaces { namedWorkspaces = named }
     }
 
-    /// The previous boot's set, offered once per boot at the top of the
-    /// list until restored or dismissed.
+    /// The latest prior boot's set, offered at the top of the list until
+    /// restored or dismissed — once per boot.
     var launchRestoreOffer: RestoreOffer? {
-        guard let offer = restoreOffers.first(where: { $0.kind == .beforeRestart }),
+        guard let offer = restoreOffers.first(where: \.isBeforeRestart),
               UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID
         else { return nil }
         return offer
@@ -1101,7 +1120,19 @@ extension SessionsModel {
         return entries.filter { live.contains($0.key) }.count
     }
 
-    func restore(_ entries: [WorkspaceEntry]) {
+    /// A reservation ends when its session is seen running, or after ten
+    /// minutes. Expiring sooner let a slow start — a shell still loading,
+    /// a trust prompt — be launched a second time.
+    func releaseConfirmedRestores(_ rows: [SessionSnapshot]) {
+        guard !restoreInFlight.isEmpty else { return }
+        let now = Date()
+        let live = Set(rows.map(\.key))
+        restoreInFlight = restoreInFlight.filter { key, since in
+            !live.contains(key) && now.timeIntervalSince(since) < 600
+        }
+    }
+
+    func restore(_ entries: [WorkspaceEntry], dismissesLaunchOffer: Bool = false) {
         guard !readOnly else { return }
         guard !isRestoring else {
             installMessage = "A restore is already running."
@@ -1110,7 +1141,7 @@ extension SessionsModel {
         let threads = codexThreads
         let facts = WorkspaceRestore.Facts(
             live: Set(sessions.map(\.key)),
-            inFlight: restoreInFlight,
+            inFlight: Set(restoreInFlight.keys),
             conversationExists: { entry in
                 switch entry.provider {
                 case .claude:
@@ -1129,20 +1160,17 @@ extension SessionsModel {
         guard !plan.launches.isEmpty else {
             installMessage = plan.skipped.isEmpty
                 ? "Nothing to restore."
-                : "Nothing to restore: \(plan.skipSummary)."
+                : "Nothing to restore. " + WorkspaceRestore.describeSkips(plan.skipped)
             return
         }
-        if restoreOffers.contains(where: { $0.kind == .beforeRestart && $0.entries == entries }) {
-            dismissLaunchRestoreOffer()
-        }
         isRestoring = true
-        let keys = plan.launches.map(\.entry.key)
-        restoreInFlight.formUnion(keys)
+        let started = Date()
+        for launch in plan.launches { restoreInFlight[launch.entry.key] = started }
         installMessage = "Restoring \(plan.launches.count) "
             + "session\(plan.launches.count == 1 ? "" : "s")…"
         if popoverVisible { onRequestClose?() }
         let launches = plan.launches
-        let skipSummary = plan.skipSummary
+        let skipped = plan.skipped
         Task.detached {
             let outcomes = WorkspaceRestore.execute(
                 launches,
@@ -1161,49 +1189,69 @@ extension SessionsModel {
                 }
             )
             await MainActor.run { [weak self] in
-                self?.finishRestore(launches: launches, outcomes: outcomes,
-                                    skipSummary: skipSummary)
+                self?.finishRestore(launches: launches, outcomes: outcomes, skipped: skipped,
+                                    dismissesLaunchOffer: dismissesLaunchOffer)
             }
         }
     }
 
     private func finishRestore(
         launches: [WorkspaceRestore.Launch], outcomes: [String: WorkspaceRestore.Outcome],
-        skipSummary: String
+        skipped: [(entry: WorkspaceEntry, reason: WorkspaceRestore.SkipReason)],
+        dismissesLaunchOffer: Bool
     ) {
         isRestoring = false
-        var launched = 0, uncertain = 0, notNeeded = 0
-        var failures: [String] = []
+        var typed: [WorkspaceEntry] = []
+        var uncertain: [WorkspaceEntry] = []
+        var failure: String?
         for launch in launches {
             let key = launch.entry.key
             switch outcomes[key] {
-            case .launched: launched += 1
-            case .uncertain: uncertain += 1
+            case .launched:
+                typed.append(launch.entry)
+            case .uncertain:
+                // stays reserved: a pane may exist
+                uncertain.append(launch.entry)
             case .failed(let message):
-                failures.append(message)
-                restoreInFlight.remove(key)   // safe to retry: nothing opened
+                failure = failure ?? message
+                restoreInFlight[key] = nil   // nothing opened; safe to retry
             case nil:
-                notNeeded += 1
-                restoreInFlight.remove(key)
+                restoreInFlight[key] = nil   // came back some other way
             }
         }
-        // launched or uncertain: keep blocking a second launch until the
-        // session has had time to show up as running
-        let pending = launches.map(\.entry.key).filter {
-            if case .failed = outcomes[$0] { return false }
-            return outcomes[$0] != nil
+        if dismissesLaunchOffer, !typed.isEmpty { dismissLaunchRestoreOffer() }
+        var parts: [String] = []
+        if !typed.isEmpty { parts.append("Started \(typed.count) of \(launches.count)") }
+        if !uncertain.isEmpty {
+            parts.append("\(uncertain.map(\.label).joined(separator: ", ")) may have opened — "
+                         + "check iTerm before retrying")
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
-            self?.restoreInFlight.subtract(pending)
+        if let failure {
+            parts.append(failure.contains("-1743") || failure.lowercased().contains("not allowed")
+                ? "AgentDeck needs Automation permission to control iTerm2"
+                : "failed: \(failure)")
         }
-        var parts = ["Restored \(launched) of \(launches.count)"]
-        if uncertain > 0 { parts.append("\(uncertain) timed out — check iTerm before retrying") }
-        if notNeeded > 0 { parts.append("\(notNeeded) already back") }
-        if !failures.isEmpty { parts.append("\(failures.count) failed: \(failures[0])") }
-        if !skipSummary.isEmpty { parts.append(skipSummary) }
-        installMessage = parts.joined(separator: "; ") + "."
+        var message = parts.joined(separator: "; ") + "."
+        if !skipped.isEmpty { message += " " + WorkspaceRestore.describeSkips(skipped) }
+        installMessage = message
         reload()
         refreshWorkspaces()
+        guard !typed.isEmpty else { return }
+        // "Started" means the text was typed; whether each conversation is
+        // actually running is only known once its registry entry appears.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self else { return }
+            self.reload()
+            let live = Set(self.sessions.map(\.key))
+            let missing = typed.filter { !live.contains($0.key) }
+            Self.appLog("restore: \(typed.count - missing.count)/\(typed.count) confirmed running")
+            self.installMessage = missing.isEmpty
+                ? "Restored \(typed.count) session\(typed.count == 1 ? "" : "s")."
+                    + (skipped.isEmpty ? "" : " " + WorkspaceRestore.describeSkips(skipped))
+                : "\(typed.count - missing.count) of \(typed.count) running. Not yet: "
+                    + missing.prefix(4).map(\.label).joined(separator: ", ")
+                    + " — check those tabs for a prompt."
+        }
     }
 
     func promptSaveWorkspace() {

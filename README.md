@@ -152,10 +152,10 @@ A discovered row has no recorded pane id, since no hook ran to capture
 one. AgentDeck finds the pane by the agent process's controlling
 terminal, matched against the tty of each iTerm session, never by
 folder or title, since several sessions often share both. The match
-refreshes when the popover opens. If no pane matches, clicking only
-marks the session handled when it can actually take you there.
-Otherwise a blocked session would lose its badge while you ended up
-somewhere else.
+refreshes when the popover opens. A click marks a session handled
+only after AgentDeck has actually focused its pane. Otherwise a blocked
+session would lose its badge while you ended up somewhere else, which
+could happen if the pane had closed since the last refresh.
 
 **Hooks alone aren't enough to know if a session is blocked.** Nothing fires
 when a permission prompt is *answered*, so a `waiting` row could outlive the
@@ -210,34 +210,49 @@ Rebooting, or quitting iTerm to update it, closes every agent session.
 AgentDeck remembers them and can resume each conversation in its folder.
 
 - **After a restart**, the popover offers the sessions that were open
-  before it: one click on **Restore** reopens them as tabs in a new iTerm
-  window. Dismiss it and it stays in the footer menu (⋯ → Restore).
-- **Recently closed** in the same menu covers quitting iTerm without a
-  reboot.
+  before it. **Restore** reopens them as tabs in a new iTerm window.
+  Dismissed, it stays in the footer menu (⋯ → Restore), along with each
+  earlier boot AgentDeck still remembers.
+- **Closed <time>** in the same menu covers quitting iTerm without a
+  reboot: it is the latest batch of sessions that closed together.
 - **Save open sessions as workspace…** keeps a named set you can restore
   any time. Named workspaces are never changed or pruned automatically.
 
-Each session is restored as `cd <folder> && claude --resume <id>` (or
-`codex resume <id>`), typed into a fresh login shell, with Claude's
-permission mode carried over when a hook recorded it. Sessions already
-open are skipped, as are ones whose folder or conversation is gone, and
-the footer says which and why. When the agent exits, the tab drops back to
-a shell instead of closing. Background sessions and Codex sessions hosted
-in an app aren't captured, since there's no terminal to return them to.
+Each session is restored by typing `cd <folder> && claude --resume <id>`
+(or `codex resume <id>`) into a new tab. The tab uses your default iTerm
+profile, so that profile has to start a POSIX-style shell (zsh, bash);
+one that runs ssh or tmux instead won't work. Claude's permission mode is
+carried over when a hook recorded it. Sessions already open are skipped,
+as are ones whose folder or conversation is gone, and the footer names
+them and says why. The footer first says how many were *started*, then,
+30 seconds later, how many are actually running. A tab that stopped at a
+prompt (a folder trust question, say) is named there. When the agent
+exits, the tab drops back to a shell instead of closing. Background
+sessions and Codex sessions hosted in an app aren't captured, since
+there's no terminal to return them to.
+
+Restoring a session again while a previous restore of it may still be
+starting is refused until it shows up as running, or ten minutes pass.
+That protection lives in the running app, so it doesn't survive quitting
+AgentDeck.
 
 How it decides what to offer: AgentDeck keeps one record per boot under
 `~/Library/Application Support/AgentDeck/workspaces/` and only ever adds
-to it — a session that stops running keeps its last-seen time rather than
-being removed, because shutting down closes sessions one at a time and a
-record that tracked the live list would be empty by the time you needed
-it. The offer is whatever was running within 15 minutes of the last
-activity, so a session you closed on purpose hours earlier isn't brought
-back. The last five boots are kept.
+to it. A session that stops running keeps its last-seen time rather than
+being removed. Shutting down closes sessions one at a time, so a record
+that tracked the live list would be empty by the time you needed it. The
+offer is the most recent run of closures: sessions that stopped within
+five minutes of each other, however long the whole shutdown took. A
+session you closed on purpose well before then isn't included, and
+sessions still running never affect it. The current boot's record plus
+the five most recent earlier ones are kept.
 
 These files hold a folder, a session id, Claude's permission mode, and a
 session name only if you set one yourself. The command a session was
 started with is never stored: it can contain a prompt or a credential.
-Restore builds the command from the id, which must be a UUID.
+Restore builds the command from the id, which must be a UUID, and refuses
+a folder path that is relative or contains a control character (typed
+into a terminal, a control character acts as a keystroke).
 
 ## Hardening notes
 
@@ -295,7 +310,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 228 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 233 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

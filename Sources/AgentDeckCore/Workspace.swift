@@ -72,19 +72,43 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         self.entries = entries
     }
 
-    /// Sessions that were running together when this generation last saw
-    /// activity, minus any running now.
+    /// Sessions that stopped running together, minus any running now.
     ///
-    /// "Together" means seen within `window` of the latest sighting. A
-    /// session closed on purpose hours before a reboot falls outside it and
-    /// isn't offered back; sessions closed one after another while shutting
-    /// down fall inside it.
+    /// Only closed sessions are considered. Measuring from the latest
+    /// sighting of *anything* let one session started after an iTerm quit
+    /// push every closed one out of range just by staying alive. Among the
+    /// closed, the most recent closure starts a chain, and each earlier one
+    /// joins while it closed within `gap` of the last one that joined. A
+    /// shutdown closes sessions seconds apart, so it chains however long it
+    /// takes; a session closed on purpose hours earlier is left out.
     public func recentlyClosed(
-        live: Set<String>, window: TimeInterval = 15 * 60
+        live: Set<String>, gap: TimeInterval = 5 * 60
     ) -> [WorkspaceEntry] {
-        guard let latest = entries.map(\.lastSeen).max() else { return [] }
-        let cutoff = latest.addingTimeInterval(-window)
-        return entries.filter { $0.lastSeen >= cutoff && !live.contains($0.key) }
+        let closed = entries.filter { !live.contains($0.key) }
+            .sorted { $0.lastSeen > $1.lastSeen }
+        guard var previous = closed.first?.lastSeen else { return [] }
+        var members = Set<String>()
+        for entry in closed {
+            guard previous.timeIntervalSince(entry.lastSeen) <= gap else { break }
+            members.insert(entry.key)
+            previous = entry.lastSeen
+        }
+        return entries.filter { members.contains($0.key) }
+    }
+
+    /// Merges two views of the same boot; the newer sighting of each
+    /// session wins, and nothing is dropped.
+    func merged(with other: WorkspaceGeneration) -> WorkspaceGeneration {
+        var result = self
+        for entry in other.entries {
+            if let i = result.entries.firstIndex(where: { $0.key == entry.key }) {
+                if entry.lastSeen > result.entries[i].lastSeen { result.entries[i] = entry }
+            } else {
+                result.entries.append(entry)
+            }
+        }
+        result.updatedAt = max(updatedAt, other.updatedAt)
+        return result
     }
 }
 
@@ -189,8 +213,19 @@ public final class WorkspaceStore {
             return false
         }
         generation.updatedAt = now
+        // Merged with the file under a lock, not written over it: a second
+        // app instance (say, a source build beside the installed one) keeps
+        // its own copy, and the last writer would otherwise erase whatever
+        // the other had added.
+        let url = generationURL(bootID)
+        generation = try withLock {
+            if let onDisk = read(WorkspaceGeneration.self, from: url) {
+                generation = generation.merged(with: onDisk)
+            }
+            try write(generation, to: url)
+            return generation
+        }
         // adopted only once it is on disk, so a failed write is retried
-        try write(generation, to: generationURL(bootID))
         current = generation
         pruneGenerations(keeping: bootID)
         return true
@@ -240,6 +275,18 @@ public final class WorkspaceStore {
     }
 
     // MARK: Files
+
+    private func withLock<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let fd = open(directory.appendingPathComponent(".lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { return try body() }
+        flock(fd, LOCK_EX)
+        defer { flock(fd, LOCK_UN); close(fd) }
+        return try body()
+    }
 
     static func safeFilename(_ raw: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))

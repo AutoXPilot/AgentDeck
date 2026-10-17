@@ -116,7 +116,7 @@ struct WorkspaceRecoveryTests {
     @Test func offersWhatWasRunningTogetherAtTheEnd() {
         let g = WorkspaceGeneration(bootID: "B", updatedAt: t0, entries: [
             seen("closed-this-morning", minutesAgo: 300),
-            seen("shutdown-1", minutesAgo: 6),
+            seen("shutdown-1", minutesAgo: 4),
             seen("shutdown-2", minutesAgo: 1),
             seen("shutdown-3", minutesAgo: 0),
         ])
@@ -125,6 +125,54 @@ struct WorkspaceRecoveryTests {
         #expect(g.recentlyClosed(live: ["claude-shutdown-2"]).map(\.sessionId)
                 == ["shutdown-1", "shutdown-3"], "running sessions aren't offered")
         #expect(WorkspaceGeneration(bootID: "E", updatedAt: t0).recentlyClosed(live: []).isEmpty)
+    }
+}
+
+struct WorkspaceRecoveryEdgeTests {
+    let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+
+    func seen(_ id: String, minutesAgo: Double) -> WorkspaceEntry {
+        WorkspaceEntry(provider: .claude, sessionId: id, cwd: "/tmp",
+                       lastSeen: t0.addingTimeInterval(-minutesAgo * 60))
+    }
+
+    @Test func aSessionStartedAfterwardsDoesNotPushTheClosedOnesOut() {
+        // quit iTerm with three sessions, start a new one, work for an hour:
+        // the new session's heartbeat must not move the closed set's cutoff
+        let g = WorkspaceGeneration(bootID: "B", updatedAt: t0, entries: [
+            seen("closed-1", minutesAgo: 61), seen("closed-2", minutesAgo: 60),
+            seen("closed-3", minutesAgo: 60), seen("new", minutesAgo: 0),
+        ])
+        #expect(g.recentlyClosed(live: ["claude-new"]).map(\.sessionId)
+                == ["closed-1", "closed-2", "closed-3"])
+    }
+
+    @Test func aSlowShutdownChainsButAnEarlierCloseDoesNot() {
+        // closures 3 minutes apart for 30 minutes all chain; one closed two
+        // hours before that is a deliberate close, not part of the shutdown
+        var entries = (0..<10).map { seen("s\($0)", minutesAgo: Double($0) * 3) }
+        entries.append(seen("this-morning", minutesAgo: 150))
+        let g = WorkspaceGeneration(bootID: "B", updatedAt: t0, entries: entries)
+        let offered = Set(g.recentlyClosed(live: []).map(\.sessionId))
+        #expect(offered.count == 10)
+        #expect(!offered.contains("this-morning"))
+    }
+
+    @Test func twoAppInstancesDoNotEraseEachOthersEntries() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
+        let a = WorkspaceStore(directory: dir)
+        let b = WorkspaceStore(directory: dir)
+        let e = { (id: String) in
+            WorkspaceEntry(provider: .claude, sessionId: id, cwd: "/tmp", lastSeen: .distantPast)
+        }
+        try a.record(live: (1...30).map { e("s\($0)") }, bootID: "B", now: t0)
+        try b.record(live: [e("from-b")], bootID: "B", now: t0 + 10)
+        // a's heartbeat, a minute later, from its stale in-memory copy
+        try a.record(live: (1...30).map { e("s\($0)") }, bootID: "B", now: t0 + 70)
+        let ids = Set(a.loadGeneration(bootID: "B")?.entries.map(\.sessionId) ?? [])
+        #expect(ids.count == 31)
+        #expect(ids.contains("from-b"))
     }
 }
 
@@ -160,6 +208,26 @@ struct WorkspaceRestoreTests {
         let plan = WorkspaceRestore.plan([entry("Home-value")], facts: facts())
         #expect(plan.launches.isEmpty)
         #expect(plan.skipped.map(\.reason) == [.invalidSessionId])
+    }
+
+    @Test func idsAreCanonicalBeforeAnyCheck() {
+        let upper = entry("0B6B5A5E-6C1B-4B6F-9C55-0B1F2E3D4C5A")
+        let lower = entry("0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
+        let both = WorkspaceRestore.plan([upper, lower], facts: facts())
+        #expect(both.launches.count == 1, "one conversation, one launch")
+        // the registry reports lowercase ids; an uppercase entry is still open
+        let open = WorkspaceRestore.plan([upper], facts: facts(live: [lower.key]))
+        #expect(open.skipped.map(\.reason) == [.alreadyOpen])
+    }
+
+    @Test func pathsThatCannotBeTypedSafelyAreRefused() {
+        // typed into a terminal, a control character is a keystroke: Ctrl-U
+        // would erase the quoted prefix and leave the rest to run
+        for bad in ["/tmp/x\u{15}touch /tmp/pwned", "/tmp/a\u{1B}[B", "/tmp/new\nline", "relative/dir"] {
+            #expect(WorkspaceRestore.commandLine(for: entry(cwd: bad)) == nil, "\(bad.debugDescription)")
+            let plan = WorkspaceRestore.plan([entry(cwd: bad)], facts: facts(dirs: [bad]))
+            #expect(plan.skipped.map(\.reason) == [.unusableDirectory])
+        }
     }
 
     @Test func onlyKnownPermissionModesPassThrough() {
@@ -198,7 +266,8 @@ struct WorkspaceRestoreTests {
             live: [open.key], inFlight: [busy.key]))
         #expect(plan.launches.map(\.entry) == [fine], "duplicates launch once")
         #expect(plan.skipped.map(\.reason) == [.alreadyOpen, .alreadyRestoring, .missingDirectory])
-        #expect(plan.skipSummary == "1 already open, 1 already restoring, 1 folder missing")
+        #expect(WorkspaceRestore.describeSkips(plan.skipped)
+                == "Skipped: tmp (already open); tmp (already restoring); deleted (folder missing).")
 
         let missing = WorkspaceRestore.plan([fine], facts: facts(conversation: false))
         #expect(missing.skipped.map(\.reason) == [.missingConversation])
@@ -211,7 +280,8 @@ struct WorkspaceRestoreTests {
         let b = entry("22222222-2222-2222-2222-222222222222")
         let c = entry("33333333-3333-3333-3333-333333333333")
         let d = entry("44444444-4444-4444-4444-444444444444")
-        let launches = WorkspaceRestore.plan([a, b, c, d], facts: facts()).launches
+        let e = entry("55555555-5555-5555-5555-555555555555")
+        let launches = WorkspaceRestore.plan([a, b, c, d, e], facts: facts()).launches
         final class Calls: @unchecked Sendable { var windows: [String] = [] }
         let calls = Calls()
         let outcomes = WorkspaceRestore.execute(
@@ -222,13 +292,19 @@ struct WorkspaceRestoreTests {
                 calls.windows.append(args[0])
                 if args[1].contains("2222") { return .failure("timed out after 15s") }
                 if args[1].contains("3333") { return .failure("iTerm got an error") }
+                if args[1].contains("5555") {
+                    return .failure("Not authorized to send Apple events to iTerm. (-1743)")
+                }
                 return .success("901")
             }
         )
-        #expect(calls.windows == ["", "901", "901"])
+        #expect(calls.windows == ["", "901", "901", "901"])
+        #expect(outcomes[e.key] == .failed("Not authorized to send Apple events to iTerm. (-1743)"),
+                "refused before anything happened, so it is safe to retry")
         #expect(outcomes[a.key] == .launched)
-        #expect(outcomes[b.key] == .uncertain)
-        #expect(outcomes[c.key] == .failed("iTerm got an error"))
+        #expect(outcomes[b.key] == .uncertain("timed out after 15s"))
+        #expect(outcomes[c.key] == .uncertain("iTerm got an error"),
+                "an error after the script started may follow a pane being created")
         #expect(outcomes[d.key] == nil, "re-checked right before launching")
     }
 

@@ -334,7 +334,7 @@ struct SessionListView: View {
             Image(systemName: "arrow.counterclockwise.circle.fill")
                 .foregroundStyle(.blue)
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(sessionCount(offer.entries.count)) open before the restart")
+                Text("\(sessionCount(offer.entries.count)) were open before the restart")
                     .font(.callout)
                 Text(offer.entries.prefix(3).map(\.label).joined(separator: ", ")
                      + (offer.entries.count > 3 ? ", …" : ""))
@@ -343,7 +343,7 @@ struct SessionListView: View {
                     .lineLimit(1)
             }
             Spacer()
-            Button("Restore") { model.restore(offer.entries) }
+            Button("Restore") { model.restore(offer.entries, dismissesLaunchOffer: true) }
                 .disabled(model.isRestoring)
             Button {
                 model.dismissLaunchRestoreOffer()
