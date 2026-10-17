@@ -44,6 +44,18 @@ final class SessionsModel: ObservableObject {
     var onChange: (() -> Void)?
     var onRequestClose: (() -> Void)?
 
+    // Workspaces: what to bring back after a reboot or an iTerm restart.
+    @Published private(set) var restoreOffers: [RestoreOffer] = []
+    @Published private(set) var namedWorkspaces: [NamedWorkspace] = []
+    @Published private(set) var isRestoring = false
+    /// Sessions a restore has launched that aren't visible as running yet.
+    /// A resumed session takes seconds to write its registry file, so a
+    /// liveness check alone can't stop a second click double-launching it.
+    private var restoreInFlight: Set<String> = []
+    private let workspaceStore = WorkspaceStore()
+    private let bootID = WorkspaceStore.currentBootID()
+    private static let dismissedRestoreOfferKey = "dismissedRestoreOfferBoot"
+
     private let store = SnapshotStore()
     private var acks: [String: Date] = [:]
     private var dirWatcher: DispatchSourceFileSystemObject?
@@ -100,6 +112,7 @@ final class SessionsModel: ObservableObject {
         if forRendering {
             readOnly = true
             reload()
+            refreshWorkspaces()
             refreshTerminalTitles()
             return
         }
@@ -126,6 +139,7 @@ final class SessionsModel: ObservableObject {
         if let sweepTimer { RunLoop.main.add(sweepTimer, forMode: .common) }
         refreshTerminalTitles()
         reload()
+        refreshWorkspaces()
     }
 
     // MARK: - Popover lifecycle
@@ -152,6 +166,7 @@ final class SessionsModel: ObservableObject {
         }
         codexNames = CodexSessionIndex.load()
         reload()
+        refreshWorkspaces()
         refreshTerminalTitles()
         loadCodexThreadsAsync()
         loadClaudeModelsAsync()
@@ -358,6 +373,7 @@ final class SessionsModel: ObservableObject {
             }
         }
         escalateLongWaits(output.rows)
+        recordWorkspaceGeneration(output.rows)
         refreshHealth()
         // Transcript-derived facts (model, background-session kind) used to
         // refresh only on popover open, so a /model switch or a newly
@@ -980,5 +996,266 @@ final class SessionsModel: ObservableObject {
         UserDefaults.standard.set(
             acks.mapValues { $0.timeIntervalSince1970 }, forKey: Self.acksDefaultsKey
         )
+    }
+}
+
+// MARK: - Workspaces
+
+struct RestoreOffer: Identifiable, Equatable {
+    enum Kind: Equatable { case recentlyClosed, beforeRestart }
+    var kind: Kind
+    var entries: [WorkspaceEntry]
+    var id: Kind { kind }
+
+    var title: String {
+        switch kind {
+        case .recentlyClosed: return "Recently closed"
+        case .beforeRestart: return "Open before restart"
+        }
+    }
+}
+
+extension SessionsModel {
+    /// The remembered form of a row, or nil for one that can't be brought
+    /// back into a terminal: a background session (no window to return
+    /// to), a Codex session hosted by an app, or a Claude session with no
+    /// sign it was interactive.
+    func workspaceEntry(for s: SessionSnapshot, now: Date = Date()) -> WorkspaceEntry? {
+        switch s.provider {
+        case .claude:
+            let registry = claudeLiveSessions[s.sessionId]
+            let kind = registry?.kind ?? claudeSessionKinds[s.sessionId]
+            if FocusResolver.isBackground(sessionKind: kind) { return nil }
+            guard registry?.kind == "interactive" || s.terminalSessionId != nil else { return nil }
+            let cwd = registry?.cwd ?? s.projectPath
+            guard !cwd.isEmpty else { return nil }
+            return WorkspaceEntry(
+                provider: .claude, sessionId: s.sessionId, cwd: cwd,
+                displayName: registry?.isUserNamed == true ? registry?.name : nil,
+                permissionMode: s.permissionMode, lastSeen: now
+            )
+        case .codex:
+            guard s.terminalSessionId != nil, !s.projectPath.isEmpty else { return nil }
+            let name = codexNames[s.sessionId]
+            return WorkspaceEntry(
+                provider: .codex, sessionId: s.sessionId, cwd: s.projectPath,
+                displayName: (name?.isEmpty == false) ? name : nil,
+                permissionMode: s.permissionMode, lastSeen: now
+            )
+        }
+    }
+
+    var liveWorkspaceEntries: [WorkspaceEntry] {
+        let now = Date()
+        return sessions.compactMap { workspaceEntry(for: $0, now: now) }
+    }
+
+    /// Called on every reload; the store writes only when something changed
+    /// or a running session's sighting is a minute stale.
+    func recordWorkspaceGeneration(_ rows: [SessionSnapshot]) {
+        guard !readOnly, let bootID else { return }
+        let now = Date()
+        let live = rows.compactMap { workspaceEntry(for: $0, now: now) }
+        do {
+            if try workspaceStore.record(live: live, bootID: bootID, now: now) {
+                refreshWorkspaces()
+            }
+        } catch {
+            Self.appLog("workspace: record FAILED: \(error)")
+        }
+    }
+
+    func refreshWorkspaces() {
+        let live = Set(sessions.map(\.key))
+        let generations = workspaceStore.generations()
+        var offers: [RestoreOffer] = []
+        if let current = generations.first(where: { $0.bootID == bootID }) {
+            let closed = current.recentlyClosed(live: live)
+            if !closed.isEmpty { offers.append(.init(kind: .recentlyClosed, entries: closed)) }
+        }
+        if let previous = generations.first(where: { $0.bootID != bootID }) {
+            let closed = previous.recentlyClosed(live: live)
+            if !closed.isEmpty { offers.append(.init(kind: .beforeRestart, entries: closed)) }
+        }
+        if offers != restoreOffers { restoreOffers = offers }
+        let named = workspaceStore.named()
+        if named != namedWorkspaces { namedWorkspaces = named }
+    }
+
+    /// The previous boot's set, offered once per boot at the top of the
+    /// list until restored or dismissed.
+    var launchRestoreOffer: RestoreOffer? {
+        guard let offer = restoreOffers.first(where: { $0.kind == .beforeRestart }),
+              UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID
+        else { return nil }
+        return offer
+    }
+
+    func dismissLaunchRestoreOffer() {
+        UserDefaults.standard.set(bootID, forKey: Self.dismissedRestoreOfferKey)
+        objectWillChange.send()
+    }
+
+    func openCount(of entries: [WorkspaceEntry]) -> Int {
+        let live = Set(sessions.map(\.key))
+        return entries.filter { live.contains($0.key) }.count
+    }
+
+    func restore(_ entries: [WorkspaceEntry]) {
+        guard !readOnly else { return }
+        guard !isRestoring else {
+            installMessage = "A restore is already running."
+            return
+        }
+        let threads = codexThreads
+        let facts = WorkspaceRestore.Facts(
+            live: Set(sessions.map(\.key)),
+            inFlight: restoreInFlight,
+            conversationExists: { entry in
+                switch entry.provider {
+                case .claude:
+                    return ClaudeTranscript.url(
+                        sessionId: entry.sessionId, projectPath: entry.cwd) != nil
+                case .codex:
+                    // an empty map means the database couldn't be read
+                    return threads.isEmpty ? nil : threads[entry.sessionId] != nil
+                }
+            }
+        )
+        let plan = WorkspaceRestore.plan(entries, facts: facts)
+        for (entry, reason) in plan.skipped {
+            Self.appLog("restore: skip \(entry.key) \(reason.phrase)")
+        }
+        guard !plan.launches.isEmpty else {
+            installMessage = plan.skipped.isEmpty
+                ? "Nothing to restore."
+                : "Nothing to restore: \(plan.skipSummary)."
+            return
+        }
+        if restoreOffers.contains(where: { $0.kind == .beforeRestart && $0.entries == entries }) {
+            dismissLaunchRestoreOffer()
+        }
+        isRestoring = true
+        let keys = plan.launches.map(\.entry.key)
+        restoreInFlight.formUnion(keys)
+        installMessage = "Restoring \(plan.launches.count) "
+            + "session\(plan.launches.count == 1 ? "" : "s")…"
+        if popoverVisible { onRequestClose?() }
+        let launches = plan.launches
+        let skipSummary = plan.skipSummary
+        Task.detached {
+            let outcomes = WorkspaceRestore.execute(
+                launches,
+                // read fresh, right before each launch: the click may have
+                // raced a session coming back some other way
+                stillWanted: { entry in
+                    switch entry.provider {
+                    case .claude:
+                        return ClaudeSessionRegistry.liveSessions()[entry.sessionId] == nil
+                    case .codex:
+                        return SnapshotStore().load(key: entry.key) == nil
+                    }
+                },
+                progress: { entry, outcome in
+                    SessionsModel.appLog("restore: \(entry.key) \(outcome)")
+                }
+            )
+            await MainActor.run { [weak self] in
+                self?.finishRestore(launches: launches, outcomes: outcomes,
+                                    skipSummary: skipSummary)
+            }
+        }
+    }
+
+    private func finishRestore(
+        launches: [WorkspaceRestore.Launch], outcomes: [String: WorkspaceRestore.Outcome],
+        skipSummary: String
+    ) {
+        isRestoring = false
+        var launched = 0, uncertain = 0, notNeeded = 0
+        var failures: [String] = []
+        for launch in launches {
+            let key = launch.entry.key
+            switch outcomes[key] {
+            case .launched: launched += 1
+            case .uncertain: uncertain += 1
+            case .failed(let message):
+                failures.append(message)
+                restoreInFlight.remove(key)   // safe to retry: nothing opened
+            case nil:
+                notNeeded += 1
+                restoreInFlight.remove(key)
+            }
+        }
+        // launched or uncertain: keep blocking a second launch until the
+        // session has had time to show up as running
+        let pending = launches.map(\.entry.key).filter {
+            if case .failed = outcomes[$0] { return false }
+            return outcomes[$0] != nil
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            self?.restoreInFlight.subtract(pending)
+        }
+        var parts = ["Restored \(launched) of \(launches.count)"]
+        if uncertain > 0 { parts.append("\(uncertain) timed out — check iTerm before retrying") }
+        if notNeeded > 0 { parts.append("\(notNeeded) already back") }
+        if !failures.isEmpty { parts.append("\(failures.count) failed: \(failures[0])") }
+        if !skipSummary.isEmpty { parts.append(skipSummary) }
+        installMessage = parts.joined(separator: "; ") + "."
+        reload()
+        refreshWorkspaces()
+    }
+
+    func promptSaveWorkspace() {
+        let entries = liveWorkspaceEntries
+        guard !entries.isEmpty else {
+            installMessage = "No open sessions to save."
+            return
+        }
+        if popoverVisible { onRequestClose?() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Save \(entries.count) open session\(entries.count == 1 ? "" : "s") as a workspace"
+            alert.informativeText = "Restoring it later resumes each conversation in its folder."
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+            field.placeholderString = "Workspace name"
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            do {
+                try self.workspaceStore.save(
+                    NamedWorkspace(name: name, savedAt: Date(), entries: entries))
+                self.installMessage = "Saved “\(name)” (\(entries.count) sessions)."
+            } catch {
+                self.installMessage = "Couldn't save workspace: \(error.localizedDescription)"
+            }
+            self.refreshWorkspaces()
+        }
+    }
+
+    func confirmDeleteWorkspace(_ workspace: NamedWorkspace) {
+        if popoverVisible { onRequestClose?() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Delete workspace “\(workspace.name)”?"
+            alert.informativeText = "This removes the saved list only. No session is closed."
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            do {
+                try self.workspaceStore.deleteNamed(id: workspace.id)
+            } catch {
+                self.installMessage = "Couldn't delete: \(error.localizedDescription)"
+            }
+            self.refreshWorkspaces()
+        }
     }
 }

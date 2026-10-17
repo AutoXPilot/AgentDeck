@@ -37,7 +37,9 @@ The hooks invoke a small helper binary
 (`~/Library/Application Support/AgentDeck/bin/agentdeck-hook`) on session
 events. It writes **metadata-only** snapshots — provider, session id, working
 directory, state, timestamp, terminal pane id, agent pid — to
-`~/Library/Application Support/AgentDeck/sessions/`.
+`~/Library/Application Support/AgentDeck/sessions/`. The app keeps the
+restorable list of sessions under `…/AgentDeck/workspaces/` (see
+[Bringing sessions back](#bringing-sessions-back-after-a-restart)).
 
 **Privacy:** nothing leaves your machine, and no prompt, response or
 credential is ever stored. The helper writes metadata only — there is a test
@@ -202,6 +204,41 @@ snapshot was last written — events that omit the model still touch the
 snapshot while carrying the old model forward, so the write time says
 nothing about how current the model is.
 
+## Bringing sessions back after a restart
+
+Rebooting, or quitting iTerm to update it, closes every agent session.
+AgentDeck remembers them and can resume each conversation in its folder.
+
+- **After a restart**, the popover offers the sessions that were open
+  before it: one click on **Restore** reopens them as tabs in a new iTerm
+  window. Dismiss it and it stays in the footer menu (⋯ → Restore).
+- **Recently closed** in the same menu covers quitting iTerm without a
+  reboot.
+- **Save open sessions as workspace…** keeps a named set you can restore
+  any time. Named workspaces are never changed or pruned automatically.
+
+Each session is restored as `cd <folder> && claude --resume <id>` (or
+`codex resume <id>`), typed into a fresh login shell, with Claude's
+permission mode carried over when a hook recorded it. Sessions already
+open are skipped, as are ones whose folder or conversation is gone, and
+the footer says which and why. When the agent exits, the tab drops back to
+a shell instead of closing. Background sessions and Codex sessions hosted
+in an app aren't captured, since there's no terminal to return them to.
+
+How it decides what to offer: AgentDeck keeps one record per boot under
+`~/Library/Application Support/AgentDeck/workspaces/` and only ever adds
+to it — a session that stops running keeps its last-seen time rather than
+being removed, because shutting down closes sessions one at a time and a
+record that tracked the live list would be empty by the time you needed
+it. The offer is whatever was running within 15 minutes of the last
+activity, so a session you closed on purpose hours earlier isn't brought
+back. The last five boots are kept.
+
+These files hold a folder, a session id, Claude's permission mode, and a
+session name only if you set one yourself. The command a session was
+started with is never stored: it can contain a prompt or a credential.
+Restore builds the command from the id, which must be a UUID.
+
 ## Hardening notes
 
 - On launch the app compares the bundled helper's SHA-256 against the stable
@@ -258,7 +295,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 211 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 228 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

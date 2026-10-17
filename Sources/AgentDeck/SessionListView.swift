@@ -16,6 +16,10 @@ struct SessionListView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
+            if let offer = model.launchRestoreOffer {
+                restoreBanner(offer)
+                Divider()
+            }
             // keep the field visible while a filter is applied, or a live
             // event dropping the count below the threshold strands the user
             // in a filtered list with no way to clear it
@@ -249,6 +253,8 @@ struct SessionListView: View {
                     .disabled(model.isInstalling)
                 }
                 Menu {
+                    workspaceMenuItems
+                    Divider()
                     Button("Copy diagnostics") { model.copyDiagnostics() }
                     Button("Open Automation settings") { model.openAutomationSettings() }
                     Divider()
@@ -280,6 +286,72 @@ struct SessionListView: View {
                     .lineLimit(4)
                     .textSelection(.enabled)
             }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var workspaceMenuItems: some View {
+        if !model.restoreOffers.isEmpty || !model.namedWorkspaces.isEmpty {
+            Section("Restore") {
+                ForEach(model.restoreOffers) { offer in
+                    Button("\(offer.title) — \(sessionCount(offer.entries.count))") {
+                        model.restore(offer.entries)
+                    }
+                }
+                ForEach(model.namedWorkspaces) { workspace in
+                    Button(workspaceLabel(workspace)) { model.restore(workspace.entries) }
+                }
+            }
+            .disabled(model.isRestoring)
+        }
+        Button("Save open sessions as workspace…") { model.promptSaveWorkspace() }
+        if !model.namedWorkspaces.isEmpty {
+            Menu("Delete workspace") {
+                ForEach(model.namedWorkspaces) { workspace in
+                    Button(workspace.name) { model.confirmDeleteWorkspace(workspace) }
+                }
+            }
+        }
+    }
+
+    private func sessionCount(_ n: Int) -> String {
+        "\(n) session\(n == 1 ? "" : "s")"
+    }
+
+    /// "givzey — 5 sessions, 2 open": a restore skips the open ones, so
+    /// say up front how many it would actually bring back.
+    private func workspaceLabel(_ workspace: NamedWorkspace) -> String {
+        let open = model.openCount(of: workspace.entries)
+        var label = "\(workspace.name) — \(sessionCount(workspace.entries.count))"
+        if open > 0 { label += ", \(open) open" }
+        return label
+    }
+
+    private func restoreBanner(_ offer: RestoreOffer) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(sessionCount(offer.entries.count)) open before the restart")
+                    .font(.callout)
+                Text(offer.entries.prefix(3).map(\.label).joined(separator: ", ")
+                     + (offer.entries.count > 3 ? ", …" : ""))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("Restore") { model.restore(offer.entries) }
+                .disabled(model.isRestoring)
+            Button {
+                model.dismissLaunchRestoreOffer()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
