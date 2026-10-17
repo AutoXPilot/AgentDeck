@@ -21,6 +21,8 @@ final class SessionsModel: ObservableObject {
     /// iTerm session GUID → tab title. Kept across opens so rows don't
     /// re-label under the cursor a second after the popover appears.
     @Published private(set) var terminalTitles: [String: String] = [:]
+    /// "ttys018" → iTerm session GUID, from the same fetch as the titles.
+    private var paneByTTY: [String: String] = [:]
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
     @Published private(set) var codexThreads: [String: CodexThread] = [:]
@@ -514,9 +516,19 @@ final class SessionsModel: ObservableObject {
     /// app), or nowhere.
     func focusTarget(for snapshot: SessionSnapshot) -> FocusTarget {
         FocusResolver.resolve(
-            terminalSessionId: snapshot.terminalSessionId,
+            terminalSessionId: snapshot.terminalSessionId ?? paneByControllingTTY(snapshot),
             owningAppBundlePath: owningAppBundle(for: snapshot)
         )
+    }
+
+    /// A row discovered from Claude's registry has no recorded pane id —
+    /// no hook ever ran to capture ITERM_SESSION_ID. Its agent's
+    /// controlling terminal identifies the pane exactly. Not cached: the
+    /// lookup is one sysctl, and a cache keyed on pid would outlive it.
+    private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
+        guard let pid = snapshot.agentPid,
+              let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
+        return paneByTTY[tty]
     }
 
     /// Walking the process tree per row per render is wasteful; the answer
@@ -897,11 +909,12 @@ final class SessionsModel: ObservableObject {
         let generation = titleFetchGeneration
         Task.detached {
             let outcome = ITermFocus.fetchSessionNames()
-            let names: [String: String]
+            let list: ITermFocus.SessionList
             switch outcome {
             case .success(let raw):
-                names = ITermFocus.parseSessionNames(raw)
-                Self.appLog("titles: fetched \(names.count) session titles")
+                list = ITermFocus.parseSessionList(raw)
+                Self.appLog("titles: fetched \(list.names.count) session titles, "
+                            + "\(list.guidByTTY.count) ttys")
             case .failure(let err):
                 Self.appLog("titles: fetch FAILED: \(err)")
                 return  // keep prior titles on failure
@@ -910,7 +923,8 @@ final class SessionsModel: ObservableObject {
             // gone — so apply it rather than leaving stale titles/lock icons.
             Task { @MainActor [weak self] in
                 guard let self, generation == self.titleFetchGeneration else { return }
-                self.terminalTitles = names
+                self.terminalTitles = list.names
+                self.paneByTTY = list.guidByTTY
                 self.onChange?()
             }
         }

@@ -146,10 +146,14 @@ carries the pane id and the hook-derived state. `done` and `error` are
 never inferred this way; they are facts only a hook can supply. Codex has
 no equivalent registry, so it remains hook-only.
 
-A discovered row has no recorded pane, so clicking it can't jump to a
-specific split. Clicking only marks a session handled when it can
-actually take you there — otherwise a blocked session would lose its
-badge while you ended up somewhere else.
+A discovered row has no recorded pane id, since no hook ran to capture
+one. AgentDeck finds the pane by the agent process's controlling
+terminal, matched against the tty of each iTerm session, never by
+folder or title, since several sessions often share both. The match
+refreshes when the popover opens. If no pane matches, clicking only
+marks the session handled when it can actually take you there.
+Otherwise a blocked session would lose its badge while you ended up
+somewhere else.
 
 **Hooks alone aren't enough to know if a session is blocked.** Nothing fires
 when a permission prompt is *answered*, so a `waiting` row could outlive the
@@ -254,7 +258,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 209 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 211 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

@@ -84,7 +84,8 @@ public enum ITermFocus {
         }
     }
 
-    /// Enumerates every iTerm session as "GUID<TAB>title" lines.
+    /// Enumerates every iTerm session as "GUID<TAB>tty<TAB>title" lines.
+    /// The title goes last because it is the only free-text field.
     /// Delimiters are computed OUTSIDE the tell block: inside it, `tab`
     /// resolves to iTerm's tab CLASS (dictionary shadowing), which silently
     /// produced unparseable output.
@@ -99,7 +100,7 @@ public enum ITermFocus {
                     repeat with t in tabs of w
                         try
                             repeat with s in sessions of t
-                                set out to out & (id of s) & d & (name of s) & nl
+                                set out to out & (id of s) & d & (tty of s) & d & (name of s) & nl
                             end repeat
                         end try
                     end repeat
@@ -152,15 +153,39 @@ public enum ITermFocus {
         }
     }
 
-    public static func parseSessionNames(_ output: String) -> [String: String] {
-        var names: [String: String] = [:]
+    public struct SessionList: Equatable, Sendable {
+        /// GUID → sanitized tab title
+        public var names: [String: String] = [:]
+        /// "ttys018" → GUID
+        public var guidByTTY: [String: String] = [:]
+    }
+
+    /// The tty is how a session with no recorded pane id finds its pane:
+    /// the agent's controlling terminal is an exact fact about the process,
+    /// unlike cwd or title, which several sessions routinely share.
+    public static func parseSessionList(_ output: String) -> SessionList {
+        var list = SessionList()
         for line in output.split(separator: "\n") {
-            guard let tabIndex = line.firstIndex(of: "\t") else { continue }
-            let guid = String(line[..<tabIndex])
-            let name = sanitizeTitle(String(line[line.index(after: tabIndex)...]))
-            if !guid.isEmpty && !name.isEmpty { names[guid] = name }
+            let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard fields.count == 3 else { continue }
+            let guid = String(fields[0])
+            guard !guid.isEmpty else { continue }
+            if let tty = normalizedTTY(String(fields[1])) { list.guidByTTY[tty] = guid }
+            let name = sanitizeTitle(String(fields[2]))
+            if !name.isEmpty { list.names[guid] = name }
         }
-        return names
+        return list
+    }
+
+    public static func parseSessionNames(_ output: String) -> [String: String] {
+        parseSessionList(output).names
+    }
+
+    /// "/dev/ttys018" and "ttys018" name the same device.
+    public static func normalizedTTY(_ raw: String) -> String? {
+        var tty = raw.trimmingCharacters(in: .whitespaces)
+        if tty.hasPrefix("/dev/") { tty.removeFirst(5) }
+        return tty.isEmpty ? nil : tty
     }
 
     /// GUID → tab title for every live iTerm session; failure carries the

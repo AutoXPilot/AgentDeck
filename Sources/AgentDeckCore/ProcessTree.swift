@@ -95,6 +95,20 @@ public enum ProcessTree {
             TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
     }
 
+    /// Controlling terminal device name ("ttys018"), or nil for a process
+    /// with none — a daemonized background session, or one reparented
+    /// after its terminal closed.
+    public static func controllingTTY(of pid: pid_t) -> String? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let dev = info.kp_eproc.e_tdev
+        guard dev != -1, dev != 0, let name = devname(dev, S_IFCHR) else { return nil }
+        let tty = String(cString: name)
+        return tty.isEmpty || tty == "??" ? nil : tty
+    }
+
     /// Hooks run under a shell the CLI spawned, so getppid() is usually
     /// sh — walk ancestors until we find the agent process itself, matching
     /// on the executable path (not p_comm; see above).

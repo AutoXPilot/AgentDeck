@@ -210,17 +210,17 @@ struct LivenessAndFocusTests {
     }
 
     @Test func parseSessionNamesSanitizesTitles() {
-        let names = ITermFocus.parseSessionNames("GUID-1\tCode (codex\")")
+        let names = ITermFocus.parseSessionNames("GUID-1\t/dev/ttys001\tCode (codex\")")
         #expect(names["GUID-1"] == "Code")
     }
 
     @Test func parseSessionNamesHandlesRealAndMalformedLines() {
         let output = """
-        C4EB7622-AAAA\t✳ infra (claude)
-        B4F41D67-BBBB\t⠂ Claude-session-watcher (caffeinate)
+        C4EB7622-AAAA\t/dev/ttys000\t✳ infra (claude)
+        B4F41D67-BBBB\t/dev/ttys001\t⠂ Claude-session-watcher (caffeinate)
         no-tab-in-this-line
-        \tname-without-guid
-        GUID-ONLY\t
+        \t/dev/ttys002\tname-without-guid
+        GUID-ONLY\t\t
         """
         let names = ITermFocus.parseSessionNames(output)
         #expect(names == [
@@ -228,6 +228,25 @@ struct LivenessAndFocusTests {
             "B4F41D67-BBBB": "Claude-session-watcher (caffeinate)",
         ])
         #expect(ITermFocus.parseSessionNames("").isEmpty)
+    }
+
+    @Test func sessionListMapsTTYsToPanes() {
+        // a title containing a tab must not shift the fields
+        let list = ITermFocus.parseSessionList(
+            "G-1\t/dev/ttys018\twith\ttab\nG-2\t/dev/ttys030\t\nG-3\t\tno tty\n"
+        )
+        #expect(list.guidByTTY == ["ttys018": "G-1", "ttys030": "G-2"])
+        #expect(list.names["G-1"] == "with\ttab")
+        #expect(list.names["G-2"] == nil, "an empty title is still a pane")
+        #expect(list.names["G-3"] == "no tty")
+    }
+
+    @Test func ownTTYIsReadable() throws {
+        // the test runner may have no terminal (CI); it must then say so
+        // rather than inventing one
+        let tty = ProcessTree.controllingTTY(of: getpid())
+        if let tty { #expect(tty.hasPrefix("tty")) }
+        #expect(ProcessTree.controllingTTY(of: -1) == nil)
     }
 
     @Test func sessionGUIDExtraction() {
