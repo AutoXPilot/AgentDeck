@@ -283,16 +283,45 @@ struct LivenessAndFocusTests {
         // attribution, which drops the snapshot from the 7-day live cap to
         // the 24-hour idle one — deleting exactly the sessions worth
         // keeping. Observed live on a session running since July.
+        //
+        // The fixture is compiled here rather than copied from /bin. A copy
+        // of a system binary is SIGKILLed within a fraction of a second of
+        // starting, and the test only ever passed by reading the path
+        // before the kill landed — about four runs in five.
         let fm = FileManager.default
-        let copy = fm.temporaryDirectory
-            .appendingPathComponent("agentdeck-sleep-\(UUID().uuidString)")
-        try fm.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: copy)
+        let dir = fm.temporaryDirectory
+            .appendingPathComponent("agentdeck-fixture-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("sleeper.c")
+        let copy = dir.appendingPathComponent("sleeper")
+        try "#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+        let cc = Process()
+        cc.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
+        cc.arguments = [source.path, "-o", copy.path]
+        try cc.run()
+        cc.waitUntilExit()
+        try #require(cc.terminationStatus == 0, "couldn't compile the fixture")
 
         let child = Process()
         child.executableURL = copy
-        child.arguments = ["30"]
         try child.run()
         defer { child.terminate() }
+
+        // Delete only once the child is past startup: unlinking an
+        // executable while its process is still starting can get it
+        // SIGKILLed (measured: 13 of 20 died when deleted immediately, none
+        // after 300ms). Production prunes a binary hours into a session.
+        var buf = [CChar](repeating: 0, count: 4096)
+        let execDeadline = Date().addingTimeInterval(2)
+        while proc_pidpath(child.processIdentifier, &buf, UInt32(buf.count)) <= 0,
+              Date() < execDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        try #require(child.isRunning,
+                     "the fixture process died before its binary was deleted")
 
         try fm.removeItem(at: copy)   // the update that prunes the old build
         #expect(!fm.fileExists(atPath: copy.path))
