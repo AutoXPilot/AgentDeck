@@ -48,6 +48,13 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var restoreOffers: [RestoreOffer] = []
     @Published private(set) var namedWorkspaces: [NamedWorkspace] = []
     @Published private(set) var isRestoring = false
+    /// Sessions a restore skipped because their folder is gone, each
+    /// offered a "Locate…" so the rest of the recovery can be finished
+    /// from here rather than by hand.
+    @Published private(set) var missingFolders: [WorkspaceEntry] = []
+    /// The named workspace those entries came from, if any, so a located
+    /// folder is saved back into it.
+    private var missingFoldersWorkspaceID: String?
     /// Sessions a restore has launched that aren't visible as running yet.
     /// A resumed session takes seconds to write its registry file, so a
     /// liveness check alone can't stop a second click double-launching it.
@@ -542,8 +549,14 @@ final class SessionsModel: ObservableObject {
     /// no hook ever ran to capture ITERM_SESSION_ID. Its agent's
     /// controlling terminal identifies the pane exactly. Not cached: the
     /// lookup is one sysctl, and a cache keyed on pid would outlive it.
+    ///
+    /// The pid must still be the session's: Claude's registry entry for it,
+    /// already checked against the process start time, has to name this
+    /// same pid. Otherwise a recycled pid would lead to whatever pane its
+    /// new owner happens to run in.
     private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
-        guard let pid = snapshot.agentPid,
+        guard snapshot.provider == .claude, let pid = snapshot.agentPid,
+              claudeLiveSessions[snapshot.sessionId]?.pid == pid,
               let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
         return paneByTTY[tty]
     }
@@ -1132,7 +1145,8 @@ extension SessionsModel {
         }
     }
 
-    func restore(_ entries: [WorkspaceEntry], dismissesLaunchOffer: Bool = false) {
+    func restore(_ entries: [WorkspaceEntry], fromWorkspace workspaceID: String? = nil,
+                 dismissesLaunchOffer: Bool = false) {
         guard !readOnly else { return }
         guard !isRestoring else {
             installMessage = "A restore is already running."
@@ -1154,6 +1168,10 @@ extension SessionsModel {
             }
         )
         let plan = WorkspaceRestore.plan(entries, facts: facts)
+        let requested = Set(entries.map { WorkspaceRestore.canonical($0).key })
+        missingFolders = missingFolders.filter { !requested.contains($0.key) }
+            + plan.skipped.filter { $0.reason == .missingDirectory }.map(\.entry)
+        missingFoldersWorkspaceID = missingFolders.isEmpty ? nil : workspaceID
         for (entry, reason) in plan.skipped {
             Self.appLog("restore: skip \(entry.key) \(reason.phrase)")
         }
@@ -1252,6 +1270,54 @@ extension SessionsModel {
                     + missing.prefix(4).map(\.label).joined(separator: ", ")
                     + " — check those tabs for a prompt."
         }
+    }
+
+    /// Picks where a moved project now lives and restores the session
+    /// there. Resuming works from any directory — the conversation is
+    /// found by id — and the session adopts the folder it's started in.
+    func locateFolder(for entry: WorkspaceEntry) {
+        if popoverVisible { onRequestClose?() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Restore Here"
+            panel.message = "Where is the folder for “\(entry.label)” now? "
+                + "It used to be \(entry.cwd)."
+            panel.directoryURL = Self.nearestExistingAncestor(of: entry.cwd)
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            var moved = entry
+            moved.cwd = url.path
+            if let id = self.missingFoldersWorkspaceID,
+               var workspace = self.namedWorkspaces.first(where: { $0.id == id }),
+               let i = workspace.entries.firstIndex(where: {
+                   WorkspaceRestore.canonical($0).key == entry.key
+               }) {
+                workspace.entries[i].cwd = url.path
+                do {
+                    try self.workspaceStore.save(workspace)
+                } catch {
+                    Self.appLog("workspace: relocation save FAILED: \(error)")
+                }
+            }
+            self.restore([moved], fromWorkspace: self.missingFoldersWorkspaceID)
+        }
+    }
+
+    func dismissMissingFolders() {
+        missingFolders = []
+        missingFoldersWorkspaceID = nil
+    }
+
+    nonisolated static func nearestExistingAncestor(of path: String) -> URL {
+        var url = URL(fileURLWithPath: path)
+        while url.path != "/" && !FileManager.default.fileExists(atPath: url.path) {
+            url.deleteLastPathComponent()
+        }
+        return url
     }
 
     func promptSaveWorkspace() {

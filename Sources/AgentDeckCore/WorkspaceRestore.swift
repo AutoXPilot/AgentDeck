@@ -126,7 +126,7 @@ public enum WorkspaceRestore {
         }.joined(separator: "; ") + "."
     }
 
-    static func canonical(_ entry: WorkspaceEntry) -> WorkspaceEntry {
+    public static func canonical(_ entry: WorkspaceEntry) -> WorkspaceEntry {
         guard let uuid = UUID(uuidString: entry.sessionId) else { return entry }
         var e = entry
         e.sessionId = uuid.uuidString.lowercased()

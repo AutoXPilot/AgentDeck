@@ -279,6 +279,9 @@ struct SessionListView: View {
                     }
                 }
             }
+            if !model.missingFolders.isEmpty {
+                missingFoldersPanel
+            }
             if let message = model.installMessage {
                 Text(message)
                     .font(.caption2)
@@ -301,7 +304,9 @@ struct SessionListView: View {
                     }
                 }
                 ForEach(model.namedWorkspaces) { workspace in
-                    Button(workspaceLabel(workspace)) { model.restore(workspace.entries) }
+                    Button(workspaceLabel(workspace)) {
+                        model.restore(workspace.entries, fromWorkspace: workspace.id)
+                    }
                 }
             }
             .disabled(model.isRestoring)
@@ -312,6 +317,43 @@ struct SessionListView: View {
                 ForEach(model.namedWorkspaces) { workspace in
                     Button(workspace.name) { model.confirmDeleteWorkspace(workspace) }
                 }
+            }
+        }
+    }
+
+    private var missingFoldersPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Image(systemName: "folder.badge.questionmark").foregroundStyle(.orange)
+                Text("Folder missing — not restored").font(.caption2)
+                Spacer()
+                Button {
+                    model.dismissMissingFolders()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2)
+                .accessibilityLabel("Dismiss")
+            }
+            ForEach(model.missingFolders.prefix(4), id: \.key) { entry in
+                HStack(spacing: 6) {
+                    Text(entry.label).font(.caption2)
+                    Text(PathFormat.abbreviate(entry.cwd))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Locate…") { model.locateFolder(for: entry) }
+                        .font(.caption2)
+                        .disabled(model.isRestoring)
+                }
+            }
+            if model.missingFolders.count > 4 {
+                Text("+\(model.missingFolders.count - 4) more")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }

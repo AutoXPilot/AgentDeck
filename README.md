@@ -224,7 +224,9 @@ profile, so that profile has to start a POSIX-style shell (zsh, bash);
 one that runs ssh or tmux instead won't work. Claude's permission mode is
 carried over when a hook recorded it. Sessions already open are skipped,
 as are ones whose folder or conversation is gone, and the footer names
-them and says why. The footer first says how many were *started*, then,
+them and says why. A session whose folder moved gets a **Locate…**
+button: pick the new folder and it resumes there (and a named workspace
+remembers the new location). The footer first says how many were *started*, then,
 30 seconds later, how many are actually running. A tab that stopped at a
 prompt (a folder trust question, say) is named there. When the agent
 exits, the tab drops back to a shell instead of closing. Background
