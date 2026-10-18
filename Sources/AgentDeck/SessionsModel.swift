@@ -16,7 +16,14 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var claudeHooksInstalled = false
     @Published private(set) var codexHooksInstalled = false
     @Published private(set) var helperInstalled = false
-    @Published private(set) var installMessage: String?
+    /// A message counts as seen only at an open that happens after it was
+    /// set. Restore reports while the popover is closed — progress, the
+    /// result, the 30-second confirmation — and each of those was being
+    /// cleared on the next open because an *earlier* message had been
+    /// shown at the open before.
+    @Published private(set) var installMessage: String? {
+        didSet { if installMessage != oldValue { noteMessageChanged() } }
+    }
     @Published private(set) var isInstalling = false
     /// iTerm session GUID → tab title. Kept across opens so rows don't
     /// re-label under the cursor a second after the popover appears.
@@ -34,7 +41,9 @@ final class SessionsModel: ObservableObject {
     /// Why a session is blocked, once we know: "permission prompt", …
     @Published private(set) var waitingReasons: [String: String] = [:]
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
-    @Published private(set) var focusProblem: String?
+    @Published private(set) var focusProblem: String? {
+        didSet { if focusProblem != oldValue { noteMessageChanged() } }
+    }
     @Published private(set) var iTermRunning = false
     @Published var filterText = ""
     /// Bumped on every popover open; the view watches it to reset transient
@@ -46,6 +55,7 @@ final class SessionsModel: ObservableObject {
 
     // Workspaces: what to bring back after a reboot or an iTerm restart.
     @Published private(set) var restoreOffers: [RestoreOffer] = []
+    @Published private(set) var bannerOffer: RestoreOffer?
     @Published private(set) var namedWorkspaces: [NamedWorkspace] = []
     @Published private(set) var isRestoring = false
     /// Sessions a restore skipped because their folder is gone, each
@@ -55,10 +65,10 @@ final class SessionsModel: ObservableObject {
     /// Bumped per restore, so a slower, older restore's messages can't
     /// overwrite a newer one's.
     private var restoreGeneration = 0
-    /// Sessions a restore has launched that aren't visible as running yet.
-    /// A resumed session takes seconds to write its registry file, so a
-    /// liveness check alone can't stop a second click double-launching it.
-    private var restoreInFlight: [String: Date] = [:]
+    /// Reservations (see `WorkspaceStore.reserve`) whose sessions aren't
+    /// running: launched, or possibly launched, and not yet seen. Shown in
+    /// the footer with a Clear, since nothing expires them on its own.
+    @Published private(set) var pendingRestores: [String] = []
     private let workspaceStore = WorkspaceStore()
     private let bootID = WorkspaceStore.currentBootID()
     private static let dismissedRestoreOfferKey = "dismissedRestoreOfferBoot"
@@ -73,6 +83,13 @@ final class SessionsModel: ObservableObject {
     private(set) var claudeLiveSessions: [String: ClaudeSessionRegistry.Entry] = [:]
     private var waitingTracker = WaitingTracker()
     private var didSeedWaitingBacklog = false
+    private static let waitingMemoryKey = "waitingTrackerMemory"
+    private var lastSavedWaitingMemory: WaitingTracker.Memory?
+    /// Set once the first discovery-era launch has quieted the backlog it
+    /// surfaced. Persisted, so later relaunches don't quiet it again — which
+    /// kept a session blocked at startup silent for as long as AgentDeck
+    /// kept being restarted.
+    private static let discoveryBacklogSeededKey = "discoveryBacklogSeeded"
     private var notificationsAuthorized = false
     /// Render harness: observe only, never delete/sweep/notify — a second
     /// instance must not race the live app over shared files.
@@ -163,7 +180,7 @@ final class SessionsModel: ObservableObject {
         // open. focusProblem/installMessage are often set during a CLOSE
         // (the focus fires ~0.1s after popoverClosed), so eagerly clearing at
         // open hid them entirely — the whole "failures are visible" feature.
-        if let gen = messageShownAtGen, openGeneration > gen {
+        if let gen = messageShownAtGen, openGeneration > gen, !isRestoring {
             installMessage = nil
             focusProblem = nil
             messageShownAtGen = nil
@@ -310,7 +327,8 @@ final class SessionsModel: ObservableObject {
                 // under. Unlocked, a helper could publish a fresh event in
                 // the gap between the re-read and the delete, and we would
                 // delete that fresh event — losing a live session's row.
-                let deleted = store.withKeyLock(key) { () -> Bool in
+                // no lock, no delete: a row kept one more cycle is harmless
+                let deleted = (try? store.withKeyLock(key) { () -> Bool in
                     if let fresh = store.load(key: key),
                        Liveness.keysToRemove(
                            [fresh], confirmedLive: confirmedLive
@@ -319,7 +337,7 @@ final class SessionsModel: ObservableObject {
                     }
                     store.remove(key: key)
                     return true
-                }
+                }) ?? false
                 if deleted { removed.insert(key) }
             }
         }
@@ -366,6 +384,10 @@ final class SessionsModel: ObservableObject {
         // that have been waiting for weeks.
         if !didSeedWaitingBacklog {
             didSeedWaitingBacklog = true
+            if let data = UserDefaults.standard.data(forKey: Self.waitingMemoryKey),
+               let memory = try? JSONDecoder().decode(WaitingTracker.Memory.self, from: data) {
+                waitingTracker = WaitingTracker(memory: memory)
+            }
             // Only sessions discovered from the registry. Seeding every
             // waiting row would also mute hook-reported ones, so a session
             // blocked at launch couldn't notify for a full hour even with
@@ -375,8 +397,12 @@ final class SessionsModel: ObservableObject {
             let discoveredBacklog = output.rows.filter {
                 $0.event == "RegistryDiscovery"
             }
-            if !readOnly, !discoveredBacklog.isEmpty {
+            // Once ever, not once per launch: the remembered cooldowns cover
+            // relaunches from then on.
+            if !readOnly, !discoveredBacklog.isEmpty,
+               !UserDefaults.standard.bool(forKey: Self.discoveryBacklogSeededKey) {
                 waitingTracker.suppressExistingBacklog(discoveredBacklog)
+                UserDefaults.standard.set(true, forKey: Self.discoveryBacklogSeededKey)
             }
         }
         escalateLongWaits(output.rows)
@@ -557,6 +583,9 @@ final class SessionsModel: ObservableObject {
     private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
         guard snapshot.provider == .claude, let pid = snapshot.agentPid,
               claudeLiveSessions[snapshot.sessionId]?.pid == pid,
+              // re-checked now, not at the last reload: the click is the
+              // action, and the cached registry view can be seconds old
+              ProcessTree.looksLikeAgent(pid, provider: .claude),
               let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
         return paneByTTY[tty]
     }
@@ -808,6 +837,12 @@ final class SessionsModel: ObservableObject {
             Self.appLog("notified: \(key) waiting > \(minutes)m")
         }
         waitingTracker.commit(posted)
+        let memory = waitingTracker.memory()
+        if memory != lastSavedWaitingMemory,
+           let data = try? JSONEncoder().encode(memory) {
+            UserDefaults.standard.set(data, forKey: Self.waitingMemoryKey)
+            lastSavedWaitingMemory = memory
+        }
     }
 
     private func post(title heading: String, body: String, key: String) {
@@ -886,6 +921,10 @@ final class SessionsModel: ObservableObject {
     /// The openGeneration in which a transient footer message became visible,
     /// so it clears one open later rather than before it's ever shown.
     private var messageShownAtGen: Int?
+
+    private func noteMessageChanged() {
+        messageShownAtGen = popoverVisible ? openGeneration : nil
+    }
 
     private func stableHelperHash() -> String? {
         let path = Self.helperURL.path
@@ -1024,7 +1063,9 @@ struct MissingFolder: Identifiable, Equatable {
     var entry: WorkspaceEntry
     /// The named workspace it came from, if any.
     var workspaceID: String?
-    var id: String { entry.key }
+    /// The same session can be missing from two workspaces; each is its own
+    /// repair, saved back to its own workspace.
+    var id: String { "\(workspaceID ?? "-")|\(entry.key)" }
 }
 
 struct RestoreOffer: Identifiable, Equatable {
@@ -1043,38 +1084,50 @@ struct RestoreOffer: Identifiable, Equatable {
 }
 
 extension SessionsModel {
-    /// The remembered form of a row, or nil for one that can't be brought
-    /// back into a terminal: a background session (no window to return
-    /// to), a Codex session hosted by an app, or a Claude session with no
-    /// sign it was interactive.
     func workspaceEntry(for s: SessionSnapshot, now: Date = Date()) -> WorkspaceEntry? {
-        switch s.provider {
-        case .claude:
-            let registry = claudeLiveSessions[s.sessionId]
-            let kind = registry?.kind ?? claudeSessionKinds[s.sessionId]
-            if FocusResolver.isBackground(sessionKind: kind) { return nil }
-            guard registry?.kind == "interactive" || s.terminalSessionId != nil else { return nil }
-            let cwd = registry?.cwd ?? s.projectPath
-            guard !cwd.isEmpty else { return nil }
-            return WorkspaceEntry(
-                provider: .claude, sessionId: s.sessionId, cwd: cwd,
-                displayName: registry?.isUserNamed == true ? registry?.name : nil,
-                permissionMode: s.permissionMode, lastSeen: now
-            )
-        case .codex:
-            guard s.terminalSessionId != nil, !s.projectPath.isEmpty else { return nil }
-            let name = codexNames[s.sessionId]
-            return WorkspaceEntry(
-                provider: .codex, sessionId: s.sessionId, cwd: s.projectPath,
-                displayName: (name?.isEmpty == false) ? name : nil,
-                permissionMode: s.permissionMode, lastSeen: now
-            )
+        WorkspaceCapture.entry(
+            for: s,
+            registry: s.provider == .claude ? claudeLiveSessions[s.sessionId] : nil,
+            transcriptSessionKind: claudeSessionKinds[s.sessionId],
+            codexName: codexNames[s.sessionId],
+            terminal: terminalLocation(of: s),
+            now: now)
+    }
+
+    /// iTerm if a hook recorded a pane or the agent's tty is one of
+    /// iTerm's; elsewhere only when iTerm's panes are known and the tty
+    /// isn't among them.
+    private func terminalLocation(of s: SessionSnapshot) -> WorkspaceCapture.Terminal {
+        if s.terminalSessionId != nil { return .iTerm }
+        guard !paneByTTY.isEmpty,
+              let pid = claudeLiveSessions[s.sessionId]?.pid ?? s.agentPid,
+              let tty = ProcessTree.controllingTTY(of: pid) else { return .unknown }
+        return paneByTTY[tty] != nil ? .iTerm : .elsewhere
+    }
+
+    /// Sessions running by the agents' own evidence: for Claude, its
+    /// registry naming a live process for the session; for Codex, which has
+    /// no registry, a row whose pid is alive. The one definition used for
+    /// capture, offers, open counts and restore preflight. Rows alone
+    /// aren't evidence — a pid-less snapshot is kept for a day after its
+    /// process is gone — and using them in some places and the registry in
+    /// others let a dead session be reported "already open" and skipped.
+    func runningKeys(_ rows: [SessionSnapshot]) -> Set<String> {
+        var keys = Set(claudeLiveSessions.keys.map { "claude-\($0)" })
+        for row in rows where row.provider == .codex {
+            if let pid = row.agentPid,
+               Liveness.pidIsTrustworthy(pid, forUpdatedAt: row.updatedAt, provider: .codex) {
+                keys.insert(row.key)
+            }
         }
+        return keys
     }
 
     var liveWorkspaceEntries: [WorkspaceEntry] {
         let now = Date()
-        return sessions.compactMap { workspaceEntry(for: $0, now: now) }
+        let running = runningKeys(sessions)
+        return sessions.filter { running.contains($0.key) }
+            .compactMap { workspaceEntry(for: $0, now: now) }
     }
 
     /// Called on every reload; the store writes only when something changed
@@ -1082,7 +1135,9 @@ extension SessionsModel {
     func recordWorkspaceGeneration(_ rows: [SessionSnapshot]) {
         guard !readOnly, let bootID else { return }
         let now = Date()
-        let live = rows.compactMap { workspaceEntry(for: $0, now: now) }
+        let running = runningKeys(rows)
+        let live = rows.filter { running.contains($0.key) }
+            .compactMap { workspaceEntry(for: $0, now: now) }
         do {
             if try workspaceStore.record(live: live, bootID: bootID, now: now) {
                 refreshWorkspaces()
@@ -1096,19 +1151,29 @@ extension SessionsModel {
     /// Every retained boot stays reachable: offering only the latest meant
     /// that restoring part of a set and rebooting again hid the rest.
     func refreshWorkspaces() {
-        let live = Set(sessions.map(\.key))
+        let live = runningKeys(sessions)
         var offers: [RestoreOffer] = []
+        var banner: RestoreOffer?
         let generations = workspaceStore.generations()
         let ordered = generations.filter { $0.bootID == bootID }
             + generations.filter { $0.bootID != bootID }
         for generation in ordered {
             let finished = generation.bootID != bootID
-            for set in generation.restoreSets(live: live, finished: finished) {
-                offers.append(.init(bootID: generation.bootID, isBeforeRestart: finished,
-                                    closedAt: set.closedAt, entries: set.entries))
+            func offer(_ set: RestoreSet) -> RestoreOffer {
+                .init(bootID: generation.bootID, isBeforeRestart: finished,
+                      closedAt: set.closedAt, entries: set.entries)
+            }
+            offers += generation.restoreSets(live: live, finished: finished).map(offer)
+            // The banner picks from every set of the latest earlier boot,
+            // not just the few the menu shows.
+            if finished, banner == nil {
+                banner = generation.restoreSets(live: live, finished: true, limit: .max)
+                    .max { $0.entries.count < $1.entries.count }
+                    .map(offer)
             }
         }
         if offers != restoreOffers { restoreOffers = offers }
+        if banner != bannerOffer { bannerOffer = banner }
         let named = workspaceStore.named()
         if named != namedWorkspaces { namedWorkspaces = named }
     }
@@ -1118,12 +1183,9 @@ extension SessionsModel {
     /// largest, not the newest: a quick session after quitting iTerm and
     /// before rebooting is newer than the thirty that matter.
     var launchRestoreOffer: RestoreOffer? {
-        guard UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID,
-              let latestBoot = restoreOffers.first(where: \.isBeforeRestart)?.bootID
+        guard UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID
         else { return nil }
-        return restoreOffers
-            .filter { $0.bootID == latestBoot }
-            .max { $0.entries.count < $1.entries.count }
+        return bannerOffer
     }
 
     func dismissLaunchRestoreOffer() {
@@ -1132,7 +1194,7 @@ extension SessionsModel {
     }
 
     func openCount(of entries: [WorkspaceEntry]) -> Int {
-        let live = Set(sessions.map(\.key))
+        let live = runningKeys(sessions)
         return entries.filter { live.contains($0.key) }.count
     }
 
@@ -1145,25 +1207,49 @@ extension SessionsModel {
         case .claude:
             return ClaudeSessionRegistry.liveSessions()[entry.sessionId] != nil
         case .codex:
-            guard let pid = SnapshotStore().load(key: entry.key)?.agentPid else { return false }
-            return Liveness.isAlive(pid: pid)
+            guard let snapshot = SnapshotStore().load(key: entry.key),
+                  let pid = snapshot.agentPid else { return false }
+            return Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt,
+                                             provider: .codex)
         }
     }
 
-    /// A reservation ends when its session is seen running, or after ten
-    /// minutes. Expiring sooner let a slow start — a shell still loading,
-    /// a trust prompt — be launched a second time.
+    /// A reservation ends when its session is seen running. Nothing expires
+    /// it on a timer: a tab stuck at a trust prompt for an hour is still a
+    /// tab that will start this conversation once answered, so launching
+    /// it again would make two.
     func releaseConfirmedRestores(_ rows: [SessionSnapshot]) {
-        guard !restoreInFlight.isEmpty else { return }
-        let now = Date()
-        let codexAlive = Set(rows.filter {
-            $0.provider == .codex && ($0.agentPid.map(Liveness.isAlive(pid:)) ?? false)
-        }.map(\.key))
-        restoreInFlight = restoreInFlight.filter { key, since in
-            let running = key.hasPrefix("claude-")
-                ? claudeLiveSessions[String(key.dropFirst("claude-".count))] != nil
-                : codexAlive.contains(key)
-            return !running && now.timeIntervalSince(since) < 600
+        guard !readOnly else { return }
+        let reserved = workspaceStore.reservations()
+        guard !reserved.isEmpty || !pendingRestores.isEmpty else { return }
+        let running = runningKeys(rows)
+        let confirmed = Set(reserved.keys).intersection(running)
+        do {
+            try workspaceStore.releaseReservations(confirmed)
+        } catch {
+            Self.appLog("restore: releasing reservations FAILED: \(error)")
+        }
+        let pending = reserved.keys.filter { !running.contains($0) }.sorted()
+        if pending != pendingRestores { pendingRestores = pending }
+    }
+
+    /// The user's say-so that the pending sessions aren't coming: they
+    /// checked iTerm. Clears the reservations so they can be restored.
+    func clearPendingRestores() {
+        do {
+            try workspaceStore.releaseReservations(Set(pendingRestores))
+        } catch {
+            installMessage = "Couldn't clear: \(error.localizedDescription)"
+        }
+        pendingRestores = []
+        refreshWorkspaces()
+    }
+
+    /// Labels for the pending keys, from whatever offer or workspace knows them.
+    var pendingRestoreLabels: [String] {
+        let known = restoreOffers.flatMap(\.entries) + namedWorkspaces.flatMap(\.entries)
+        return pendingRestores.map { key in
+            known.first { WorkspaceRestore.canonical($0).key == key }?.label ?? key
         }
     }
 
@@ -1176,16 +1262,19 @@ extension SessionsModel {
         }
         let threads = codexThreads
         let facts = WorkspaceRestore.Facts(
-            live: Set(sessions.map(\.key)),
-            inFlight: Set(restoreInFlight.keys),
+            live: runningKeys(sessions),
+            inFlight: Set(workspaceStore.reservations().keys),
             conversationExists: { entry in
                 switch entry.provider {
                 case .claude:
                     return ClaudeTranscript.url(
                         sessionId: entry.sessionId, projectPath: entry.cwd) != nil
                 case .codex:
-                    // an empty map means the database couldn't be read
-                    return threads.isEmpty ? nil : threads[entry.sessionId] != nil
+                    // Found in the cached list is proof; absence isn't. The
+                    // list is a display cache refreshed on popover open, so
+                    // a newer thread can be missing from it, and an empty
+                    // one may be a failed read.
+                    return threads[entry.sessionId] != nil ? true : nil
                 }
             }
         )
@@ -1193,30 +1282,52 @@ extension SessionsModel {
         // each missing folder remembers which named workspace it came from,
         // so locating it later saves into that workspace and no other
         let requested = Set(entries.map { WorkspaceRestore.canonical($0).key })
-        missingFolders = missingFolders.filter { !requested.contains($0.entry.key) }
-            + plan.skipped.filter { $0.reason == .missingDirectory }.map {
-                MissingFolder(entry: $0.entry, workspaceID: workspaceID)
-            }
+        missingFolders = missingFolders.filter {
+            !(requested.contains($0.entry.key) && $0.workspaceID == workspaceID)
+        } + plan.skipped.filter { $0.reason == .missingDirectory }.map {
+            MissingFolder(entry: $0.entry, workspaceID: workspaceID)
+        }
         for (entry, reason) in plan.skipped {
             Self.appLog("restore: skip \(entry.key) \(reason.phrase)")
         }
-        restoreGeneration += 1
         guard !plan.launches.isEmpty else {
             installMessage = plan.skipped.isEmpty
                 ? "Nothing to restore."
                 : "Nothing to restore. " + WorkspaceRestore.describeSkips(plan.skipped)
             return
         }
+        // Reserve before launching, atomically against any other copy of
+        // the app: only what this call is granted gets launched.
+        let granted: Set<String>
+        do {
+            granted = try workspaceStore.reserve(plan.launches.map(\.entry.key))
+        } catch {
+            installMessage = "Couldn't start the restore: \(error.localizedDescription)"
+            return
+        }
+        var skippedAll = plan.skipped
+        for launch in plan.launches where !granted.contains(launch.entry.key) {
+            skippedAll.append((launch.entry, .alreadyRestoring))
+        }
+        let launches = plan.launches.filter { granted.contains($0.entry.key) }
+        guard !launches.isEmpty else {
+            installMessage = "Nothing to restore. " + WorkspaceRestore.describeSkips(skippedAll)
+            return
+        }
+        // bumped only for a restore that launches something, so a no-op
+        // click can't silence an earlier restore's confirmation
+        restoreGeneration += 1
         isRestoring = true
         let generation = restoreGeneration
-        let started = Date()
-        for launch in plan.launches { restoreInFlight[launch.entry.key] = started }
-        let total = plan.launches.count
+        let total = launches.count
         installMessage = "Restoring \(total) session\(total == 1 ? "" : "s")…"
         if popoverVisible { onRequestClose?() }
-        let launches = plan.launches
-        let skipped = plan.skipped
-        Task.detached {
+        let skipped = skippedAll
+        // A thread of its own rather than a detached task: the executor
+        // sleeps between launches and batches for up to a minute or two,
+        // which would park one of the few threads Swift's concurrency pool
+        // shares with title fetches and transcript reads.
+        let worker = Thread {
             var done = 0
             let outcomes = WorkspaceRestore.execute(
                 launches,
@@ -1243,12 +1354,14 @@ extension SessionsModel {
                     }
                 }
             )
-            await MainActor.run { [weak self] in
+            DispatchQueue.main.async { [weak self] in
                 self?.finishRestore(launches: launches, outcomes: outcomes, skipped: skipped,
                                     dismissesLaunchOffer: dismissesLaunchOffer,
                                     generation: generation)
             }
         }
+        worker.name = "AgentDeck restore"
+        worker.start()
     }
 
     private func finishRestore(
@@ -1257,61 +1370,30 @@ extension SessionsModel {
         dismissesLaunchOffer: Bool, generation: Int
     ) {
         isRestoring = false
-        var typed: [WorkspaceEntry] = []
-        var uncertain: [WorkspaceEntry] = []
-        var failure: String?
-        for launch in launches {
-            let key = launch.entry.key
-            switch outcomes[key] {
-            case .launched:
-                typed.append(launch.entry)
-            case .uncertain:
-                // stays reserved: a pane may exist
-                uncertain.append(launch.entry)
-            case .failed(let message):
-                failure = failure ?? message
-                restoreInFlight[key] = nil   // nothing opened; safe to retry
-            case nil:
-                restoreInFlight[key] = nil   // came back some other way
-            }
+        let report = RestoreReport(launches: launches, outcomes: outcomes, skipped: skipped)
+        do {
+            try workspaceStore.releaseReservations(report.release)
+        } catch {
+            Self.appLog("restore: releasing reservations FAILED: \(error)")
         }
-        if dismissesLaunchOffer, !typed.isEmpty { dismissLaunchRestoreOffer() }
-        var parts: [String] = []
-        if !typed.isEmpty { parts.append("Started \(typed.count) of \(launches.count)") }
-        if !uncertain.isEmpty {
-            parts.append("\(uncertain.map(\.label).joined(separator: ", ")) may have opened — "
-                         + "check iTerm before retrying")
-        }
-        if let failure {
-            parts.append(failure.contains("(-1743)")
-                ? "AgentDeck needs Automation permission to control iTerm2"
-                : "failed: \(failure)")
-        }
-        var message = parts.joined(separator: "; ") + "."
-        if !skipped.isEmpty { message += " " + WorkspaceRestore.describeSkips(skipped) }
-        installMessage = message
+        if dismissesLaunchOffer, !report.typed.isEmpty { dismissLaunchRestoreOffer() }
+        installMessage = report.startedMessage
         reload()
         refreshWorkspaces()
-        guard !typed.isEmpty else { return }
+        guard !report.typed.isEmpty else { return }
         // "Started" means the text was typed; whether each conversation is
         // actually running is only known once its registry entry appears.
-        let toConfirm = typed
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             Task.detached {
-                let missing = toConfirm.filter { !SessionsModel.isRunning($0) }
+                let notRunning = report.typed.filter { !SessionsModel.isRunning($0) }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    Self.appLog("restore: \(toConfirm.count - missing.count)/\(toConfirm.count) "
-                                + "confirmed running")
+                    Self.appLog("restore: \(report.typed.count - notRunning.count)/"
+                                + "\(report.typed.count) confirmed running")
                     self.reload()
                     // a newer restore's messages win over this one's
                     guard generation == self.restoreGeneration else { return }
-                    self.installMessage = missing.isEmpty
-                        ? "Restored \(toConfirm.count) session\(toConfirm.count == 1 ? "" : "s")."
-                            + (skipped.isEmpty ? "" : " " + WorkspaceRestore.describeSkips(skipped))
-                        : "\(toConfirm.count - missing.count) of \(toConfirm.count) running. "
-                            + "Not yet: " + missing.map(\.label).joined(separator: ", ")
-                            + " — check those tabs for a prompt."
+                    self.installMessage = report.confirmationMessage(notRunning: notRunning)
                 }
             }
         }
@@ -1339,15 +1421,16 @@ extension SessionsModel {
             guard response == .OK, let url = panel.url else { return }
             var moved = entry
             moved.cwd = url.path
-            // read the workspace fresh from disk, not from the menu's copy
-            if let id = missing.workspaceID,
-               var workspace = self.workspaceStore.named().first(where: { $0.id == id }),
-               let i = workspace.entries.firstIndex(where: {
-                   WorkspaceRestore.canonical($0).key == entry.key
-               }) {
-                workspace.entries[i].cwd = url.path
+            // changed in place under the lock, so another copy's change to
+            // the same workspace isn't overwritten
+            if let id = missing.workspaceID {
                 do {
-                    try self.workspaceStore.save(workspace)
+                    try self.workspaceStore.updateNamed(id: id) { workspace in
+                        for i in workspace.entries.indices
+                        where WorkspaceRestore.canonical(workspace.entries[i]).key == entry.key {
+                            workspace.entries[i].cwd = url.path
+                        }
+                    }
                 } catch {
                     Self.appLog("workspace: relocation save FAILED: \(error)")
                 }
@@ -1357,7 +1440,7 @@ extension SessionsModel {
     }
 
     func dismissMissingFolder(_ missing: MissingFolder) {
-        missingFolders.removeAll { $0.entry.key == missing.entry.key }
+        missingFolders.removeAll { $0.id == missing.id }
     }
 
     func dismissMissingFolders() {
@@ -1397,9 +1480,9 @@ extension SessionsModel {
             let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { return }
             do {
-                try self.workspaceStore.save(
+                let saved = try self.workspaceStore.save(
                     NamedWorkspace(name: name, savedAt: Date(), entries: entries))
-                self.installMessage = "Saved “\(name)” (\(entries.count) sessions)."
+                self.installMessage = "Saved “\(saved)” (\(entries.count) sessions)."
             } catch {
                 self.installMessage = "Couldn't save workspace: \(error.localizedDescription)"
             }

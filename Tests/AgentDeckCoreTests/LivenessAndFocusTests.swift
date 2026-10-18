@@ -133,12 +133,25 @@ struct LivenessAndFocusTests {
         #expect(removed == ["claude-pidless"], "a live waiting session must survive")
     }
 
-    @Test func livePidsStillExpireAtTheLongBackstop() {
-        let ancient = snap("ancient", pid: 100,
-                           updated: now.addingTimeInterval(-8 * 24 * 3600), state: .done)
+    @Test func aVerifiedLiveAgentIsNotExpiredForBeingQuiet() {
+        // Codex has no registry to vouch for it: a session waiting for input
+        // over a long weekend used to lose its row at seven days, and then
+        // be offered for restore while still running
+        var quiet = snap("quiet", pid: 100,
+                         updated: now.addingTimeInterval(-8 * 24 * 3600), state: .waiting)
+        quiet.provider = .codex
         let starts = probe([100: now.addingTimeInterval(-9 * 24 * 3600)])
-        #expect(Liveness.keysToRemove([ancient], now: now, bootedAt: nil, probe: starts)
-            == ["claude-ancient"])
+        #expect(Liveness.keysToRemove([quiet], now: now, bootedAt: nil, probe: starts).isEmpty)
+    }
+
+    @Test func aLivePidThatIsNotTheAgentIsRemoved() {
+        // started in time, so the start-time check alone would accept it
+        let reused = snap("reused", pid: 100, updated: now.addingTimeInterval(-60), state: .done)
+        let notAgent = Liveness.ProcessProbe(
+            startTime: { _ in self.now.addingTimeInterval(-30) },
+            isAgent: { _, _ in false })
+        #expect(Liveness.keysToRemove([reused], now: now, bootedAt: nil, probe: notAgent)
+                == ["claude-reused"])
     }
 
     @Test func systemProbeReadsRealStartTimes() {
@@ -241,11 +254,34 @@ struct LivenessAndFocusTests {
         #expect(list.names["G-3"] == "no tty")
     }
 
-    @Test func ownTTYIsReadable() throws {
-        // the test runner may have no terminal (CI); it must then say so
-        // rather than inventing one
-        let tty = ProcessTree.controllingTTY(of: getpid())
-        if let tty { #expect(tty.hasPrefix("tty")) }
+    @Test func aProcessOnATerminalHasItsTTYRead() throws {
+        // `script` runs its child on a fresh pseudo-terminal, so this works
+        // with or without one for the test runner itself (CI has none) —
+        // and an implementation that always returned nil now fails
+        let script = Process()
+        script.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        script.arguments = ["-q", "/dev/null", "/bin/sleep", "5"]
+        script.standardInput = FileHandle.nullDevice
+        script.standardOutput = FileHandle.nullDevice
+        try script.run()
+        defer { script.terminate() }
+        var child: Int32?
+        let deadline = Date().addingTimeInterval(3)
+        while child == nil, Date() < deadline {
+            let pgrep = Process()
+            pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            pgrep.arguments = ["-P", String(script.processIdentifier), "sleep"]
+            let out = Pipe()
+            pgrep.standardOutput = out
+            try pgrep.run()
+            pgrep.waitUntilExit()
+            child = Int32(String(decoding: out.fileHandleForReading.readDataToEndOfFile(),
+                                 as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+            if child == nil { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        let pid = try #require(child, "script's child never appeared")
+        let tty = try #require(ProcessTree.controllingTTY(of: pid))
+        #expect(tty.hasPrefix("tty"))
         #expect(ProcessTree.controllingTTY(of: -1) == nil)
     }
 

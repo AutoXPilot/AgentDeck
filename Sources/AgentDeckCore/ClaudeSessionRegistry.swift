@@ -147,20 +147,19 @@ public enum ClaudeSessionRegistry {
 
     /// Best-effort pid-reuse rejection, not proof of identity.
     ///
-    /// It catches the ordinary case — a long-dead session whose pid has been
-    /// handed to something that started much later — and nothing stronger.
-    /// Known holes, accepted because the failure mode is one stale row
-    /// rather than a wrong action:
-    ///  - an entry with no `startedAt` is accepted on liveness alone;
-    ///  - a replacement that started inside `slack` is accepted, and then
-    ///    stays accepted for as long as it lives;
-    ///  - no check that the process is even Claude.
-    /// Tightening this needs to know what Claude's `startedAt` actually
-    /// measures, which isn't documented.
+    /// Requires a live process that looks like Claude (by executable path
+    /// or name) and, when the entry records `startedAt`, that started no
+    /// later than that plus `slack`. Together they reject the realistic
+    /// failure — a long-dead session's pid handed to something else. What
+    /// remains accepted is another Claude process reusing the pid within
+    /// `slack` of the original's start, which needs the original to have
+    /// exited within two minutes of starting and its pid to go to another
+    /// Claude straight away.
     static func isLive(
         _ entry: Entry, probe: Liveness.ProcessProbe, slack: TimeInterval
     ) -> Bool {
-        guard let started = probe.startTime(entry.pid) else { return false }
+        guard let started = probe.startTime(entry.pid),
+              probe.isAgent(entry.pid, .claude) else { return false }
         guard let claimed = entry.startedAt else { return true }
         return started <= claimed.addingTimeInterval(slack)
     }
@@ -244,12 +243,19 @@ public enum StateReconciler {
                 state: .waiting, waitingFor: entry.waitingFor, correctedByRegistry: true
             )
         }
-        // Agreement: enrich a known wait with the reason.
+        // Agreement: enrich a known wait with the reason. If the registry's
+        // wait is newer than the hook's, it is a new wait — the session was
+        // unblocked in between (which a hook doesn't report) and blocked
+        // again — so it carries its own time. Keeping the hook's time let
+        // an acknowledgement of the first wait silently cover the second.
+        // `statusUpdatedAt` holds still for the length of a wait (observed:
+        // unchanged across a 75-day one), so this can't re-arm an
+        // acknowledged wait on its own.
         if snapshot.state == .waiting {
             return Result(
                 state: .waiting,
                 waitingFor: entry.waitingFor ?? snapshot.notificationType,
-                correctedByRegistry: false
+                correctedByRegistry: blockedState(entry.status) && registryIsNewer
             )
         }
         return Result(state: snapshot.state, waitingFor: nil, correctedByRegistry: false)

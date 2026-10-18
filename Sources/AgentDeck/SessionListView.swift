@@ -282,6 +282,20 @@ struct SessionListView: View {
             if !model.missingFolders.isEmpty {
                 missingFoldersPanel
             }
+            if !model.pendingRestores.isEmpty, !model.isRestoring {
+                HStack(spacing: 6) {
+                    Image(systemName: "hourglass").foregroundStyle(.secondary)
+                    Text("Not restored again until seen running: "
+                         + model.pendingRestoreLabels.joined(separator: ", ")
+                         + ". If they aren't open in iTerm, clear them.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                    Spacer()
+                    Button("Clear") { model.clearPendingRestores() }
+                        .font(.caption2)
+                }
+            }
             if let message = model.installMessage {
                 Text(message)
                     .font(.caption2)
@@ -300,7 +314,11 @@ struct SessionListView: View {
             Section("Restore") {
                 ForEach(model.restoreOffers) { offer in
                     Button("\(offer.title) — \(sessionCount(offer.entries.count))") {
-                        model.restore(offer.entries)
+                        // restoring from the previous boot via the menu
+                        // settles the banner too, rather than leaving it to
+                        // fall back to whatever smaller set remains
+                        model.restore(offer.entries,
+                                      dismissesLaunchOffer: offer.isBeforeRestart)
                     }
                 }
                 ForEach(model.namedWorkspaces) { workspace in

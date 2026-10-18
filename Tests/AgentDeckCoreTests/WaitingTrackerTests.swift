@@ -216,4 +216,42 @@ struct AutoAckTests {
         let stale = ["claude-d": s.updatedAt.addingTimeInterval(-100)]
         #expect(AutoAck.expiredDoneKeys([s], acks: stale, now: now) == ["claude-d"])
     }
+
+    @Test func aRelaunchRemembersWhatWasAlreadyAnnounced() {
+        let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+        let blocked = SessionSnapshot(provider: .claude, sessionId: "s", projectPath: "/p",
+                                      state: .waiting, event: "x",
+                                      updatedAt: t0.addingTimeInterval(-3600))
+        var first = WaitingTracker()
+        let due = first.candidates([blocked], now: t0, threshold: 300)
+        #expect(due == ["claude-s"])
+        first.commit(due, now: t0)
+        // AgentDeck relaunched ten minutes later; same wait still open
+        var second = WaitingTracker(memory: first.memory(now: t0))
+        #expect(second.candidates([blocked], now: t0 + 600, threshold: 300).isEmpty,
+                "same episode: not announced again")
+        // and two hours later it still isn't, because it's the same episode
+        #expect(second.candidates([blocked], now: t0 + 7200, threshold: 300).isEmpty)
+        // a new wait after it was answered is a new episode
+        var answered = blocked
+        answered.state = .ready
+        _ = second.candidates([answered], now: t0 + 7300, threshold: 300)
+        var again = blocked
+        again.updatedAt = t0 + 7400
+        #expect(second.candidates([again], now: t0 + 7400 + 600, threshold: 300) == ["claude-s"])
+    }
+
+    @Test func theCooldownSurvivesARelaunch() {
+        let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+        var first = WaitingTracker()
+        let a = SessionSnapshot(provider: .claude, sessionId: "s", projectPath: "/p",
+                                state: .waiting, event: "x", updatedAt: t0 - 600)
+        first.commit(first.candidates([a], now: t0, threshold: 300), now: t0)
+        // answered, relaunched, blocked again ten minutes later
+        var second = WaitingTracker(memory: first.memory(now: t0 + 600))
+        let b = SessionSnapshot(provider: .claude, sessionId: "s", projectPath: "/p",
+                                state: .waiting, event: "x", updatedAt: t0 + 600)
+        #expect(second.candidates([b], now: t0 + 1200, threshold: 300).isEmpty,
+                "inside the hour-long cooldown")
+    }
 }

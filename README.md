@@ -59,6 +59,15 @@ displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
 thread's title — i.e. a prompt — could appear as a row title and in a
 notification if it was under 60 characters.)
 
+Precisely where that boundary sits: "parsed past" means transcript bytes
+are read into memory to find those two fields, and discarded. Finding a
+session's executable reads the process's argument block
+(`KERN_PROCARGS2`), which includes its command-line arguments; only the
+executable path is kept. Row titles show a session's name, and Claude
+generates names from the conversation when you haven't set one, so a
+title can echo what a session is about — workspace files store a name
+only if you set it yourself.
+
 ### Uninstall
 
 1. Quit AgentDeck and remove it from System Settings → General → Login
@@ -243,10 +252,19 @@ to a shell instead of closing. Background sessions and Codex sessions
 hosted in an app aren't captured, since there's no terminal to return
 them to.
 
-Restoring a session again while a previous restore of it may still be
-starting is refused until it shows up as running, or ten minutes pass.
-That protection lives in the running app, so it doesn't survive quitting
-AgentDeck.
+A session restore has launched — or may have, if iTerm didn't confirm —
+isn't launched again until it shows up as running. That is recorded on
+disk, so it holds across relaunching AgentDeck and between two running
+copies. Nothing expires it on a timer, since a tab waiting at a prompt
+will still start the conversation once answered; the footer lists any
+that haven't appeared, with a **Clear** for when you've checked iTerm and
+they aren't there.
+
+Sessions known to be running outside iTerm (Terminal.app, an editor's
+terminal) aren't captured, since restoring them would move them into
+iTerm. Shell plugins that rewrite what's typed — auto-closing quotes, for
+instance — can mangle the restore command; restore types it as if at the
+keyboard.
 
 How it decides what to offer: AgentDeck keeps one record per boot under
 `~/Library/Application Support/AgentDeck/workspaces/` and only ever adds
@@ -255,13 +273,18 @@ being removed. Shutting down closes sessions one at a time, so a record
 that tracked the live list would be empty by the time you needed it.
 When sessions stop running, AgentDeck records them as a group: closures
 within five minutes of each other join the same group, however long the
-whole quit takes. Groups are recorded when they happen, so a session you
+whole quit takes. A session has to be missing from two refreshes in a row
+to count as closed, so one that drops out of a single refresh isn't
+mistaken for one that stopped. Sessions that closed while AgentDeck
+wasn't running — quit, or being updated — are recorded as a group when it
+next starts. Groups are recorded when they happen, so a session you
 close later starts its own group rather than redefining the earlier one,
 and restoring part of a group leaves the rest of it on offer. For an
 earlier boot it also offers whatever was still running when that boot's
 record ends, which covers a shutdown AgentDeck didn't see, such as
 quitting before iTerm at logout. The banner after a restart shows the
-largest of the previous boot's groups. The current boot's record plus the
+largest of the previous boot's groups, and the menu shows up to three
+groups per boot, newest first, always including the largest. The current boot's record plus the
 five most recent earlier ones are kept.
 
 These files hold a folder, a session id, Claude's permission mode, and a
@@ -279,14 +302,19 @@ into a terminal, a control character acts as a keystroke).
   the footer (`hooks: ● helper ● claude ● codex` = setup health, not
   session activity).
 - A snapshot's pid is trusted only if a live process started at or before the
-  snapshot's last update — a recycled pid (which started later) is detected
-  directly, replacing a drift-prone boot-time guard. Live sessions get a
-  7-day idle backstop; pid-less snapshots a 24h one.
+  snapshot's last update *and* looks like the agent (its executable path or
+  name says claude or codex). A recycled pid fails one or the other. A
+  session that passes both is kept however long it sits quiet — a Codex
+  session waiting for input over a weekend used to lose its row at seven
+  days; pid-less snapshots still go after 24 hours.
 - `session_id` is sanitized before becoming a filename; hook payloads can
   never write outside the sessions directory. Stale temp/corrupt files are
   swept. The sessions-dir watcher re-arms if the directory is recreated.
-- The helper never blocks an agent turn: bounded stdin read, 8s watchdog,
-  silent exit on any error.
+- The helper can't hold up an agent turn for long: bounded stdin read, an
+  8s watchdog, silent exit on any error. If it can't take the per-session
+  lock it drops that one event rather than writing unlocked.
+- Hook commands single-quote the helper's path, so no character in it is
+  interpreted by the shell.
 
 ## Can't find the menu-bar icon?
 
@@ -317,7 +345,7 @@ defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disa
 | Component | Version |
 |---|---|
 | macOS | 14+ (developed on 26.x) |
-| Claude Code | 2.1.266 |
+| Claude Code | 2.1.302 |
 | Codex CLI | 0.147.0 |
 | iTerm2 | 3.7.0 |
 
@@ -327,7 +355,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 242 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 275 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

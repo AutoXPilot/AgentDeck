@@ -26,6 +26,35 @@ public struct WaitingTracker: Sendable {
 
     public init() {}
 
+    /// What has to survive a relaunch. Without it every restart forgot the
+    /// cooldowns and re-announced each long-blocked session (seen: the same
+    /// session notified after each of three relaunches in two days).
+    public struct Memory: Codable, Equatable, Sendable {
+        public var lastAnnounced: [String: Date] = [:]
+        /// For announced episodes, when that episode began — a wait still
+        /// open with the same start is the same episode, already announced.
+        public var announcedEpisodes: [String: Date] = [:]
+        public init() {}
+    }
+
+    private var announcedEpisodeStart: [String: Date] = [:]
+
+    public init(memory: Memory) {
+        lastAnnounced = memory.lastAnnounced
+        announcedEpisodeStart = memory.announcedEpisodes
+    }
+
+    /// Bounded: cooldowns older than a day can't affect anything.
+    public func memory(now: Date = Date()) -> Memory {
+        var m = Memory()
+        let horizon = now.addingTimeInterval(-24 * 3600)
+        m.lastAnnounced = lastAnnounced.filter { $0.value > horizon }
+        m.announcedEpisodes = announcedEpisodeStart.filter {
+            announcedThisEpisode.contains($0.key)
+        }
+        return m
+    }
+
     /// Treat the currently-blocked sessions as already handled, without
     /// posting anything.
     ///
@@ -72,6 +101,7 @@ public struct WaitingTracker: Sendable {
         for key in waitingSince.keys where !blockedKeys.contains(key) {
             waitingSince[key] = nil
             announcedThisEpisode.remove(key)
+            announcedEpisodeStart[key] = nil
         }
 
         for snapshot in blocked { seen.insert(snapshot.key) }
@@ -81,6 +111,11 @@ public struct WaitingTracker: Sendable {
             // Trust the snapshot's own timestamp: a session already waiting
             // when the app launches must not restart its clock at zero.
             let since = waitingSince[snapshot.key] ?? min(snapshot.updatedAt, now)
+            if waitingSince[snapshot.key] == nil,
+               announcedEpisodeStart[snapshot.key] == since {
+                // announced before a relaunch; still the same wait
+                announcedThisEpisode.insert(snapshot.key)
+            }
             waitingSince[snapshot.key] = since
             guard !announcedThisEpisode.contains(snapshot.key) else { continue }
             guard now.timeIntervalSince(since) >= threshold else { continue }
@@ -99,6 +134,7 @@ public struct WaitingTracker: Sendable {
         for key in keys {
             announcedThisEpisode.insert(key)
             lastAnnounced[key] = now
+            announcedEpisodeStart[key] = waitingSince[key]
         }
     }
 }

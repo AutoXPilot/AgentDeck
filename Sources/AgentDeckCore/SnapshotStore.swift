@@ -110,25 +110,47 @@ public struct SnapshotStore: Sendable {
         }
     }
 
+    public struct LockUnavailable: Error {}
+
     /// Serializes a session's load-merge-write/remove against concurrent hook
     /// processes for the SAME key, so a `Stop` can't read-then-write a
     /// snapshot back after a racing `SessionEnd` already removed it. flock is
     /// advisory but every writer is this same code path, so it holds.
-    public func withKeyLock<T>(_ key: String, _ body: () throws -> T) rethrows -> T {
+    ///
+    /// Throws rather than running unlocked when the lock can't be taken.
+    /// For the helper that drops one event; running unlocked instead could
+    /// resurrect a removed session or erase a fresh one, which is worse and
+    /// silent.
+    public func withKeyLock<T>(_ key: String, _ body: () throws -> T) throws -> T {
         let safe = Self.sanitizeKeyComponent(key)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let lockURL = directory.appendingPathComponent(".\(safe).lock")
-        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
-        guard fd >= 0 else { return try body() }  // best-effort: proceed unlocked
-        flock(fd, LOCK_EX)
-        // Mark the lock as in use. Neither open() nor flock() touches mtime,
-        // so a long-lived session's lock aged past the sweep's threshold and
-        // got unlinked while a helper still held it — after which the next
-        // helper created the same path, got a DIFFERENT inode, and locked
-        // that instead. Two "serialized" writers, running at once.
-        futimens(fd, nil)
-        defer { flock(fd, LOCK_UN); close(fd) }
-        return try body()
+        // The sweep may unlink an idle lock file. A process that opened it
+        // just before then and was waiting on it would get the lock on a
+        // file no longer at this path, while the next process creates a
+        // new one and locks that: two holders. So after locking, confirm
+        // the file locked is still the one at the path, and retry if not.
+        for _ in 0..<8 {
+            let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
+            guard fd >= 0 else { throw LockUnavailable() }
+            var locked = flock(fd, LOCK_EX)
+            while locked != 0 && errno == EINTR { locked = flock(fd, LOCK_EX) }
+            guard locked == 0 else { close(fd); throw LockUnavailable() }
+            var held = stat(), atPath = stat()
+            guard fstat(fd, &held) == 0, stat(lockURL.path, &atPath) == 0,
+                  held.st_ino == atPath.st_ino, held.st_dev == atPath.st_dev else {
+                flock(fd, LOCK_UN)
+                close(fd)
+                continue
+            }
+            // Mark the lock as in use. Neither open() nor flock() touches
+            // mtime, so a long-lived session's lock aged past the sweep's
+            // threshold and got unlinked while a helper still held it.
+            futimens(fd, nil)
+            defer { flock(fd, LOCK_UN); close(fd) }
+            return try body()
+        }
+        throw LockUnavailable()
     }
 
     public func load(key: String) -> SessionSnapshot? {

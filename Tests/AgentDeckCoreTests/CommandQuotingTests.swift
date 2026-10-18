@@ -22,7 +22,44 @@ final class CommandQuotingTests {
 
     @Test func commandIsQuoted() {
         #expect(installer.command(for: .claude)
-            == "\"/Users/x/Library/Application Support/AgentDeck/bin/agentdeck-hook\" claude")
+            == "'/Users/x/Library/Application Support/AgentDeck/bin/agentdeck-hook' claude")
+    }
+
+    @Test func aHostilePathIsOneLiteralWordToARealShell() throws {
+        // what sh actually receives, not what the quoting should produce
+        for path in ["/tmp/a b/$(touch /tmp/agentdeck-pwned)/hook", "/tmp/`id`/hook",
+                     "/tmp/it's/hook", "/tmp/back\\slash/\"q\"/hook"] {
+            let command = HookInstaller(helperPath: path).command(for: .claude)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            // replace the program with printf to see the argv sh builds
+            p.arguments = ["-c", "set -- \(command); printf '%s\\n' \"$1\" \"$2\""]
+            let out = Pipe()
+            p.standardOutput = out
+            try p.run()
+            p.waitUntilExit()
+            let lines = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            #expect(lines.prefix(2) == [path, "claude"], "\(path)")
+        }
+        #expect(!FileManager.default.fileExists(atPath: "/tmp/agentdeck-pwned"))
+    }
+
+    @Test func anInstallFromBeforeTheQuotingChangeStaysHealthyAndIsRewritten() throws {
+        let url = dir.appendingPathComponent("settings.json")
+        let legacy = "\"\(helperPath)\" claude"
+        var hooks: [String: Any] = [:]
+        for event in HookInstaller.events(for: .claude) {
+            hooks[event] = [["hooks": [["type": "command", "command": legacy, "timeout": 10]]]]
+        }
+        try JSONSerialization.data(withJSONObject: ["hooks": hooks]).write(to: url)
+        #expect(installer.isInstalled(provider: .claude, in: url),
+                "the same command for a plain path; no forced reinstall")
+        #expect(try installer.installClaude(settingsURL: url))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(!text.contains("\\\"\(helperPath)"), "legacy form replaced")
+        #expect(installer.isInstalled(provider: .claude, in: url))
+        #expect(try !installer.installClaude(settingsURL: url), "and then it is a no-op")
     }
 
     @Test func installWritesQuotedCommand() throws {
@@ -33,7 +70,7 @@ final class CommandQuotingTests {
         let hooks = root["hooks"] as! [String: Any]
         let entry = ((hooks["Stop"] as! [Any])[0] as! [String: Any])["hooks"] as! [[String: Any]]
         let command = entry[0]["command"] as! String
-        #expect(command.hasPrefix("\""), "command must be quoted for sh")
+        #expect(command.hasPrefix("'"), "command must be quoted for sh")
         #expect(command == installer.command(for: .claude))
     }
 

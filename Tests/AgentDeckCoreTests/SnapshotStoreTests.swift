@@ -64,7 +64,7 @@ final class SnapshotStoreTests {
             model: "gpt-6-astra",
             modelObservedAt: observed,
             effort: "high",
-            errorKind: nil
+            errorKind: "rate_limit"
         )
         try store.write(snap)
         let loaded = try #require(store.load(key: snap.key))
@@ -80,7 +80,7 @@ final class SnapshotStoreTests {
         #expect(loaded.permissionMode == "acceptEdits")
         #expect(loaded.model == "gpt-6-astra")
         #expect(loaded.effort == "high")
-        #expect(loaded.errorKind == nil)
+        #expect(loaded.errorKind == "rate_limit", "every field populated, so a dropped one shows")
         #expect(loaded.modelObservedAt != nil, "modelObservedAt was silently dropped on write")
         #expect(abs((loaded.modelObservedAt ?? .distantPast)
             .timeIntervalSince(observed)) < 1.0)
@@ -91,6 +91,7 @@ final class SnapshotStoreTests {
             with: Data(contentsOf: store.url(forKey: snap.key))
         ) as? [String: Any]
         #expect(raw?["modelObservedAt"] != nil)
+        #expect(raw?["errorKind"] as? String == "rate_limit")
     }
 
     @Test func removeDeletesFile() throws {
@@ -178,16 +179,60 @@ final class SnapshotStoreTests {
     @Test func usingALockKeepsItFromAgingOut() throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let lockPath = dir.appendingPathComponent(".claude-busy.lock").path
-        _ = store.withKeyLock("claude-busy") { 0 }
+        _ = try store.withKeyLock("claude-busy") { 0 }
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(-7200)],
             ofItemAtPath: lockPath
         )
         // a session active again right now must not look idle for an hour
-        _ = store.withKeyLock("claude-busy") { 0 }
+        _ = try store.withKeyLock("claude-busy") { 0 }
         store.sweepOrphans()
         #expect(FileManager.default.fileExists(atPath: lockPath),
                 "acquiring the lock must refresh its mtime")
+    }
+
+    @Test func aWaiterOnAnUnlinkedLockFileDoesNotRunAlongsideTheNextHolder() throws {
+        // The interleaving: someone holds lock file A; a writer opens A and
+        // waits; the sweep unlinks A; a second writer creates B at the same
+        // path and locks it; A is released. The waiter used to get A and
+        // run at the same time as B's holder — two "serialized" writers.
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let store = self.store
+        let lockPath = dir.appendingPathComponent(".claude-race.lock").path
+        let holderA = open(lockPath, O_CREAT | O_RDWR, 0o600)
+        flock(holderA, LOCK_EX)
+
+        final class Spans: @unchecked Sendable {
+            let lock = NSLock()
+            var spans: [(String, Date, Date)] = []
+            func add(_ who: String, _ a: Date, _ b: Date) { lock.lock(); spans.append((who, a, b)); lock.unlock() }
+        }
+        let spans = Spans()
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) {   // the waiter, blocked on A
+            _ = try? store.withKeyLock("claude-race") {
+                let start = Date(); Thread.sleep(forTimeInterval: 0.3)
+                spans.add("waiter", start, Date())
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.2)             // let it open A and block
+        unlink(lockPath)                                // the sweep reclaims A
+        DispatchQueue.global().async(group: group) {   // creates and locks B
+            _ = try? store.withKeyLock("claude-race") {
+                let start = Date(); Thread.sleep(forTimeInterval: 0.6)
+                spans.add("second", start, Date())
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.2)             // B is held now
+        flock(holderA, LOCK_UN)                         // release A
+        close(holderA)
+        group.wait()
+        #expect(spans.spans.count == 2)
+        if spans.spans.count == 2 {
+            let (a, b) = (spans.spans[0], spans.spans[1])
+            let overlap = a.1 < b.2 && b.1 < a.2
+            #expect(!overlap, "\(a.0) and \(b.0) held the lock at the same time")
+        }
     }
 
     @Test func concurrentWritesNeverExposePartialJSON() throws {

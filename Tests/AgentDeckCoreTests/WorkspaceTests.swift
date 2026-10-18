@@ -90,12 +90,34 @@ struct WorkspaceStoreTests {
         let b = NamedWorkspace(name: "Personal", savedAt: t0, entries: [entry("y")])
         try store.save(a)
         try store.save(b)
-        // a second save under the same name is a second workspace
-        try store.save(NamedWorkspace(name: "givzey", savedAt: t0 + 1, entries: []))
-        #expect(store.named().map(\.name) == ["givzey", "givzey", "Personal"])
+        // a second save under the same name gets a name you can tell apart
+        #expect(try store.save(NamedWorkspace(name: "Givzey", savedAt: t0 + 1, entries: [])) == "Givzey 2")
+        #expect(store.named().map(\.name) == ["givzey", "Givzey 2", "Personal"])
         try store.deleteNamed(id: a.id)
         #expect(store.named().contains { $0.id == a.id } == false)
         #expect(store.named().first { $0.id == b.id } == b)
+    }
+
+    @Test func twoCopiesRelocatingDifferentEntriesKeepBoth() throws {
+        let store = tempStore()
+        let ws = NamedWorkspace(name: "w", savedAt: t0, entries: [entry("x"), entry("y")])
+        try store.save(ws)
+        // each copy read the workspace before the other wrote
+        let a = WorkspaceStore(directory: store.directory)
+        let b = WorkspaceStore(directory: store.directory)
+        try a.updateNamed(id: ws.id) { $0.entries[0].cwd = "/new/x" }
+        try b.updateNamed(id: ws.id) { $0.entries[1].cwd = "/new/y" }
+        let after = try #require(store.named().first)
+        #expect(after.entries.map(\.cwd) == ["/new/x", "/new/y"])
+        #expect(try store.updateNamed(id: "gone") { _ in } == false)
+    }
+
+    @Test func namedWorkspacesAreOwnerOnlyToo() throws {
+        let store = tempStore()
+        let ws = NamedWorkspace(name: "w", savedAt: t0, entries: [entry("x")])
+        try store.save(ws)
+        let attrs = try FileManager.default.attributesOfItem(atPath: store.namedURL(ws.id).path)
+        #expect((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 
     @Test func theCurrentBootIDIsReadable() {
@@ -165,6 +187,47 @@ struct WorkspaceRecoveryEdgeTests {
     }
 }
 
+struct ReservationTests {
+    func dir() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    @Test func aReservationSurvivesARestartAndBlocksASecondLaunch() throws {
+        let d = dir()
+        #expect(try WorkspaceStore(directory: d).reserve(["claude-a", "claude-b"]) == ["claude-a", "claude-b"])
+        // AgentDeck relaunched mid-restore, or a second copy running
+        let other = WorkspaceStore(directory: d)
+        #expect(Set(other.reservations().keys) == ["claude-a", "claude-b"])
+        #expect(try other.reserve(["claude-b", "claude-c"]) == ["claude-c"],
+                "only what nobody holds is granted")
+    }
+
+    @Test func twoCopiesReservingAtOnceNeverBothGetTheSameSession() throws {
+        let d = dir()
+        final class Grants: @unchecked Sendable {
+            let lock = NSLock(); var all: [Set<String>] = []
+            func add(_ g: Set<String>) { lock.lock(); all.append(g); lock.unlock() }
+        }
+        let grants = Grants()
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            let g = (try? WorkspaceStore(directory: d).reserve(["claude-x", "claude-y"])) ?? []
+            grants.add(g)
+        }
+        let x = grants.all.filter { $0.contains("claude-x") }.count
+        let y = grants.all.filter { $0.contains("claude-y") }.count
+        #expect(x == 1 && y == 1, "x granted \(x) times, y \(y) times")
+    }
+
+    @Test func releasingEndsAReservation() throws {
+        let store = WorkspaceStore(directory: dir())
+        try store.reserve(["claude-a", "claude-b"])
+        try store.releaseReservations(["claude-a"])
+        #expect(Set(store.reservations().keys) == ["claude-b"])
+        #expect(try store.reserve(["claude-a"]) == ["claude-a"])
+    }
+}
+
 struct ClosedSetTests {
     let t0 = Date(timeIntervalSince1970: 1_790_000_000)
 
@@ -186,6 +249,7 @@ struct ClosedSetTests {
         try store.record(live: [], bootID: "B", now: t0 + 5)          // iTerm quit
         try store.record(live: [e("quick")], bootID: "B", now: t0 + 60)
         try store.record(live: [], bootID: "B", now: t0 + 20 * 60)
+        try store.record(live: [], bootID: "B", now: t0 + 20 * 60 + 15)  // confirms it
         let g = try #require(store.loadGeneration(bootID: "B"))
         let sets = g.restoreSets(live: [], finished: false)
         #expect(sets.map(\.entries.count) == [1, 30], "newest first, both kept")
@@ -199,6 +263,7 @@ struct ClosedSetTests {
             live.removeFirst()
             try store.record(live: live, bootID: "B", now: t0 + Double(i) * 120)
         }
+        try store.record(live: live, bootID: "B", now: t0 + 1215)          // confirms the last
         let g = try #require(store.loadGeneration(bootID: "B"))
         #expect(g.closedSets.count == 1)
         #expect(g.closedSets.first?.keys.count == 10)
@@ -231,16 +296,107 @@ struct ClosedSetTests {
         #expect(g.restoreSets(live: [], finished: false).isEmpty, "a running boot has no final set")
     }
 
-    @Test func aFreshProcessDoesNotMistakeItsStartForClosures() throws {
+    @Test func closuresWhileAgentDeckWasDownAreRecordedOnStart() throws {
+        // quit AgentDeck (or update it) and iTerm together: the sessions
+        // running at its last write and gone now closed unobserved
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
+        try WorkspaceStore(directory: dir).record(live: [e("a"), e("b"), e("c")], bootID: "B", now: t0)
+        let restarted = WorkspaceStore(directory: dir)
+        try restarted.record(live: [e("a")], bootID: "B", now: t0 + 600)
+        let sets = restarted.loadGeneration(bootID: "B")?.closedSets ?? []
+        #expect(sets.map { Set($0.keys) } == [["claude-b", "claude-c"]])
+        #expect(sets.first?.closedAt == t0, "dated at the last write, when they were last seen")
+    }
+
+    @Test func aRestartWithEverythingStillRunningRecordsNothing() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
         try WorkspaceStore(directory: dir).record(live: [e("a"), e("b")], bootID: "B", now: t0)
-        // app restarted; the first call it makes only sets a baseline
         let restarted = WorkspaceStore(directory: dir)
-        try restarted.record(live: [e("a")], bootID: "B", now: t0 + 60)
+        try restarted.record(live: [e("a"), e("b")], bootID: "B", now: t0 + 30)
         #expect(restarted.loadGeneration(bootID: "B")?.closedSets.isEmpty == true)
-        try restarted.record(live: [], bootID: "B", now: t0 + 120)
-        #expect(restarted.loadGeneration(bootID: "B")?.closedSets.map(\.keys) == [["claude-a"]])
+    }
+
+    @Test func oldClosesAndRecordedOnesAreNotRecordedAgainOnStart() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
+        let first = WorkspaceStore(directory: dir)
+        try first.record(live: [e("old"), e("a"), e("b")], bootID: "B", now: t0)
+        try first.record(live: [e("a"), e("b")], bootID: "B", now: t0 + 10)      // old closes, seen
+        for minute in 1...30 {   // a and b keep running for half an hour
+            try first.record(live: [e("a"), e("b")], bootID: "B", now: t0 + Double(minute) * 60)
+        }
+        let restarted = WorkspaceStore(directory: dir)
+        try restarted.record(live: [e("a"), e("b")], bootID: "B", now: t0 + 1900)
+        let sets = restarted.loadGeneration(bootID: "B")?.closedSets ?? []
+        #expect(sets.map(\.keys) == [["claude-old"]], "recorded once, when it happened")
+    }
+
+    @Test func aFailedWriteKeepsTheClosureForTheNextAttempt() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)
+        let store = WorkspaceStore(directory: dir)
+        try store.record(live: [e("a"), e("b")], bootID: "B", now: t0)
+        try store.record(live: [e("a")], bootID: "B", now: t0 + 10)        // b missing once
+        // make the confirming write fail: the lock file can't be created
+        let fm = FileManager.default
+        try fm.removeItem(at: dir.appendingPathComponent(".lock"))
+        try fm.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dir.path)
+        #expect(throws: (any Error).self) {
+            try store.record(live: [e("a")], bootID: "B", now: t0 + 20)
+        }
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        try store.record(live: [e("a")], bootID: "B", now: t0 + 30)
+        let sets = store.loadGeneration(bootID: "B")?.closedSets ?? []
+        #expect(sets.map(\.keys) == [["claude-b"]])
+        #expect(sets.first?.closedAt == t0 + 10, "dated to when it first went missing")
+    }
+
+    @Test func aSessionMissingFromOneLookIsNotAClosure() {
+        // a registry file caught mid-write drops a session for one reload
+        let store = tempStore()
+        try? store.record(live: [e("a"), e("b")], bootID: "B", now: t0)
+        try? store.record(live: [e("a")], bootID: "B", now: t0 + 15)
+        try? store.record(live: [e("a"), e("b")], bootID: "B", now: t0 + 30)
+        try? store.record(live: [e("a"), e("b")], bootID: "B", now: t0 + 90)
+        #expect(store.loadGeneration(bootID: "B")?.closedSets.isEmpty == true)
+    }
+
+    @Test func mergingTwoCopiesOfASetKeepsEveryMember() {
+        let base = ClosedSet(id: "S", closedAt: t0, keys: ["claude-x"])
+        var mine = base, theirs = base
+        mine.keys.append("claude-a")
+        mine.closedAt = t0 + 10
+        theirs.keys.append("claude-b")
+        theirs.closedAt = t0 + 20
+        let a = WorkspaceGeneration(bootID: "B", updatedAt: t0, closedSets: [mine])
+        let b = WorkspaceGeneration(bootID: "B", updatedAt: t0, closedSets: [theirs])
+        let merged = a.merged(with: b)
+        #expect(Set(merged.closedSets.first?.keys ?? []) == ["claude-x", "claude-a", "claude-b"])
+        #expect(merged.closedSets.first?.closedAt == t0 + 20)
+    }
+
+    @Test func theLargestSetSurvivesTheLimit() {
+        let big = ClosedSet(closedAt: t0, keys: (1...30).map { "claude-s\($0)" })
+        let smalls = (1...3).map { ClosedSet(closedAt: t0 + Double($0) * 3600, keys: ["claude-q\($0)"]) }
+        let g = WorkspaceGeneration(
+            bootID: "B", updatedAt: t0,
+            entries: (1...30).map { e("s\($0)") } + (1...3).map { e("q\($0)") },
+            closedSets: [big] + smalls)
+        let shown = g.restoreSets(live: [], finished: false)
+        #expect(shown.count == 3)
+        #expect(shown.contains { $0.entries.count == 30 }, "three later singles can't hide the thirty")
+        #expect(shown.first?.entries.first?.sessionId == "q3", "still newest first")
+    }
+
+    @Test func aNewerClosureIsNotSwallowedByAnOlderSuperset() {
+        let older = ClosedSet(closedAt: t0, keys: ["claude-a", "claude-b"])
+        let newer = ClosedSet(closedAt: t0 + 7200, keys: ["claude-a"])
+        let g = WorkspaceGeneration(bootID: "B", updatedAt: t0, entries: [e("a"), e("b")],
+                                    closedSets: [older, newer])
+        let sets = g.restoreSets(live: [], finished: false, limit: 10)
+        #expect(sets.map(\.entries.count) == [1, 2])
     }
 
     @Test func oldFilesWithoutClosedSetsStillLoad() throws {
@@ -388,18 +544,18 @@ struct WorkspaceRestoreTests {
                 if args[1].contains("2222") { return .failure("timed out after 15s") }
                 if args[1].contains("3333") { return .failure("iTerm got an error") }
                 if args[1].contains("5555") {
-                    return .failure("Not authorized to send Apple events to iTerm. (-1743)")
+                    return .success("untyped -1743 Not authorized to send Apple events to iTerm.")
                 }
-                return .success("901")
+                return .success("typed 901")
             }
         )
         #expect(calls.windows == ["", "901", "901", "901"])
-        #expect(outcomes[e.key] == .failed("Not authorized to send Apple events to iTerm. (-1743)"),
-                "refused before anything happened, so it is safe to retry")
+        #expect(outcomes[e.key] == .failed("-1743 Not authorized to send Apple events to iTerm."),
+                "the script says nothing was typed, so it is safe to retry")
         #expect(outcomes[a.key] == .launched)
         #expect(outcomes[b.key] == .uncertain("timed out after 15s"))
         #expect(outcomes[c.key] == .uncertain("iTerm got an error"),
-                "an error after the script started may follow a pane being created")
+                "an error escaping the script may have come from typing")
         #expect(outcomes[d.key] == nil, "re-checked right before launching")
     }
 
@@ -441,19 +597,56 @@ struct WorkspaceRestoreTests {
                 == "L L L L L wait5 L L L L L wait5 L L", "no pointless wait after the last")
     }
 
-    @Test func onlyOsascriptsOwnCodesMeanNothingHappened() {
-        #expect(WorkspaceRestore.failedBeforeAnySideEffect(
-            "execution error: Not authorized to send Apple events to iTerm2. (-1743)"))
-        #expect(WorkspaceRestore.failedBeforeAnySideEffect(
-            "execution error: Application isn’t running. (-600)"))
-        // a bare number elsewhere in the text must not make it retryable
-        #expect(!WorkspaceRestore.failedBeforeAnySideEffect("window id -600 not allowed"))
-        #expect(!WorkspaceRestore.failedBeforeAnySideEffect("Invalid index. (-1719)"))
+    @Test func onlyTheScriptsOwnReplyMeansNothingWasTyped() {
+        func outcome(_ r: ITermFocus.ScriptOutcome) -> WorkspaceRestore.Outcome {
+            WorkspaceRestore.classifyLaunch(r).0
+        }
+        #expect(outcome(.success("typed 42")) == .launched)
+        #expect(WorkspaceRestore.classifyLaunch(.success("typed 42")).window == "42")
+        #expect(outcome(.success("untyped -1712 AppleEvent timed out.")) == .failed("-1712 AppleEvent timed out."))
+        // anything osascript itself reports may have happened mid-typing,
+        // whatever the code — permission errors included
+        #expect(outcome(.failure("execution error: Not authorized (-1743)"))
+                == .uncertain("execution error: Not authorized (-1743)"))
+        #expect(outcome(.success("")) == .uncertain("unexpected reply: "))
     }
 
-    @Test func theTimeoutWordingTheExecutorRecognisesIsTheRunnersOwn() {
-        // execute() words a readiness timeout by this prefix; pin the
-        // runner's actual message
+    @Test func uncertainLaunchesCountTowardTheBatch() {
+        // a launch that may have started a session is load on iTerm too;
+        // only confirmed failures don't count
+        let ids = (1...7).map { String(format: "%08d-0000-4000-8000-000000000000", $0) }
+        let launches = WorkspaceRestore.plan(ids.map { entry($0) }, facts: facts()).launches
+        final class Log: @unchecked Sendable { var events: [String] = [] }
+        let log = Log()
+        _ = WorkspaceRestore.execute(
+            launches, stillWanted: { _ in true }, batchSize: 3, stagger: 0,
+            run: { script, args, _ in
+                if script == WorkspaceRestore.readyScript { return .success("1") }
+                log.events.append("L")
+                return args[1].contains("00000002") ? .success("untyped 1 no")
+                    : .failure("timed out after 15s")
+            },
+            awaitBatch: { log.events.append("wait\($0.count)") })
+        #expect(log.events.joined(separator: " ") == "L L L L wait3 L L L",
+                "the failed second launch doesn't count; the timeouts do")
+    }
+
+    @Test func aReadinessTimeoutIsReportedAsOne() {
+        // execute() recognises a timed-out readiness check by the runner's
+        // own wording: pin that wording, then pin what execute does with it
+        let real = ITermFocus.runAppleScript("delay 3", timeout: 0.5)
+        guard case .failure(let message) = real else {
+            Issue.record("expected a timeout, got \(real)")
+            return
+        }
+        let launches = WorkspaceRestore.plan([entry()], facts: facts()).launches
+        let outcomes = WorkspaceRestore.execute(
+            launches, stillWanted: { _ in true }, stagger: 0, readyTimeout: 60,
+            run: { _, _, _ in .failure(message) })
+        #expect(outcomes.values.first == .failed("iTerm2 didn't respond within 60s"))
+    }
+
+    @Test func theRunnersTimeoutWording() {
         let outcome = ITermFocus.runAppleScript("delay 3", timeout: 0.5)
         guard case .failure(let message) = outcome else {
             Issue.record("expected a timeout, got \(outcome)")

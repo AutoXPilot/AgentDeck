@@ -195,17 +195,11 @@ public enum WorkspaceRestore {
         /// the text may already be typed. Retrying could start the same
         /// conversation twice.
         case uncertain(String)
-    }
 
-    /// Failures known to happen before iTerm does anything: Automation
-    /// permission denied, or iTerm couldn't be reached at all.
-    static func failedBeforeAnySideEffect(_ message: String) -> Bool {
-        let m = message.lowercased()
-        // osascript's own codes, as it prints them: (-1743) Apple events
-        // not permitted, (-600) application not running. Matched with the
-        // parentheses so a stray "-600" elsewhere in a message can't turn
-        // an uncertain outcome into a retryable one.
-        return m.contains("(-1743)") || m.contains("(-600)")
+        var isFailure: Bool {
+            if case .failed = self { return true }
+            return false
+        }
     }
 
     /// Opens a pane and types the command into its login shell. iTerm's
@@ -214,30 +208,58 @@ public enum WorkspaceRestore {
     /// whereas the user's shell parses the line exactly as if typed.
     ///
     /// argv: target window id ("" for a new window), command line.
-    /// Returns the window id so later launches land in the same window.
+    ///
+    /// Reports which side of the typing it got to, because that is what
+    /// decides whether a retry is safe: "untyped <code> <message>" if it
+    /// failed before anything was typed (at worst an empty tab is left),
+    /// "typed <window id>" once the command was sent. Any other outcome —
+    /// an error while typing, a timeout — may have sent it. Guessing that
+    /// from error text instead couldn't tell which step had failed.
     public static let launchScript = """
     on run argv
         set targetWindow to item 1 of argv
         set cmd to item 2 of argv
         tell application "iTerm2"
-            set w to missing value
-            if targetWindow is not "" then
-                try
-                    set w to (first window whose id is (targetWindow as integer))
-                end try
-            end if
-            if w is missing value then
-                set w to (create window with default profile)
-                set s to current session of w
-            else
-                tell w to set t to (create tab with default profile)
-                set s to current session of t
-            end if
+            try
+                set w to missing value
+                if targetWindow is not "" then
+                    try
+                        set w to (first window whose id is (targetWindow as integer))
+                    end try
+                end if
+                if w is missing value then
+                    set w to (create window with default profile)
+                    set s to current session of w
+                else
+                    tell w to set t to (create tab with default profile)
+                    set s to current session of t
+                end if
+            on error m number n
+                return "untyped " & n & " " & m
+            end try
             tell s to write text cmd
-            return (id of w) as text
+            try
+                return "typed " & ((id of w) as text)
+            on error
+                return "typed "
+            end try
         end tell
     end run
     """
+
+    static func classifyLaunch(_ result: ITermFocus.ScriptOutcome) -> (Outcome, window: String?) {
+        switch result {
+        case .success(let out) where out.hasPrefix("typed"):
+            let id = out.dropFirst("typed".count).trimmingCharacters(in: .whitespaces)
+            return (.launched, id.isEmpty ? nil : id)
+        case .success(let out) where out.hasPrefix("untyped "):
+            return (.failed(String(out.dropFirst("untyped ".count))), nil)
+        case .success(let out):
+            return (.uncertain("unexpected reply: \(out)"), nil)
+        case .failure(let message):
+            return (.uncertain(message), nil)
+        }
+    }
 
     public typealias ScriptRunner = @Sendable (
         _ script: String, _ args: [String], _ timeout: TimeInterval
@@ -285,17 +307,12 @@ public enum WorkspaceRestore {
         for (i, launch) in launches.enumerated() {
             guard stillWanted(launch.entry) else { continue }
             if i > 0, stagger > 0 { Thread.sleep(forTimeInterval: stagger) }
-            let outcome: Outcome
-            switch run(launchScript, [window, launch.commandLine], 15) {
-            case .success(let id):
-                outcome = .launched
-                if !id.isEmpty { window = id }
-                batch.append(launch.entry)
-            case .failure(let message) where failedBeforeAnySideEffect(message):
-                outcome = .failed(message)
-            case .failure(let message):
-                outcome = .uncertain(message)
-            }
+            let (outcome, newWindow) = classifyLaunch(
+                run(launchScript, [window, launch.commandLine], 15))
+            if let newWindow { window = newWindow }
+            // an uncertain launch may be starting a session too, so it
+            // counts toward the batch as much as a confirmed one
+            if !outcome.isFailure { batch.append(launch.entry) }
             outcomes[launch.entry.key] = outcome
             progress(launch.entry, outcome)
             if batch.count >= batchSize, i < launches.count - 1 {

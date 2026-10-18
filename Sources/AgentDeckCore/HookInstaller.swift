@@ -60,9 +60,23 @@ public struct HookInstaller: Sendable {
         provider == .claude ? claudeEvents : codexEvents
     }
 
+    /// Single-quoted, so the path is one literal word whatever it
+    /// contains. It used to be double-quoted, which handles the space in
+    /// "Application Support" but still lets the shell expand `$`, backticks
+    /// and `\` — harmless for a normal home directory, but the command runs
+    /// on every hook event, so it should not depend on that.
     public func command(for provider: Provider) -> String {
-        // path contains "Application Support" — unquoted, sh splits it
-        "\"\(helperPath)\" \(provider.rawValue)"
+        "\(WorkspaceRestore.shellQuote(helperPath)) \(provider.rawValue)"
+    }
+
+    /// The double-quoted form earlier versions wrote. For a path with no
+    /// character the shell treats specially inside double quotes, it is
+    /// the same command, so an existing install stays healthy instead of
+    /// asking to be reinstalled; the next install rewrites it.
+    func legacyCommand(for provider: Provider) -> String? {
+        let special: Set<Character> = ["$", "`", "\\", "\"", "!"]
+        guard !helperPath.contains(where: special.contains) else { return nil }
+        return "\"\(helperPath)\" \(provider.rawValue)"
     }
 
     @discardableResult
@@ -81,9 +95,9 @@ public struct HookInstaller: Sendable {
     public func isInstalled(provider: Provider, in fileURL: URL) -> Bool {
         guard let root = try? Self.readJSONObject(at: fileURL),
               let hooks = root["hooks"] as? [String: Any] else { return false }
-        let canonical = command(for: provider)
+        let accepted = [command(for: provider), legacyCommand(for: provider)].compactMap { $0 }
         return Self.events(for: provider).allSatisfy { event in
-            Self.commandStrings(in: hooks[event] ?? []).contains(canonical)
+            !Set(Self.commandStrings(in: hooks[event] ?? [])).isDisjoint(with: accepted)
         }
     }
 
@@ -149,10 +163,15 @@ public struct HookInstaller: Sendable {
         let dir = url.deletingLastPathComponent()
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let lock = dir.appendingPathComponent(".\(url.lastPathComponent).agentdeck-install.lock")
+        // Fails closed: an install that can't take the lock doesn't run,
+        // rather than racing another one and losing its hooks.
         let fd = open(lock.path, O_CREAT | O_RDWR, 0o600)
-        guard fd >= 0 else { return try body() }  // best-effort
-        flock(fd, LOCK_EX)
-        defer { flock(fd, LOCK_UN); close(fd) }
+        guard fd >= 0 else { throw InstallerError.writeFailed(lock.path) }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw InstallerError.writeFailed(lock.path) }
+        }
+        defer { flock(fd, LOCK_UN) }
         return try body()
     }
 
@@ -255,6 +274,14 @@ public struct HookInstaller: Sendable {
                 throw InstallerError.writeFailed(tmp.path)
             }
             try data.write(to: tmp)
+            // Checked again at the last moment. The window between this and
+            // the replace is a few microseconds rather than the time taken
+            // to back up and serialize; it can't be closed entirely, because
+            // Claude and editors don't take our lock. A save that lands in
+            // it is still in the backup taken above only if it came first.
+            if (try? Data(contentsOf: url)) != basis {
+                throw InstallerError.changedWhileInstalling(url.path)
+            }
             _ = try fm.replaceItemAt(url, withItemAt: tmp)
         } catch {
             // never strand a copy of the config, and don't leave a backup

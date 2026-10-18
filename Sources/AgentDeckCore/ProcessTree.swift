@@ -144,4 +144,22 @@ public enum ProcessTree {
         }
         return nil
     }
+
+    /// Whether the process at `pid` is plausibly the agent itself: its
+    /// executable path or name names the provider, or (Claude only) it is
+    /// the node/bun runtime a wrapper-hosted install runs under. A reused
+    /// pid is almost always something else — a shell, a helper — which is
+    /// what this exists to reject; it is not proof of identity.
+    public static func looksLikeAgent(_ pid: pid_t, provider: Provider) -> Bool {
+        guard let (name, _) = nameAndParent(of: pid) else { return false }
+        let lowerName = name.lowercased()
+        let lowerPath = executablePath(of: pid)?.lowercased() ?? ""
+        switch provider {
+        case .claude:
+            return lowerName.contains("claude") || lowerPath.contains("claude")
+                || lowerName == "node" || lowerName == "bun"
+        case .codex:
+            return lowerName.contains("codex") || lowerPath.contains("codex")
+        }
+    }
 }

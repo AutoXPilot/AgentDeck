@@ -59,7 +59,9 @@ public enum HookProcessor {
         // Serialize the whole load-merge-write/remove for this key so a `Stop`
         // and a racing `SessionEnd` for the same session can't resurrect a
         // just-removed snapshot (load and delete were previously unordered).
-        return store.withKeyLock(key) {
+        // no lock, no write: dropping one event beats racing another
+        // writer for this session (see withKeyLock)
+        return (try? store.withKeyLock(key) {
             switch action {
             case .ignore:
                 break
@@ -101,6 +103,6 @@ public enum HookProcessor {
                 try? store.write(snapshot)
             }
             return action
-        }
+        }) ?? .ignore
     }
 }

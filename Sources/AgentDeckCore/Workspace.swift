@@ -133,6 +133,16 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         }
     }
 
+    /// Entries that were running at the last write and aren't in `live`,
+    /// excluding any already recorded as closed since their last sighting.
+    func closedWhileUnobserved(live: Set<String>, freshness: TimeInterval) -> [String] {
+        let cutoff = updatedAt.addingTimeInterval(-freshness)
+        return entries.filter { entry in
+            entry.lastSeen >= cutoff && !live.contains(entry.key)
+                && !closedSets.contains { $0.keys.contains(entry.key) && $0.closedAt >= entry.lastSeen }
+        }.map(\.key).sorted()
+    }
+
     /// What was still running when this generation's record ends: the
     /// newest sighting and every one chained to it within `gap`, measured
     /// over all entries. Only meaningful for a finished boot, where no
@@ -157,7 +167,9 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
     /// A set wholly inside a larger one is dropped as redundant.
     ///
     /// `finished`: a previous boot, whose final set is included too.
-    public func restoreSets(live: Set<String>, finished: Bool, limit: Int = 3) -> [RestoreSet] {
+    public func restoreSets(
+        live: Set<String>, finished: Bool, limit: Int = 3
+    ) -> [RestoreSet] {
         var candidates: [(closedAt: Date, keys: Set<String>)] = closedSets.map {
             ($0.closedAt, Set($0.keys))
         }
@@ -167,20 +179,32 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
                 candidates.append((at, Set(final.map(\.key))))
             }
         }
+        // A set is redundant only if a superset is at least as recent: an
+        // older superset must not swallow a newer closure, or the newest
+        // thing you closed could vanish behind something from hours ago.
         let distinct = candidates.enumerated().filter { i, c in
             !candidates.enumerated().contains { j, other in
                 j != i && c.keys.isSubset(of: other.keys)
+                    && other.closedAt >= c.closedAt
                     && (c.keys != other.keys || j > i)
             }
         }.map(\.element)
-        return distinct
+        let all = distinct
             .sorted { $0.closedAt > $1.closedAt }
             .compactMap { c -> RestoreSet? in
                 let remaining = entries.filter { c.keys.contains($0.key) && !live.contains($0.key) }
                 return remaining.isEmpty ? nil : RestoreSet(closedAt: c.closedAt, entries: remaining)
             }
-            .prefix(limit)
-            .map { $0 }
+        guard all.count > limit, limit > 0 else { return all }
+        // Newest first, but the largest always makes the cut: three small
+        // closures after an iTerm quit must not push the thirty out of
+        // reach.
+        var shown = Array(all.prefix(limit))
+        if let largest = all.max(by: { $0.entries.count < $1.entries.count }),
+           !shown.contains(largest) {
+            shown[shown.count - 1] = largest
+        }
+        return shown
     }
 
     /// Merges two views of the same boot; the newer sighting of each
@@ -196,7 +220,13 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         }
         for set in other.closedSets {
             if let i = result.closedSets.firstIndex(where: { $0.id == set.id }) {
-                if set.closedAt > result.closedSets[i].closedAt { result.closedSets[i] = set }
+                // Union, not last-writer-wins: two instances can each have
+                // added a different member to the same set, and a clock
+                // step backwards would otherwise let the older copy win.
+                var mergedSet = result.closedSets[i]
+                mergedSet.keys += set.keys.filter { !mergedSet.keys.contains($0) }
+                mergedSet.closedAt = max(mergedSet.closedAt, set.closedAt)
+                result.closedSets[i] = mergedSet
             } else {
                 result.closedSets.append(set)
             }
@@ -245,6 +275,8 @@ public final class WorkspaceStore {
     private var current: WorkspaceGeneration?
     private var previousLive: Set<String>?
     private var previousLiveBoot: String?
+    /// Missing from the last call, not yet confirmed closed: when first missed.
+    private var suspects: [String: Date] = [:]
 
     public init(
         directory: URL = WorkspaceStore.defaultDirectory,
@@ -294,20 +326,40 @@ public final class WorkspaceStore {
             ? current!
             : loadGeneration(bootID: bootID) ?? WorkspaceGeneration(bootID: bootID, updatedAt: now)
         var changed = false
-        // Closures are seen as sessions dropping out of the live set
-        // between two calls. Nothing is known about closures from before
-        // this process started watching, so the first call only sets the
-        // baseline.
+        // Closures are seen as sessions dropping out of the live set, but
+        // only once they've been missing from two calls in a row, dated to
+        // the first. One absence can be a registry file caught mid-write;
+        // recording it would fold a running session into whatever group
+        // closed nearby. Until confirmed, a suspect stays in the baseline.
         let liveKeys = Set(live.map(\.key))
+        var baseline = liveKeys
+        var stillSuspect: [String: Date] = [:]
         if let previous = previousLive, previousLiveBoot == bootID {
-            let closed = previous.subtracting(liveKeys).sorted()
-            if !closed.isEmpty {
-                generation.noteClosed(closed, at: now)
+            var confirmed: [Date: [String]] = [:]
+            for key in previous.subtracting(liveKeys) {
+                if let since = suspects[key] {
+                    confirmed[since, default: []].append(key)
+                } else {
+                    stillSuspect[key] = now
+                }
+            }
+            for (since, keys) in confirmed.sorted(by: { $0.key < $1.key }) {
+                generation.noteClosed(keys.sorted(), at: since)
+                changed = true
+            }
+            baseline.formUnion(stillSuspect.keys)
+        } else {
+            // First look this process has had at this boot. Anything that
+            // was running at the last write and isn't now closed while
+            // nobody was watching: AgentDeck quit or was being updated
+            // when iTerm went down. Treated as one set at that write.
+            let missed = generation.closedWhileUnobserved(
+                live: liveKeys, freshness: 2 * refreshInterval + 30)
+            if !missed.isEmpty {
+                generation.noteClosed(missed, at: generation.updatedAt)
                 changed = true
             }
         }
-        previousLive = liveKeys
-        previousLiveBoot = bootID
         for var entry in live {
             entry.lastSeen = now
             if let i = generation.entries.firstIndex(where: { $0.key == entry.key }) {
@@ -324,6 +376,9 @@ public final class WorkspaceStore {
         }
         guard changed, !generation.entries.isEmpty else {
             current = generation
+            previousLive = baseline
+            previousLiveBoot = bootID
+            suspects = stillSuspect
             return false
         }
         generation.updatedAt = now
@@ -339,8 +394,13 @@ public final class WorkspaceStore {
             try write(generation, to: url)
             return generation
         }
-        // adopted only once it is on disk, so a failed write is retried
+        // Adopted only once it is on disk, the baseline included: advanced
+        // before a failed write, the closures in it would never be seen
+        // again.
         current = generation
+        previousLive = baseline
+        previousLiveBoot = bootID
+        suspects = stillSuspect
         pruneGenerations(keeping: bootID)
         return true
     }
@@ -368,6 +428,50 @@ public final class WorkspaceStore {
         }
     }
 
+    // MARK: Restore reservations
+
+    /// Sessions a restore has launched, or may have, that haven't been seen
+    /// running yet. On disk and under the store's lock, so they hold across
+    /// an AgentDeck restart and between two running copies; in memory, a
+    /// relaunch mid-restore forgot them and the next click could start the
+    /// same conversation a second time. Nothing expires on a timer: a
+    /// reservation ends when its session is seen running, or when the user
+    /// clears it after checking iTerm.
+    struct ReservationFile: Codable {
+        var schemaVersion = 1
+        var reservations: [String: Date] = [:]
+    }
+
+    var reservationsURL: URL { directory.appendingPathComponent("reservations.json") }
+
+    public func reservations() -> [String: Date] {
+        read(ReservationFile.self, from: reservationsURL)?.reservations ?? [:]
+    }
+
+    /// Reserves whichever of `keys` aren't reserved already, atomically, and
+    /// returns those: only they may be launched.
+    @discardableResult
+    public func reserve(_ keys: [String], at now: Date = Date()) throws -> Set<String> {
+        try withLock {
+            var file = read(ReservationFile.self, from: reservationsURL) ?? ReservationFile()
+            let granted = Set(keys).subtracting(file.reservations.keys)
+            guard !granted.isEmpty else { return [] }
+            for key in granted { file.reservations[key] = now }
+            try write(file, to: reservationsURL)
+            return granted
+        }
+    }
+
+    public func releaseReservations(_ keys: Set<String>) throws {
+        guard !keys.isEmpty else { return }
+        try withLock {
+            var file = read(ReservationFile.self, from: reservationsURL) ?? ReservationFile()
+            let before = file.reservations.count
+            for key in keys { file.reservations[key] = nil }
+            if file.reservations.count != before { try write(file, to: reservationsURL) }
+        }
+    }
+
     // MARK: Named workspaces
 
     public func named() -> [NamedWorkspace] {
@@ -376,8 +480,36 @@ public final class WorkspaceStore {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    public func save(_ workspace: NamedWorkspace) throws {
-        try write(workspace, to: namedURL(workspace.id))
+    /// Saves under a name not already taken: "givzey" becomes "givzey 2"
+    /// rather than a second, indistinguishable "givzey". Returns the name
+    /// used.
+    @discardableResult
+    public func save(_ workspace: NamedWorkspace) throws -> String {
+        try withLock {
+            var toSave = workspace
+            let taken = Set(named().filter { $0.id != workspace.id }.map { $0.name.lowercased() })
+            if taken.contains(toSave.name.lowercased()) {
+                var n = 2
+                while taken.contains("\(workspace.name) \(n)".lowercased()) { n += 1 }
+                toSave.name = "\(workspace.name) \(n)"
+            }
+            try write(toSave, to: namedURL(toSave.id))
+            return toSave.name
+        }
+    }
+
+    /// Changes one saved workspace in place, reading it fresh under the
+    /// lock. A whole-workspace save from a copy read earlier could undo a
+    /// change another copy of the app had made meanwhile. Returns false if
+    /// it no longer exists.
+    @discardableResult
+    public func updateNamed(id: String, _ change: (inout NamedWorkspace) -> Void) throws -> Bool {
+        try withLock {
+            guard var workspace = read(NamedWorkspace.self, from: namedURL(id)) else { return false }
+            change(&workspace)
+            try write(workspace, to: namedURL(id))
+            return true
+        }
     }
 
     public func deleteNamed(id: String) throws {

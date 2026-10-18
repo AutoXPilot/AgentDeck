@@ -51,16 +51,36 @@ public enum BoundedSubprocess {
         var timedOut = false
         if exited.wait(timeout: .now() + timeout) == .timedOut {
             timedOut = true
+            // SIGTERM first, then SIGKILL: an osascript parked in an Apple
+            // event to a hung app can ignore the first.
             process.terminate()
-            _ = exited.wait(timeout: .now() + 2)
+            if exited.wait(timeout: .now() + 2) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 2)
+            }
         }
-        // ensure the handler saw EOF; a tiny grace for in-flight reads
         outPipe.fileHandleForReading.readabilityHandler = nil
-        let remaining = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-        collected.append(remaining)
-        return Result(
-            status: process.terminationStatus, output: collected.data, timedOut: timedOut
-        )
+        // Take what is already buffered without waiting for EOF. A blocking
+        // read-to-end here once had no bound at all: anything still holding
+        // the pipe open — the child, if even SIGKILL hadn't landed, or a
+        // grandchild that inherited it — parked the caller forever, and a
+        // restore waiting on it never finished.
+        collected.append(drainWithoutBlocking(outPipe.fileHandleForReading.fileDescriptor))
+        // terminationStatus raises if the process is somehow still running
+        let status = process.isRunning ? -1 : process.terminationStatus
+        return Result(status: status, output: collected.data, timedOut: timedOut)
+    }
+
+    static func drainWithoutBlocking(_ fd: Int32) -> Data {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { return Data() }
+        var data = Data()
+        var buf = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let n = read(fd, &buf, buf.count)
+            if n > 0 { data.append(buf, count: n) } else { break }  // 0 = EOF, -1 = EAGAIN/error
+        }
+        return data
     }
 
     /// Thread-safe accumulator for the readability handler (which runs on a

@@ -127,6 +127,20 @@ struct SessionPipelineTests {
         #expect(out.waitingReasons["claude-s"] != nil)
     }
 
+    @Test func aReusedPidCannotHideTheRightRegistryEntry() {
+        // the snapshot still carries pid 5, which now belongs to another
+        // session; this session lives on as pid 9 and is blocked
+        let stale = snap("mine", .working, pid: 5, ageSeconds: 600)
+        let other = entry(pid: 5, id: "someone-else", "idle")
+        let mine = entry(pid: 9, id: "mine", "waiting", waitingFor: "permission prompt", ageSeconds: 30)
+        let out = SessionPipeline.run(
+            snapshots: [stale], registry: [5: other, 9: mine],
+            liveSessions: ["mine": mine, "someone-else": other],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now)
+        #expect(out.rows.first { $0.sessionId == "mine" }?.state == .waiting)
+        #expect(out.waitingReasons["claude-mine"] != nil)
+    }
+
     @Test func fullDerivationOrdering() {
         // one of everything: an idle fake-wait, a registry-cleared wait,
         // a registry-detected block, a genuine hook wait, a worker
@@ -200,10 +214,13 @@ struct SessionPipelineTests {
 
     @Test func duplicateFilesCannotProduceDuplicateRows() {
         let out = SessionPipeline.run(
-            snapshots: [snap("dup", .ready), snap("dup", .done)],
+            snapshots: [snap("dup", .waiting, notif: "permission_prompt"),
+                        snap("dup", .waiting, notif: "permission_prompt")],
             registry: [:], acks: [:],
             frozenOrder: nil, popoverVisible: false, now: now
         )
         #expect(out.rows.count == 1)
+        // deduped before counting: one blocked session is one in the badge
+        #expect(out.alertCount == 1)
     }
 }

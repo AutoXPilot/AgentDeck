@@ -297,12 +297,25 @@ struct StateReconcilerTests {
         #expect(!Attention.needsAttention(second, ackedAt: ack))
     }
 
-    @Test func uncorrectedSnapshotsKeepTheirTimestamp() {
-        let snap = snapshot(.waiting, ageSeconds: 600)
-        let agreeing = entry("waiting", waitingFor: "input needed", ageSeconds: 60)
+    @Test func agreementWithAnOlderRegistryKeepsTheHookTime() {
+        let snap = snapshot(.waiting, ageSeconds: 60)
+        let agreeing = entry("waiting", waitingFor: "input needed", ageSeconds: 600)
         let outcome = StateReconciler.normalize(snapshot: snap, entry: agreeing)
         #expect(outcome.snapshot.updatedAt == snap.updatedAt,
-                "agreement is not a correction; the hook time stands")
+                "nothing newer was observed; the hook time stands")
+    }
+
+    @Test func aNewerRegistryWaitIsANewWaitEvenWhenBothSayWaiting() {
+        // hook wait at -600s, acknowledged at -300s; the session was
+        // answered and blocked again at -60s with no hook in between. Both
+        // sources say waiting, but this is a second wait, and the
+        // acknowledgement of the first must not cover it.
+        let snap = snapshot(.waiting, ageSeconds: 600)
+        let again = entry("waiting", waitingFor: "permission prompt", ageSeconds: 60)
+        let outcome = StateReconciler.normalize(snapshot: snap, entry: again)
+        let ackedAt = snap.updatedAt.addingTimeInterval(300)
+        #expect(outcome.snapshot.updatedAt > ackedAt)
+        #expect(Attention.needsAttention(outcome.snapshot, ackedAt: ackedAt))
     }
 
     @Test func codexKeepsItsOwnReasonWithoutARegistry() {

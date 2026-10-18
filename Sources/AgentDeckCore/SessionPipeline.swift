@@ -26,15 +26,19 @@ public enum SessionPipeline {
     ) -> Output {
         var reasons: [String: String] = [:]
         let normalized: [SessionSnapshot] = snapshots.map { snapshot in
-            // Match on pid first — it is the most specific evidence — but
-            // fall back to the session id. A snapshot whose ancestor walk
+            // A snapshot whose ancestor walk
             // failed has no pid at all, and one resumed into a new process
             // has a stale one; either way a pid-only lookup missed the
             // registry entirely, so a session the registry *knows* is
             // blocked produced no alert until a hook happened to arrive.
             // `reconcile` re-checks the session id, so this can't mismatch.
-            let entry = snapshot.agentPid.flatMap { registry[$0] }
-                ?? liveSessions[snapshot.sessionId]
+            // The live, identity-checked entry for this session id comes
+            // first. A pid lookup is consulted only when it names this same
+            // session: pids are reused, so the file at a stale pid can belong
+            // to another session, and preferring it hid the right one.
+            let byPid = snapshot.agentPid.flatMap { registry[$0] }
+                .flatMap { $0.sessionId == snapshot.sessionId ? $0 : nil }
+            let entry = liveSessions[snapshot.sessionId] ?? byPid
             let outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
             if let reason = outcome.waitingFor {
                 reasons[snapshot.key] = ITermFocus.humanizeReason(reason)

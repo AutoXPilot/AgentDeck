@@ -4,6 +4,35 @@
 
 ### Added
 
+- **Bring sessions back after a reboot or an iTerm restart.** AgentDeck
+  remembers the agent sessions running in each boot and can resume each
+  conversation in its folder: a banner after a restart offers the
+  previous boot's sessions; the footer menu offers groups of sessions
+  that closed together ("Closed 11:05 — 30 sessions") and every boot it
+  still remembers; and **Save open sessions as workspace…** keeps a named
+  set to restore any time. Each session comes back as
+  `cd <folder> && claude --resume <id>` (or `codex resume <id>`) typed
+  into a new iTerm tab, with Claude's permission mode when a hook
+  recorded it.
+
+  What it stores is a folder, a session id, the permission mode and a
+  name you set yourself — never the command a session was started with,
+  which can carry a prompt or a credential. Restore builds its command
+  from the id, which must be a UUID, and refuses folder paths that are
+  relative or contain control characters. Sessions already running,
+  folders that moved (with a Locate… to point at the new one) and
+  missing conversations are skipped by name. Launches go five at a time
+  once iTerm answers, and a session launched — or possibly launched — is
+  not launched again until it is seen running, across relaunches.
+
+  Limits: the default iTerm profile must start a POSIX shell; a session
+  found only through Claude's registry has no recorded permission mode
+  and comes back in your default; the window/tab layout isn't restored.
+- **Rows found through Claude's registry can be clicked to their pane.**
+  They had no recorded pane id, so a click said the session wasn't in a
+  terminal AgentDeck could focus. The pane is now found from the agent's
+  controlling terminal.
+
 - **Every live Claude session is listed, not just the ones hooks saw.**
   Hooks only report sessions running when they fire, so a session
   started before the hooks were installed — or one whose snapshot aged
@@ -34,6 +63,32 @@
   notification at once — the backlog starts its cooldown instead.
 
 ### Fixed
+
+- **A second wait could stay hidden behind the first one's
+  acknowledgement.** If a session was answered and blocked again with no
+  hook in between, both sources still said "waiting", so the new wait
+  kept the old one's time and an acknowledgement of the first covered
+  it. A newer registry wait now counts as a new wait.
+- **A reused pid could hide a session's real registry entry.** The
+  registry was looked up by the snapshot's pid first; if that pid now
+  belonged to another session, the right entry was never consulted.
+- **Restarting AgentDeck re-announced long-blocked sessions** and
+  re-applied the first-run quieting, so a session blocked at startup
+  could stay silent as long as AgentDeck kept being restarted.
+  Notification cooldowns and already-announced waits now survive a
+  relaunch.
+- **A live but quiet Codex session lost its row after seven days.**
+  Verified-live agents are no longer expired for being quiet.
+- **Hook commands double-quoted the helper path**, which still lets the
+  shell expand `$(…)` and backticks in it. They are single-quoted now;
+  existing installs stay healthy and are rewritten on the next install.
+- **The installer and snapshot locks failed open**, proceeding unlocked
+  when the lock couldn't be taken. Both now fail closed, the snapshot lock
+  also re-checks that the file it locked is still the one at its path,
+  and the installer re-checks the config immediately before replacing it.
+- **A timed-out subprocess could block forever** if it ignored SIGTERM or
+  something else held its output open. It is now killed with SIGKILL and
+  its output is read without waiting for end-of-file.
 
 - Session counts in the menu-bar badge were computed before duplicate
   rows were removed, so a doubled session could be counted twice.

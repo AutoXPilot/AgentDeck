@@ -25,12 +25,20 @@ public enum Liveness {
     public struct ProcessProbe: Sendable {
         /// Process start time, or nil if the pid is dead/unreadable.
         public var startTime: @Sendable (Int32) -> Date?
-        public init(startTime: @escaping @Sendable (Int32) -> Date?) {
+        /// Whether the process is plausibly the agent (see
+        /// `ProcessTree.looksLikeAgent`). Test probes default to yes.
+        public var isAgent: @Sendable (Int32, Provider) -> Bool
+        public init(
+            startTime: @escaping @Sendable (Int32) -> Date?,
+            isAgent: @escaping @Sendable (Int32, Provider) -> Bool = { _, _ in true }
+        ) {
             self.startTime = startTime
+            self.isAgent = isAgent
         }
-        public static let system = ProcessProbe { pid in
-            isAlive(pid: pid) ? ProcessTree.startTime(of: pid) : nil
-        }
+        public static let system = ProcessProbe(
+            startTime: { pid in isAlive(pid: pid) ? ProcessTree.startTime(of: pid) : nil },
+            isAgent: { pid, provider in ProcessTree.looksLikeAgent(pid, provider: provider) }
+        )
     }
 
     /// A snapshot's pid is TRUSTWORTHY if a process is alive at that pid and
@@ -46,25 +54,33 @@ public enum Liveness {
     /// such failure mode. `slack` absorbs the gap between a process starting
     /// and its first hook firing. A live pid whose start time can't be read
     /// falls back to liveness alone.
-    static func pidIsTrustworthy(
-        _ pid: Int32, forUpdatedAt updatedAt: Date, slack: TimeInterval,
-        probe: ProcessProbe
+    ///
+    /// The process must also look like the agent. Start time alone accepts
+    /// a pid reused within `slack` of the last update, forever; the name
+    /// check rejects nearly all of those, since a reused pid is almost
+    /// never another claude or codex.
+    public static func pidIsTrustworthy(
+        _ pid: Int32, forUpdatedAt updatedAt: Date, slack: TimeInterval = 120,
+        provider: Provider, probe: ProcessProbe = .system
     ) -> Bool {
         guard let started = probe.startTime(pid) else {
-            return isAlive(pid: pid)  // alive but unreadable start time
+            // alive but unreadable start time
+            return isAlive(pid: pid) && probe.isAgent(pid, provider)
         }
-        return started <= updatedAt.addingTimeInterval(slack)
+        return started <= updatedAt.addingTimeInterval(slack) && probe.isAgent(pid, provider)
     }
 
     /// Sessions to drop:
     /// - pid-bearing snapshots whose pid is dead OR belongs to a *different*
-    ///   process now (reuse), OR idle past `liveMaxIdle`
+    ///   process now (reuse, or not the agent at all), OR — only when the
+    ///   start time can't be read to confirm it — idle past `liveMaxIdle`
     /// - pid-less snapshots from before the last boot, or idle past `maxIdle`
     ///
     /// The two idle caps differ for a reason discovered in production: a
     /// session blocked on the user emits NO events while it waits, so a 24h
     /// cap silently deleted live sessions waiting overnight — and they could
-    /// never come back. Live, identity-verified pids get a long backstop.
+    /// never come back. A live, identity-verified pid is never expired for
+    /// being quiet.
     /// `confirmedLive` names sessions another source has independently
     /// verified as running (Claude's registry). Their snapshots are never
     /// aged out: deleting one doesn't hide the session any more — discovery
@@ -85,8 +101,16 @@ public enum Liveness {
             if s.provider == .claude, confirmedLive.contains(s.sessionId) { return nil }
             if let pid = s.agentPid {
                 guard pidIsTrustworthy(
-                    pid, forUpdatedAt: s.updatedAt, slack: startSlack, probe: probe
+                    pid, forUpdatedAt: s.updatedAt, slack: startSlack,
+                    provider: s.provider, probe: probe
                 ) else { return s.key }
+                // A verified-live agent is not expired for being quiet. A
+                // Codex session left waiting for input over a long weekend
+                // used to lose its row — and then, gone from every live
+                // set, be offered for restore while still running.
+                // `liveMaxIdle` now applies only where liveness can't be
+                // confirmed by start time.
+                if probe.startTime(pid) != nil { return nil }
                 return now.timeIntervalSince(s.updatedAt) > liveMaxIdle ? s.key : nil
             }
             // no pid to identity-check: the boot guard is the only reuse
