@@ -51,10 +51,10 @@ final class SessionsModel: ObservableObject {
     /// Sessions a restore skipped because their folder is gone, each
     /// offered a "Locate…" so the rest of the recovery can be finished
     /// from here rather than by hand.
-    @Published private(set) var missingFolders: [WorkspaceEntry] = []
-    /// The named workspace those entries came from, if any, so a located
-    /// folder is saved back into it.
-    private var missingFoldersWorkspaceID: String?
+    @Published private(set) var missingFolders: [MissingFolder] = []
+    /// Bumped per restore, so a slower, older restore's messages can't
+    /// overwrite a newer one's.
+    private var restoreGeneration = 0
     /// Sessions a restore has launched that aren't visible as running yet.
     /// A resumed session takes seconds to write its registry file, so a
     /// liveness check alone can't stop a second click double-launching it.
@@ -1020,27 +1020,25 @@ final class SessionsModel: ObservableObject {
 
 // MARK: - Workspaces
 
+struct MissingFolder: Identifiable, Equatable {
+    var entry: WorkspaceEntry
+    /// The named workspace it came from, if any.
+    var workspaceID: String?
+    var id: String { entry.key }
+}
+
 struct RestoreOffer: Identifiable, Equatable {
-    enum Kind: Equatable { case recentlyClosed(Date), beforeRestart(Date) }
-    var kind: Kind
     var bootID: String
+    var isBeforeRestart: Bool
+    var closedAt: Date
     var entries: [WorkspaceEntry]
-    var id: String { bootID }
+    var id: String { "\(bootID)-\(closedAt.timeIntervalSince1970)" }
 
     var title: String {
-        switch kind {
-        case .recentlyClosed(let when):
-            // the latest batch of closures, however old — say when
-            return "Closed " + when.formatted(date: Calendar.current.isDateInToday(when)
-                                              ? .omitted : .abbreviated, time: .shortened)
-        case .beforeRestart(let when):
-            return "Before restart, " + when.formatted(date: .abbreviated, time: .shortened)
-        }
-    }
-
-    var isBeforeRestart: Bool {
-        if case .beforeRestart = kind { return true }
-        return false
+        let when = closedAt.formatted(
+            date: Calendar.current.isDateInToday(closedAt) ? .omitted : .abbreviated,
+            time: .shortened)
+        return isBeforeRestart ? "Before restart, \(when)" : "Closed \(when)"
     }
 }
 
@@ -1094,33 +1092,38 @@ extension SessionsModel {
         }
     }
 
-    /// One offer per retained boot, newest first. Every prior boot stays
-    /// reachable: offering only the latest meant that restoring part of a
-    /// set — or just starting one session — and then rebooting again hid
-    /// everything else from the boot before.
+    /// The current boot's recent closed sets, then each earlier boot's.
+    /// Every retained boot stays reachable: offering only the latest meant
+    /// that restoring part of a set and rebooting again hid the rest.
     func refreshWorkspaces() {
         let live = Set(sessions.map(\.key))
         var offers: [RestoreOffer] = []
-        for generation in workspaceStore.generations() {
-            let closed = generation.recentlyClosed(live: live)
-            guard !closed.isEmpty else { continue }
-            let when = closed.map(\.lastSeen).max() ?? generation.updatedAt
-            let kind: RestoreOffer.Kind = generation.bootID == bootID
-                ? .recentlyClosed(when) : .beforeRestart(when)
-            offers.append(.init(kind: kind, bootID: generation.bootID, entries: closed))
+        let generations = workspaceStore.generations()
+        let ordered = generations.filter { $0.bootID == bootID }
+            + generations.filter { $0.bootID != bootID }
+        for generation in ordered {
+            let finished = generation.bootID != bootID
+            for set in generation.restoreSets(live: live, finished: finished) {
+                offers.append(.init(bootID: generation.bootID, isBeforeRestart: finished,
+                                    closedAt: set.closedAt, entries: set.entries))
+            }
         }
         if offers != restoreOffers { restoreOffers = offers }
         let named = workspaceStore.named()
         if named != namedWorkspaces { namedWorkspaces = named }
     }
 
-    /// The latest prior boot's set, offered at the top of the list until
-    /// restored or dismissed — once per boot.
+    /// The largest set from the most recent earlier boot, offered at the
+    /// top of the list until restored or dismissed — once per boot. The
+    /// largest, not the newest: a quick session after quitting iTerm and
+    /// before rebooting is newer than the thirty that matter.
     var launchRestoreOffer: RestoreOffer? {
-        guard let offer = restoreOffers.first(where: \.isBeforeRestart),
-              UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID
+        guard UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID,
+              let latestBoot = restoreOffers.first(where: \.isBeforeRestart)?.bootID
         else { return nil }
-        return offer
+        return restoreOffers
+            .filter { $0.bootID == latestBoot }
+            .max { $0.entries.count < $1.entries.count }
     }
 
     func dismissLaunchRestoreOffer() {
@@ -1133,15 +1136,34 @@ extension SessionsModel {
         return entries.filter { live.contains($0.key) }.count
     }
 
+    /// Running by the agent's own evidence, not by whether a row exists —
+    /// a row can outlive its process (a pid-less snapshot is kept a day).
+    /// Claude: its registry names a live process for the session. Codex,
+    /// which has no registry: a snapshot whose pid is alive.
+    nonisolated static func isRunning(_ entry: WorkspaceEntry) -> Bool {
+        switch entry.provider {
+        case .claude:
+            return ClaudeSessionRegistry.liveSessions()[entry.sessionId] != nil
+        case .codex:
+            guard let pid = SnapshotStore().load(key: entry.key)?.agentPid else { return false }
+            return Liveness.isAlive(pid: pid)
+        }
+    }
+
     /// A reservation ends when its session is seen running, or after ten
     /// minutes. Expiring sooner let a slow start — a shell still loading,
     /// a trust prompt — be launched a second time.
     func releaseConfirmedRestores(_ rows: [SessionSnapshot]) {
         guard !restoreInFlight.isEmpty else { return }
         let now = Date()
-        let live = Set(rows.map(\.key))
+        let codexAlive = Set(rows.filter {
+            $0.provider == .codex && ($0.agentPid.map(Liveness.isAlive(pid:)) ?? false)
+        }.map(\.key))
         restoreInFlight = restoreInFlight.filter { key, since in
-            !live.contains(key) && now.timeIntervalSince(since) < 600
+            let running = key.hasPrefix("claude-")
+                ? claudeLiveSessions[String(key.dropFirst("claude-".count))] != nil
+                : codexAlive.contains(key)
+            return !running && now.timeIntervalSince(since) < 600
         }
     }
 
@@ -1168,13 +1190,17 @@ extension SessionsModel {
             }
         )
         let plan = WorkspaceRestore.plan(entries, facts: facts)
+        // each missing folder remembers which named workspace it came from,
+        // so locating it later saves into that workspace and no other
         let requested = Set(entries.map { WorkspaceRestore.canonical($0).key })
-        missingFolders = missingFolders.filter { !requested.contains($0.key) }
-            + plan.skipped.filter { $0.reason == .missingDirectory }.map(\.entry)
-        missingFoldersWorkspaceID = missingFolders.isEmpty ? nil : workspaceID
+        missingFolders = missingFolders.filter { !requested.contains($0.entry.key) }
+            + plan.skipped.filter { $0.reason == .missingDirectory }.map {
+                MissingFolder(entry: $0.entry, workspaceID: workspaceID)
+            }
         for (entry, reason) in plan.skipped {
             Self.appLog("restore: skip \(entry.key) \(reason.phrase)")
         }
+        restoreGeneration += 1
         guard !plan.launches.isEmpty else {
             installMessage = plan.skipped.isEmpty
                 ? "Nothing to restore."
@@ -1182,33 +1208,45 @@ extension SessionsModel {
             return
         }
         isRestoring = true
+        let generation = restoreGeneration
         let started = Date()
         for launch in plan.launches { restoreInFlight[launch.entry.key] = started }
-        installMessage = "Restoring \(plan.launches.count) "
-            + "session\(plan.launches.count == 1 ? "" : "s")…"
+        let total = plan.launches.count
+        installMessage = "Restoring \(total) session\(total == 1 ? "" : "s")…"
         if popoverVisible { onRequestClose?() }
         let launches = plan.launches
         let skipped = plan.skipped
         Task.detached {
+            var done = 0
             let outcomes = WorkspaceRestore.execute(
                 launches,
                 // read fresh, right before each launch: the click may have
                 // raced a session coming back some other way
-                stillWanted: { entry in
-                    switch entry.provider {
-                    case .claude:
-                        return ClaudeSessionRegistry.liveSessions()[entry.sessionId] == nil
-                    case .codex:
-                        return SnapshotStore().load(key: entry.key) == nil
+                stillWanted: { !SessionsModel.isRunning($0) },
+                // let each batch come up before starting the next, but
+                // never wait on it for long: a tab stuck at a prompt
+                // mustn't hold up the rest
+                awaitBatch: { batch in
+                    let deadline = Date().addingTimeInterval(10)
+                    while Date() < deadline, !batch.allSatisfy(SessionsModel.isRunning) {
+                        Thread.sleep(forTimeInterval: 0.5)
                     }
                 },
                 progress: { entry, outcome in
                     SessionsModel.appLog("restore: \(entry.key) \(outcome)")
+                    done += 1
+                    let count = done
+                    Task { @MainActor [weak self] in
+                        guard let self, generation == self.restoreGeneration,
+                              self.isRestoring else { return }
+                        self.installMessage = "Restoring… \(count) of \(total)"
+                    }
                 }
             )
             await MainActor.run { [weak self] in
                 self?.finishRestore(launches: launches, outcomes: outcomes, skipped: skipped,
-                                    dismissesLaunchOffer: dismissesLaunchOffer)
+                                    dismissesLaunchOffer: dismissesLaunchOffer,
+                                    generation: generation)
             }
         }
     }
@@ -1216,7 +1254,7 @@ extension SessionsModel {
     private func finishRestore(
         launches: [WorkspaceRestore.Launch], outcomes: [String: WorkspaceRestore.Outcome],
         skipped: [(entry: WorkspaceEntry, reason: WorkspaceRestore.SkipReason)],
-        dismissesLaunchOffer: Bool
+        dismissesLaunchOffer: Bool, generation: Int
     ) {
         isRestoring = false
         var typed: [WorkspaceEntry] = []
@@ -1245,7 +1283,7 @@ extension SessionsModel {
                          + "check iTerm before retrying")
         }
         if let failure {
-            parts.append(failure.contains("-1743") || failure.lowercased().contains("not allowed")
+            parts.append(failure.contains("(-1743)")
                 ? "AgentDeck needs Automation permission to control iTerm2"
                 : "failed: \(failure)")
         }
@@ -1257,28 +1295,36 @@ extension SessionsModel {
         guard !typed.isEmpty else { return }
         // "Started" means the text was typed; whether each conversation is
         // actually running is only known once its registry entry appears.
+        let toConfirm = typed
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
-            guard let self else { return }
-            self.reload()
-            let live = Set(self.sessions.map(\.key))
-            let missing = typed.filter { !live.contains($0.key) }
-            Self.appLog("restore: \(typed.count - missing.count)/\(typed.count) confirmed running")
-            self.installMessage = missing.isEmpty
-                ? "Restored \(typed.count) session\(typed.count == 1 ? "" : "s")."
-                    + (skipped.isEmpty ? "" : " " + WorkspaceRestore.describeSkips(skipped))
-                : "\(typed.count - missing.count) of \(typed.count) running. Not yet: "
-                    + missing.prefix(4).map(\.label).joined(separator: ", ")
-                    + " — check those tabs for a prompt."
+            Task.detached {
+                let missing = toConfirm.filter { !SessionsModel.isRunning($0) }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    Self.appLog("restore: \(toConfirm.count - missing.count)/\(toConfirm.count) "
+                                + "confirmed running")
+                    self.reload()
+                    // a newer restore's messages win over this one's
+                    guard generation == self.restoreGeneration else { return }
+                    self.installMessage = missing.isEmpty
+                        ? "Restored \(toConfirm.count) session\(toConfirm.count == 1 ? "" : "s")."
+                            + (skipped.isEmpty ? "" : " " + WorkspaceRestore.describeSkips(skipped))
+                        : "\(toConfirm.count - missing.count) of \(toConfirm.count) running. "
+                            + "Not yet: " + missing.map(\.label).joined(separator: ", ")
+                            + " — check those tabs for a prompt."
+                }
+            }
         }
     }
 
     /// Picks where a moved project now lives and restores the session
     /// there. Resuming works from any directory — the conversation is
     /// found by id — and the session adopts the folder it's started in.
-    func locateFolder(for entry: WorkspaceEntry) {
+    func locateFolder(_ missing: MissingFolder) {
         if popoverVisible { onRequestClose?() }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            let entry = missing.entry
             NSApp.activate(ignoringOtherApps: true)
             let panel = NSOpenPanel()
             panel.canChooseDirectories = true
@@ -1288,11 +1334,14 @@ extension SessionsModel {
             panel.message = "Where is the folder for “\(entry.label)” now? "
                 + "It used to be \(entry.cwd)."
             panel.directoryURL = Self.nearestExistingAncestor(of: entry.cwd)
-            guard panel.runModal() == .OK, let url = panel.url else { return }
+            let response = panel.runModal()
+            NSApp.deactivate()
+            guard response == .OK, let url = panel.url else { return }
             var moved = entry
             moved.cwd = url.path
-            if let id = self.missingFoldersWorkspaceID,
-               var workspace = self.namedWorkspaces.first(where: { $0.id == id }),
+            // read the workspace fresh from disk, not from the menu's copy
+            if let id = missing.workspaceID,
+               var workspace = self.workspaceStore.named().first(where: { $0.id == id }),
                let i = workspace.entries.firstIndex(where: {
                    WorkspaceRestore.canonical($0).key == entry.key
                }) {
@@ -1303,13 +1352,16 @@ extension SessionsModel {
                     Self.appLog("workspace: relocation save FAILED: \(error)")
                 }
             }
-            self.restore([moved], fromWorkspace: self.missingFoldersWorkspaceID)
+            self.restore([moved], fromWorkspace: missing.workspaceID)
         }
+    }
+
+    func dismissMissingFolder(_ missing: MissingFolder) {
+        missingFolders.removeAll { $0.entry.key == missing.entry.key }
     }
 
     func dismissMissingFolders() {
         missingFolders = []
-        missingFoldersWorkspaceID = nil
     }
 
     nonisolated static func nearestExistingAncestor(of path: String) -> URL {
@@ -1339,7 +1391,9 @@ extension SessionsModel {
             alert.addButton(withTitle: "Save")
             alert.addButton(withTitle: "Cancel")
             alert.window.initialFirstResponder = field
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = alert.runModal()
+            NSApp.deactivate()
+            guard response == .alertFirstButtonReturn else { return }
             let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { return }
             do {
@@ -1363,7 +1417,9 @@ extension SessionsModel {
             alert.informativeText = "This removes the saved list only. No session is closed."
             alert.addButton(withTitle: "Delete")
             alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let response = alert.runModal()
+            NSApp.deactivate()
+            guard response == .alertFirstButtonReturn else { return }
             do {
                 try self.workspaceStore.deleteNamed(id: workspace.id)
             } catch {

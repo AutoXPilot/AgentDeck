@@ -201,8 +201,11 @@ public enum WorkspaceRestore {
     /// permission denied, or iTerm couldn't be reached at all.
     static func failedBeforeAnySideEffect(_ message: String) -> Bool {
         let m = message.lowercased()
-        // -1743: Apple events not permitted; -600: application not running
-        return m.contains("-1743") || m.contains("not allowed") || m.contains("-600")
+        // osascript's own codes, as it prints them: (-1743) Apple events
+        // not permitted, (-600) application not running. Matched with the
+        // parentheses so a stray "-600" elsewhere in a message can't turn
+        // an uncertain outcome into a retryable one.
+        return m.contains("(-1743)") || m.contains("(-600)")
     }
 
     /// Opens a pane and types the command into its login shell. iTerm's
@@ -236,30 +239,58 @@ public enum WorkspaceRestore {
     end run
     """
 
-    public typealias ScriptRunner = @Sendable (_ script: String, _ args: [String]) -> ITermFocus.ScriptOutcome
+    public typealias ScriptRunner = @Sendable (
+        _ script: String, _ args: [String], _ timeout: TimeInterval
+    ) -> ITermFocus.ScriptOutcome
 
-    /// Launches one after another into a single new window, re-checking
-    /// each entry immediately before its launch. Blocking; run off the
-    /// main thread.
+    /// Answers once iTerm is up and taking Apple events. Addressing iTerm
+    /// launches it if needed, and a cold start — iTerm restoring its own
+    /// windows after a login — can outlast a launch's timeout, which would
+    /// turn the first sessions into uncertain ones and split the rest into
+    /// a second window. Nothing is typed until this succeeds.
+    public static let readyScript = """
+    tell application "iTerm2" to count windows
+    """
+
+    /// Launches into a single new window in batches, waiting after each
+    /// batch (via `awaitBatch`) so thirty sessions don't start in the same
+    /// few seconds and slow every AppleScript round-trip past its timeout.
+    /// Each entry is re-checked immediately before its launch. Blocking;
+    /// run off the main thread.
     public static func execute(
         _ launches: [Launch],
         stillWanted: (WorkspaceEntry) -> Bool,
+        batchSize: Int = 5,
         stagger: TimeInterval = 0.4,
-        run: ScriptRunner = { script, args in
-            ITermFocus.runAppleScript(script, arguments: args, timeout: 15)
+        readyTimeout: TimeInterval = 60,
+        run: ScriptRunner = { script, args, timeout in
+            ITermFocus.runAppleScript(script, arguments: args, timeout: timeout)
         },
+        awaitBatch: ([WorkspaceEntry]) -> Void = { _ in },
         progress: (WorkspaceEntry, Outcome) -> Void = { _, _ in }
     ) -> [String: Outcome] {
         var outcomes: [String: Outcome] = [:]
+        if case .failure(let message) = run(readyScript, [], readyTimeout) {
+            // nothing has been typed anywhere, so every launch is retryable
+            let reason = message.hasPrefix("timed out")
+                ? "iTerm2 didn't respond within \(Int(readyTimeout))s" : message
+            for launch in launches {
+                outcomes[launch.entry.key] = .failed(reason)
+                progress(launch.entry, .failed(reason))
+            }
+            return outcomes
+        }
         var window = ""
+        var batch: [WorkspaceEntry] = []
         for (i, launch) in launches.enumerated() {
             guard stillWanted(launch.entry) else { continue }
             if i > 0, stagger > 0 { Thread.sleep(forTimeInterval: stagger) }
             let outcome: Outcome
-            switch run(launchScript, [window, launch.commandLine]) {
+            switch run(launchScript, [window, launch.commandLine], 15) {
             case .success(let id):
                 outcome = .launched
                 if !id.isEmpty { window = id }
+                batch.append(launch.entry)
             case .failure(let message) where failedBeforeAnySideEffect(message):
                 outcome = .failed(message)
             case .failure(let message):
@@ -267,6 +298,10 @@ public enum WorkspaceRestore {
             }
             outcomes[launch.entry.key] = outcome
             progress(launch.entry, outcome)
+            if batch.count >= batchSize, i < launches.count - 1 {
+                awaitBatch(batch)
+                batch = []
+            }
         }
         return outcomes
     }

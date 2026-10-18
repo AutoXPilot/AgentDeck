@@ -327,34 +327,38 @@ struct SessionListView: View {
                 Image(systemName: "folder.badge.questionmark").foregroundStyle(.orange)
                 Text("Folder missing — not restored").font(.caption2)
                 Spacer()
-                Button {
-                    model.dismissMissingFolders()
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .font(.caption2)
-                .accessibilityLabel("Dismiss")
-            }
-            ForEach(model.missingFolders.prefix(4), id: \.key) { entry in
-                HStack(spacing: 6) {
-                    Text(entry.label).font(.caption2)
-                    Text(PathFormat.abbreviate(entry.cwd))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Button("Locate…") { model.locateFolder(for: entry) }
-                        .font(.caption2)
-                        .disabled(model.isRestoring)
-                }
-            }
-            if model.missingFolders.count > 4 {
-                Text("+\(model.missingFolders.count - 4) more")
+                Button("Dismiss all") { model.dismissMissingFolders() }
+                    .buttonStyle(.borderless)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
+            // every entry reachable: scrolls rather than truncating
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(model.missingFolders) { missing in
+                        HStack(spacing: 6) {
+                            Text(missing.entry.label).font(.caption2)
+                            Text(PathFormat.abbreviate(missing.entry.cwd))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button("Locate…") { model.locateFolder(missing) }
+                                .font(.caption2)
+                                .disabled(model.isRestoring)
+                            Button {
+                                model.dismissMissingFolder(missing)
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption2)
+                            .accessibilityLabel("Dismiss \(missing.entry.label)")
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 96)
         }
     }
 

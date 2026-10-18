@@ -210,28 +210,38 @@ Rebooting, or quitting iTerm to update it, closes every agent session.
 AgentDeck remembers them and can resume each conversation in its folder.
 
 - **After a restart**, the popover offers the sessions that were open
-  before it. **Restore** reopens them as tabs in a new iTerm window.
-  Dismissed, it stays in the footer menu (⋯ → Restore), along with each
-  earlier boot AgentDeck still remembers.
+  before it. **Restore** reopens them as tabs in a new iTerm window,
+  starting iTerm first if it isn't running. Dismissed, it stays in the
+  footer menu (⋯ → Restore), along with each earlier boot AgentDeck
+  still remembers.
 - **Closed <time>** in the same menu covers quitting iTerm without a
-  reboot: it is the latest batch of sessions that closed together.
+  reboot: each group of sessions that closed together, most recent
+  first.
 - **Save open sessions as workspace…** keeps a named set you can restore
   any time. Named workspaces are never changed or pruned automatically.
 
 Each session is restored by typing `cd <folder> && claude --resume <id>`
 (or `codex resume <id>`) into a new tab. The tab uses your default iTerm
 profile, so that profile has to start a POSIX-style shell (zsh, bash);
-one that runs ssh or tmux instead won't work. Claude's permission mode is
-carried over when a hook recorded it. Sessions already open are skipped,
-as are ones whose folder or conversation is gone, and the footer names
-them and says why. A session whose folder moved gets a **Locate…**
-button: pick the new folder and it resumes there (and a named workspace
-remembers the new location). The footer first says how many were *started*, then,
-30 seconds later, how many are actually running. A tab that stopped at a
-prompt (a folder trust question, say) is named there. When the agent
-exits, the tab drops back to a shell instead of closing. Background
-sessions and Codex sessions hosted in an app aren't captured, since
-there's no terminal to return them to.
+one that runs ssh or tmux instead won't work, and neither will a shell
+startup that stops to ask something, which swallows the typed line.
+Sessions start five at a time, each group given up to ten seconds to come
+up before the next. Claude's permission mode is carried over when a hook
+recorded it; a session AgentDeck only found through Claude's own session
+list has no recorded mode and comes back in your default.
+
+Sessions already open are skipped, as are ones whose folder or
+conversation is gone, and the footer names them and says why. (For Codex,
+if its database can't be read the conversation can't be checked, and the
+launch goes ahead.) A session whose folder moved gets a **Locate…**
+button: pick the new folder and it resumes there, and a named workspace
+it came from remembers the new location. The footer counts sessions as
+they start, then, 30 seconds later, says how many are running by Claude's
+own session list, naming any that aren't yet — a tab stopped at a prompt
+(a folder trust question, say). When the agent exits, the tab drops back
+to a shell instead of closing. Background sessions and Codex sessions
+hosted in an app aren't captured, since there's no terminal to return
+them to.
 
 Restoring a session again while a previous restore of it may still be
 starting is refused until it shows up as running, or ten minutes pass.
@@ -242,12 +252,17 @@ How it decides what to offer: AgentDeck keeps one record per boot under
 `~/Library/Application Support/AgentDeck/workspaces/` and only ever adds
 to it. A session that stops running keeps its last-seen time rather than
 being removed. Shutting down closes sessions one at a time, so a record
-that tracked the live list would be empty by the time you needed it. The
-offer is the most recent run of closures: sessions that stopped within
-five minutes of each other, however long the whole shutdown took. A
-session you closed on purpose well before then isn't included, and
-sessions still running never affect it. The current boot's record plus
-the five most recent earlier ones are kept.
+that tracked the live list would be empty by the time you needed it.
+When sessions stop running, AgentDeck records them as a group: closures
+within five minutes of each other join the same group, however long the
+whole quit takes. Groups are recorded when they happen, so a session you
+close later starts its own group rather than redefining the earlier one,
+and restoring part of a group leaves the rest of it on offer. For an
+earlier boot it also offers whatever was still running when that boot's
+record ends, which covers a shutdown AgentDeck didn't see, such as
+quitting before iTerm at logout. The banner after a restart shows the
+largest of the previous boot's groups. The current boot's record plus the
+five most recent earlier ones are kept.
 
 These files hold a folder, a session id, Claude's permission mode, and a
 session name only if you set one yourself. The command a session was
@@ -304,7 +319,7 @@ defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disa
 | macOS | 14+ (developed on 26.x) |
 | Claude Code | 2.1.266 |
 | Codex CLI | 0.147.0 |
-| iTerm2 | 3.6.11 |
+| iTerm2 | 3.7.0 |
 
 Other terminals: rows still appear and states are correct, but there's no
 pane to focus — those rows say so instead of failing silently.
@@ -312,7 +327,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 233 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 242 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

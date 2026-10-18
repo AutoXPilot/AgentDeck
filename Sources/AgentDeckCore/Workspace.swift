@@ -53,47 +53,134 @@ public struct WorkspaceEntry: Codable, Equatable, Sendable {
     }
 }
 
+/// Sessions observed to stop running together — an iTerm quit, a
+/// shutdown — kept as a group. Recorded when it happens rather than
+/// reconstructed later, so a later, unrelated closure can't redefine it.
+public struct ClosedSet: Codable, Equatable, Sendable {
+    public var id: String
+    /// The latest closure in the set.
+    public var closedAt: Date
+    public var keys: [String]
+
+    public init(id: String = UUID().uuidString, closedAt: Date, keys: [String]) {
+        self.id = id
+        self.closedAt = closedAt
+        self.keys = keys
+    }
+}
+
+/// Sessions to offer back as one restore: when they stopped, and which.
+public struct RestoreSet: Equatable, Sendable {
+    public var closedAt: Date
+    public var entries: [WorkspaceEntry]
+}
+
 /// Everything that ran during one boot, accumulated.
 ///
 /// It is never a mirror of the live set. Shutting down closes panes one at
 /// a time and each close removes its session, so a mirror shrinks to empty
 /// at exactly the moment it is needed, and the next login overwrites it
 /// with nothing. A generation only ever gains entries; an entry that stops
-/// running keeps its `lastSeen`, which is what restore reads.
+/// running keeps its `lastSeen`.
 public struct WorkspaceGeneration: Codable, Equatable, Sendable {
     public var schemaVersion = 1
     public var bootID: String
     public var updatedAt: Date
     public var entries: [WorkspaceEntry]
+    /// Oldest first, bounded.
+    public var closedSets: [ClosedSet] = []
 
-    public init(bootID: String, updatedAt: Date, entries: [WorkspaceEntry] = []) {
+    public static let maxClosedSets = 20
+
+    public init(bootID: String, updatedAt: Date, entries: [WorkspaceEntry] = [],
+                closedSets: [ClosedSet] = []) {
         self.bootID = bootID
         self.updatedAt = updatedAt
         self.entries = entries
+        self.closedSets = closedSets
     }
 
-    /// Sessions that stopped running together, minus any running now.
-    ///
-    /// Only closed sessions are considered. Measuring from the latest
-    /// sighting of *anything* let one session started after an iTerm quit
-    /// push every closed one out of range just by staying alive. Among the
-    /// closed, the most recent closure starts a chain, and each earlier one
-    /// joins while it closed within `gap` of the last one that joined. A
-    /// shutdown closes sessions seconds apart, so it chains however long it
-    /// takes; a session closed on purpose hours earlier is left out.
-    public func recentlyClosed(
-        live: Set<String>, gap: TimeInterval = 5 * 60
-    ) -> [WorkspaceEntry] {
-        let closed = entries.filter { !live.contains($0.key) }
-            .sorted { $0.lastSeen > $1.lastSeen }
-        guard var previous = closed.first?.lastSeen else { return [] }
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, bootID, updatedAt, entries, closedSets
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        bootID = try c.decode(String.self, forKey: .bootID)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        entries = try c.decode([WorkspaceEntry].self, forKey: .entries)
+        // files written before closed sets existed
+        closedSets = try c.decodeIfPresent([ClosedSet].self, forKey: .closedSets) ?? []
+    }
+
+    /// Notes sessions that just stopped running. Closures within `gap` of
+    /// the newest set's last closure join it; otherwise they start a new
+    /// set. A quit closes sessions seconds apart, so it lands in one set
+    /// however long it takes, and a session closed later — a quick test
+    /// in the new iTerm — gets its own set instead of displacing it.
+    mutating func noteClosed(_ keys: [String], at now: Date, gap: TimeInterval = 5 * 60) {
+        guard !keys.isEmpty else { return }
+        if var last = closedSets.last, now.timeIntervalSince(last.closedAt) <= gap {
+            last.keys += keys.filter { !last.keys.contains($0) }
+            last.closedAt = now
+            closedSets[closedSets.count - 1] = last
+        } else {
+            closedSets.append(ClosedSet(closedAt: now, keys: keys))
+        }
+        if closedSets.count > Self.maxClosedSets {
+            closedSets.removeFirst(closedSets.count - Self.maxClosedSets)
+        }
+    }
+
+    /// What was still running when this generation's record ends: the
+    /// newest sighting and every one chained to it within `gap`, measured
+    /// over all entries. Only meaningful for a finished boot, where no
+    /// sighting can advance any more. It covers a shutdown AgentDeck didn't
+    /// see happen — quit first at logout, say — where no closed set was
+    /// recorded.
+    func finalSet(gap: TimeInterval = 5 * 60) -> [WorkspaceEntry] {
+        let sorted = entries.sorted { $0.lastSeen > $1.lastSeen }
+        guard var previous = sorted.first?.lastSeen else { return [] }
         var members = Set<String>()
-        for entry in closed {
+        for entry in sorted {
             guard previous.timeIntervalSince(entry.lastSeen) <= gap else { break }
             members.insert(entry.key)
             previous = entry.lastSeen
         }
         return entries.filter { members.contains($0.key) }
+    }
+
+    /// The sets worth offering, newest first. Membership is fixed first and
+    /// running sessions subtracted after, so restoring part of a set leaves
+    /// the rest of it offered rather than reshaping what counts as a set.
+    /// A set wholly inside a larger one is dropped as redundant.
+    ///
+    /// `finished`: a previous boot, whose final set is included too.
+    public func restoreSets(live: Set<String>, finished: Bool, limit: Int = 3) -> [RestoreSet] {
+        var candidates: [(closedAt: Date, keys: Set<String>)] = closedSets.map {
+            ($0.closedAt, Set($0.keys))
+        }
+        if finished {
+            let final = finalSet()
+            if let at = final.map(\.lastSeen).max() {
+                candidates.append((at, Set(final.map(\.key))))
+            }
+        }
+        let distinct = candidates.enumerated().filter { i, c in
+            !candidates.enumerated().contains { j, other in
+                j != i && c.keys.isSubset(of: other.keys)
+                    && (c.keys != other.keys || j > i)
+            }
+        }.map(\.element)
+        return distinct
+            .sorted { $0.closedAt > $1.closedAt }
+            .compactMap { c -> RestoreSet? in
+                let remaining = entries.filter { c.keys.contains($0.key) && !live.contains($0.key) }
+                return remaining.isEmpty ? nil : RestoreSet(closedAt: c.closedAt, entries: remaining)
+            }
+            .prefix(limit)
+            .map { $0 }
     }
 
     /// Merges two views of the same boot; the newer sighting of each
@@ -106,6 +193,17 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
             } else {
                 result.entries.append(entry)
             }
+        }
+        for set in other.closedSets {
+            if let i = result.closedSets.firstIndex(where: { $0.id == set.id }) {
+                if set.closedAt > result.closedSets[i].closedAt { result.closedSets[i] = set }
+            } else {
+                result.closedSets.append(set)
+            }
+        }
+        result.closedSets.sort { $0.closedAt < $1.closedAt }
+        if result.closedSets.count > Self.maxClosedSets {
+            result.closedSets.removeFirst(result.closedSets.count - Self.maxClosedSets)
         }
         result.updatedAt = max(updatedAt, other.updatedAt)
         return result
@@ -145,6 +243,8 @@ public final class WorkspaceStore {
     public let refreshInterval: TimeInterval
 
     private var current: WorkspaceGeneration?
+    private var previousLive: Set<String>?
+    private var previousLiveBoot: String?
 
     public init(
         directory: URL = WorkspaceStore.defaultDirectory,
@@ -194,6 +294,20 @@ public final class WorkspaceStore {
             ? current!
             : loadGeneration(bootID: bootID) ?? WorkspaceGeneration(bootID: bootID, updatedAt: now)
         var changed = false
+        // Closures are seen as sessions dropping out of the live set
+        // between two calls. Nothing is known about closures from before
+        // this process started watching, so the first call only sets the
+        // baseline.
+        let liveKeys = Set(live.map(\.key))
+        if let previous = previousLive, previousLiveBoot == bootID {
+            let closed = previous.subtracting(liveKeys).sorted()
+            if !closed.isEmpty {
+                generation.noteClosed(closed, at: now)
+                changed = true
+            }
+        }
+        previousLive = liveKeys
+        previousLiveBoot = bootID
         for var entry in live {
             entry.lastSeen = now
             if let i = generation.entries.firstIndex(where: { $0.key == entry.key }) {
@@ -281,10 +395,15 @@ public final class WorkspaceStore {
             at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        // Fails closed: proceeding unlocked would reintroduce exactly the
+        // lost-update race the lock exists to prevent.
         let fd = open(directory.appendingPathComponent(".lock").path, O_CREAT | O_RDWR, 0o600)
-        guard fd >= 0 else { return try body() }
-        flock(fd, LOCK_EX)
-        defer { flock(fd, LOCK_UN); close(fd) }
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+        defer { flock(fd, LOCK_UN) }
         return try body()
     }
 
