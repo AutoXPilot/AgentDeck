@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+Restore your agent sessions after a reboot or an iTerm restart, a list
+that finally shows every live Claude session, and a round of fixes from
+three rounds of independent review.
+
+Not yet run live, as of this release: the banner after a reboot (covered
+by unit tests; restoring after quitting iTerm and from the menu has been
+used), **Locate…** for a moved folder, and the new single-quoted hook
+command under Codex (verified under Claude Code).
 
 ### Added
-
 - **Bring sessions back after a reboot or an iTerm restart.** AgentDeck
   remembers the agent sessions running in each boot and can resume each
   conversation in its folder: a banner after a restart offers the
@@ -32,7 +40,6 @@
   They had no recorded pane id, so a click said the session wasn't in a
   terminal AgentDeck could focus. The pane is now found from the agent's
   controlling terminal.
-
 - **Every live Claude session is listed, not just the ones hooks saw.**
   Hooks only report sessions running when they fire, so a session
   started before the hooks were installed — or one whose snapshot aged
@@ -63,7 +70,6 @@
   notification at once — the backlog starts its cooldown instead.
 
 ### Changed
-
 - **Row order is simpler.** Sessions that need you still sort first;
   everything else is now newest first, whatever its state. It used to be
   grouped as working, then ready, then acknowledged — and since a done
@@ -71,7 +77,6 @@
   that finished an hour ago sorted below sessions idle for two months.
 
 ### Fixed
-
 - **A session blocked all evening was notified again every hour.** One
   refresh where it briefly didn't read as waiting ended the "episode", so
   the hourly cooldown re-armed it (seen in the log: the same session at
@@ -100,7 +105,6 @@
   before about 2.1.248 don't record whether a name was generated; those
   are no longer stored.
 - A node/bun process counts as Claude only if it is running Claude.
-
 - **A second wait could stay hidden behind the first one's
   acknowledgement.** If a session was answered and blocked again with no
   hook in between, both sources still said "waiting", so the new wait
@@ -126,7 +130,6 @@
 - **A timed-out subprocess could block forever** if it ignored SIGTERM or
   something else held its output open. It is now killed with SIGKILL and
   its output is read without waiting for end-of-file.
-
 - Session counts in the menu-bar badge were computed before duplicate
   rows were removed, so a doubled session could be counted twice.
 - **The 0.4.1 Codex model-freshness fix was inert.** `modelObservedAt`
