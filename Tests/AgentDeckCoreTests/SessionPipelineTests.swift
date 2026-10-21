@@ -141,6 +141,31 @@ struct SessionPipelineTests {
         #expect(out.waitingReasons["claude-mine"] != nil)
     }
 
+    @Test func aSessionThatMovedLosesItsOldPane() {
+        // resumed in another process and its hook missed: the snapshot's
+        // pane belongs to the old process. Focusing it would acknowledge a
+        // session the click never reached.
+        let stale = SessionSnapshot(
+            provider: .claude, sessionId: "s", projectPath: "/p", state: .ready,
+            event: "Stop", updatedAt: now.addingTimeInterval(-600),
+            terminalSessionId: "w0t0p0:OLD-PANE", agentPid: 5)
+        let moved = entry(pid: 9, id: "s", "waiting", waitingFor: "permission prompt")
+        let out = SessionPipeline.run(
+            snapshots: [stale], registry: [9: moved], liveSessions: ["s": moved],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now)
+        #expect(out.rows.first?.agentPid == 9)
+        #expect(out.rows.first?.terminalSessionId == nil)
+        // and a session that hasn't moved keeps its pane
+        let still = SessionSnapshot(
+            provider: .claude, sessionId: "t", projectPath: "/p", state: .ready,
+            event: "Stop", updatedAt: now, terminalSessionId: "w0t0p0:PANE", agentPid: 7)
+        let same = entry(pid: 7, id: "t", "idle")
+        let out2 = SessionPipeline.run(
+            snapshots: [still], registry: [7: same], liveSessions: ["t": same],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now)
+        #expect(out2.rows.first?.terminalSessionId == "w0t0p0:PANE")
+    }
+
     @Test func fullDerivationOrdering() {
         // one of everything: an idle fake-wait, a registry-cleared wait,
         // a registry-detected block, a genuine hook wait, a worker

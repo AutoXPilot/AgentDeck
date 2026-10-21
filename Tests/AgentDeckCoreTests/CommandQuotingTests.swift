@@ -56,8 +56,11 @@ final class CommandQuotingTests {
         #expect(installer.isInstalled(provider: .claude, in: url),
                 "the same command for a plain path; no forced reinstall")
         #expect(try installer.installClaude(settingsURL: url))
-        let text = try String(contentsOf: url, encoding: .utf8)
-        #expect(!text.contains("\\\"\(helperPath)"), "legacy form replaced")
+        // read back as commands, not by searching the JSON text — the
+        // serializer escapes "/" so a text search can never match a path
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+        let written = HookInstaller.commandStrings(in: (root["hooks"] as! [String: Any])["Stop"] ?? [])
+        #expect(written == [installer.command(for: .claude)], "legacy form replaced, not duplicated")
         #expect(installer.isInstalled(provider: .claude, in: url))
         #expect(try !installer.installClaude(settingsURL: url), "and then it is a no-op")
     }
@@ -72,6 +75,28 @@ final class CommandQuotingTests {
         let command = entry[0]["command"] as! String
         #expect(command.hasPrefix("'"), "command must be quoted for sh")
         #expect(command == installer.command(for: .claude))
+    }
+
+    @Test func aPathWithAnApostropheIsReinstalledInPlace() throws {
+        let path = "/Users/o'brien/Library/Application Support/AgentDeck/bin/agentdeck-hook"
+        let quirky = HookInstaller(helperPath: path)
+        let url = dir.appendingPathComponent("settings.json")
+        #expect(try quirky.installClaude(settingsURL: url))
+        #expect(try !quirky.installClaude(settingsURL: url), "second install is a no-op")
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+        let stop = HookInstaller.commandStrings(in: (root["hooks"] as! [String: Any])["Stop"] ?? [])
+        #expect(stop == [quirky.command(for: .claude)], "one hook, not one per install")
+    }
+
+    @Test func aSymlinkedConfigStaysASymlink() throws {
+        let real = dir.appendingPathComponent("dotfiles-settings.json")
+        try Data("{}".utf8).write(to: real)
+        let link = dir.appendingPathComponent("settings.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        #expect(try installer.installClaude(settingsURL: link))
+        let attrs = try FileManager.default.attributesOfItem(atPath: link.path)
+        #expect(attrs[.type] as? FileAttributeType == .typeSymbolicLink)
+        #expect(installer.isInstalled(provider: .claude, in: real), "the target got the hooks")
     }
 
     @Test func installRepairsStaleUnquotedEntries() throws {

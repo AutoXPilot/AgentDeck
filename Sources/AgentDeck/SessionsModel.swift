@@ -316,16 +316,22 @@ final class SessionsModel: ObservableObject {
         claudeRegistry = ClaudeSessionRegistry.load()
         claudeLiveSessions = ClaudeSessionRegistry.liveSessions()
         let confirmedLive = Set(claudeLiveSessions.keys)
+        let liveByPid = Dictionary(claudeLiveSessions.values.map { ($0.pid, $0) },
+                                   uniquingKeysWith: { a, b in
+                                       (a.observedAt ?? .distantPast) >= (b.observedAt ?? .distantPast) ? a : b
+                                   })
 
         var removed = Set<String>()
         if readOnly {
             // hide what the live app would remove, but touch nothing
-            removed = Set(Liveness.keysToRemove(all, confirmedLive: confirmedLive))
+            removed = Set(Liveness.keysToRemove(all, confirmedLive: confirmedLive,
+                                                liveByPid: liveByPid))
         } else {
             // sweepOrphans stats+re-decodes every file; only the 15s tick
             // needs it, not every hook-driven reload.
             if sweep { store.sweepOrphans() }
-            for key in Liveness.keysToRemove(all, confirmedLive: confirmedLive) {
+            for key in Liveness.keysToRemove(all, confirmedLive: confirmedLive,
+                                             liveByPid: liveByPid) {
                 // Re-read and delete under the SAME lock the helper writes
                 // under. Unlocked, a helper could publish a fresh event in
                 // the gap between the re-read and the delete, and we would
@@ -334,7 +340,7 @@ final class SessionsModel: ObservableObject {
                 let deleted = (try? store.withKeyLock(key) { () -> Bool in
                     if let fresh = store.load(key: key),
                        Liveness.keysToRemove(
-                           [fresh], confirmedLive: confirmedLive
+                           [fresh], confirmedLive: confirmedLive, liveByPid: liveByPid
                        ).isEmpty {
                         return false
                     }
@@ -1278,11 +1284,10 @@ extension SessionsModel {
                     return ClaudeTranscript.url(
                         sessionId: entry.sessionId, projectPath: entry.cwd) != nil
                 case .codex:
-                    // Found in the cached list is proof; absence isn't. The
-                    // list is a display cache refreshed on popover open, so
-                    // a newer thread can be missing from it, and an empty
-                    // one may be a failed read.
-                    return threads[entry.sessionId] != nil ? true : nil
+                    // the display cache can be stale, so a miss in it is
+                    // checked against the database itself
+                    if threads[entry.sessionId] != nil { return true }
+                    return CodexThreads.exists(id: entry.sessionId)
                 }
             }
         )

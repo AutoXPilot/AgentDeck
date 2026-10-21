@@ -24,6 +24,8 @@ struct WorkspaceCaptureTests {
 
     @Test func onlyANameSomeoneChoseIsKept() {
         #expect(capture(row(), reg(name: "Home-value", source: "user"))?.displayName == "Home-value")
+        #expect(capture(row(), reg(name: "personal-finance-analysis", source: nil))?.displayName == nil,
+                "older builds record no source, and generated names then too")
         #expect(capture(row(), reg(name: "fix-the-login-bug", source: "derived"))?.displayName == nil,
                 "a generated name can come from the conversation")
         #expect(capture(row(.codex, pane: "w0t0p0:G"), nil, codexName: "")?.displayName == nil)

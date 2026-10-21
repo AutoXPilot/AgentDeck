@@ -144,6 +144,26 @@ struct LivenessAndFocusTests {
         #expect(Liveness.keysToRemove([quiet], now: now, bootedAt: nil, probe: starts).isEmpty)
     }
 
+    @Test func aClearedConversationsRowGoesOnceTheRegistryNamesTheNewOne() {
+        // /clear: the process runs on as session B; A's snapshot still
+        // carries the pid, which is alive and is claude, so nothing else
+        // would ever remove it
+        let old = snap("A", pid: 100, updated: now.addingTimeInterval(-300), state: .done)
+        let fresh = snap("B", pid: 100, updated: now.addingTimeInterval(-5), state: .ready)
+        let registryB = ClaudeSessionRegistry.Entry(
+            pid: 100, sessionId: "B", status: "idle", statusUpdatedAt: now.addingTimeInterval(-60))
+        let starts = probe([100: now.addingTimeInterval(-3600)])
+        let removed = Liveness.keysToRemove([old, fresh], now: now, bootedAt: nil,
+                                            liveByPid: [100: registryB], probe: starts)
+        #expect(removed == ["claude-A"])
+        // a new session's first hook can beat its registry rewrite: B is
+        // kept even while the registry still names A
+        let registryA = ClaudeSessionRegistry.Entry(
+            pid: 100, sessionId: "A", status: "idle", statusUpdatedAt: now.addingTimeInterval(-60))
+        #expect(Liveness.keysToRemove([fresh], now: now, bootedAt: nil,
+                                      liveByPid: [100: registryA], probe: starts).isEmpty)
+    }
+
     @Test func aLivePidThatIsNotTheAgentIsRemoved() {
         // started in time, so the start-time check alone would accept it
         let reused = snap("reused", pid: 100, updated: now.addingTimeInterval(-60), state: .done)
@@ -252,6 +272,20 @@ struct LivenessAndFocusTests {
         #expect(list.names["G-1"] == "with\ttab")
         #expect(list.names["G-2"] == nil, "an empty title is still a pane")
         #expect(list.names["G-3"] == "no tty")
+    }
+
+    @Test func argumentsAreSearchedButNotTheEnvironment() throws {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["5"]
+        child.environment = ["MARKER": "claude-in-the-environment"]
+        try child.run()
+        defer { child.terminate() }
+        Thread.sleep(forTimeInterval: 0.1)
+        #expect(ProcessTree.argumentsMention("5", pid: child.processIdentifier))
+        #expect(!ProcessTree.argumentsMention("claude", pid: child.processIdentifier),
+                "only arguments count; an env var mentioning claude must not")
+        #expect(!ProcessTree.looksLikeAgent(child.processIdentifier, provider: .claude))
     }
 
     @Test func aProcessOnATerminalHasItsTTYRead() throws {

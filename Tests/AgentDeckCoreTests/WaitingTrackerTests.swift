@@ -141,10 +141,35 @@ struct WaitingTrackerTests {
             state: .working, event: "x", updatedAt: now
         )]
         #expect(fire(&tracker, unblocked, now: now, threshold: 300).isEmpty)
-        #expect(tracker.waitingDuration(forKey: "claude-a") == nil)
+        #expect(fire(&tracker, unblocked, now: now + 15, threshold: 300).isEmpty)
+        #expect(tracker.waitingDuration(forKey: "claude-a") == nil, "two misses end it")
 
         // blocked again with cooldown disabled → notifies again
         #expect(fire(&tracker, blocked, now: now, threshold: 300, cooldown: 0) == ["claude-a"])
+    }
+
+    @Test func oneMissedLookDoesNotEndTheEpisode() {
+        // the hourly repeats: a session blocked all evening, missing from a
+        // single reload, was announced again each time the cooldown ran out
+        var tracker = WaitingTracker()
+        let blocked = [waiting("a", ageSeconds: 3600)]
+        #expect(fire(&tracker, blocked, now: now, threshold: 300) == ["claude-a"])
+        #expect(fire(&tracker, [], now: now + 15, threshold: 300).isEmpty)
+        #expect(fire(&tracker, blocked, now: now + 3700, threshold: 300).isEmpty,
+                "same wait, past the cooldown: still not announced again")
+    }
+
+    @Test func aNewerWaitIsANewEpisodeEvenWithNoGapBetween() {
+        // answered and blocked again between two looks; the row's time moves
+        // on (the registry reports a new wait) though it never left waiting
+        var tracker = WaitingTracker()
+        #expect(fire(&tracker, [waiting("a", ageSeconds: 3600)], now: now, threshold: 300) == ["claude-a"])
+        let again = SessionSnapshot(provider: .claude, sessionId: "a", projectPath: "/p",
+                                    state: .waiting, event: "x", updatedAt: now + 600)
+        #expect(fire(&tracker, [again], now: now + 1200, threshold: 300).isEmpty,
+                "inside the cooldown")
+        #expect(fire(&tracker, [again], now: now + 4300, threshold: 300) == ["claude-a"],
+                "a new wait, after the cooldown")
     }
 
     @Test func thresholdChangeMidEpisodeIsHonored() {

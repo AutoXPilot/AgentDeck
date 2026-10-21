@@ -38,6 +38,8 @@ public struct WaitingTracker: Sendable {
     }
 
     private var announcedEpisodeStart: [String: Date] = [:]
+    /// Not waiting at the last look; the episode ends if it misses again.
+    private var missedOnce: Set<String> = []
 
     public init(memory: Memory) {
         lastAnnounced = memory.lastAnnounced
@@ -97,12 +99,23 @@ public struct WaitingTracker: Sendable {
         let blockedKeys = Set(blocked.map(\.key))
 
         // A session that stopped waiting ends its episode (but keeps its
-        // cooldown clock, which is deliberately cross-episode).
+        // cooldown clock, which is deliberately cross-episode) — once it
+        // has been seen not waiting twice in a row. Ending it on a single
+        // miss let one reload where the row briefly wasn't waiting (a
+        // registry file caught mid-write) re-arm the episode, and a session
+        // blocked all evening was announced again every hour on the hour.
         for key in waitingSince.keys where !blockedKeys.contains(key) {
-            waitingSince[key] = nil
-            announcedThisEpisode.remove(key)
-            announcedEpisodeStart[key] = nil
+            if missedOnce.contains(key) {
+                waitingSince[key] = nil
+                announcedThisEpisode.remove(key)
+                announcedEpisodeStart[key] = nil
+                missedOnce.remove(key)
+            } else {
+                missedOnce.insert(key)
+            }
         }
+        missedOnce.formIntersection(waitingSince.keys)
+        missedOnce.subtract(blockedKeys)
 
         for snapshot in blocked { seen.insert(snapshot.key) }
 
@@ -110,7 +123,17 @@ public struct WaitingTracker: Sendable {
         for snapshot in blocked {
             // Trust the snapshot's own timestamp: a session already waiting
             // when the app launches must not restart its clock at zero.
-            let since = waitingSince[snapshot.key] ?? min(snapshot.updatedAt, now)
+            let observed = min(snapshot.updatedAt, now)
+            var since = waitingSince[snapshot.key] ?? observed
+            if observed > since {
+                // The wait carries a newer start than the one being tracked:
+                // answered and blocked again between two looks, which the
+                // registry reports as a new wait. A new episode, so it can
+                // be announced; the cooldown still applies.
+                since = observed
+                announcedThisEpisode.remove(snapshot.key)
+                announcedEpisodeStart[snapshot.key] = nil
+            }
             if waitingSince[snapshot.key] == nil,
                announcedEpisodeStart[snapshot.key] == since {
                 // announced before a relaunch; still the same wait

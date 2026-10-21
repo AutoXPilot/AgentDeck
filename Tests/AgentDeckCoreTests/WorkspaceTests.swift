@@ -590,7 +590,7 @@ struct WorkspaceRestoreTests {
             launches, stillWanted: { _ in true }, batchSize: 5, stagger: 0,
             run: { script, _, _ in
                 if script != WorkspaceRestore.readyScript { log.events.append("L") }
-                return .success("1")
+                return .success("typed 1")
             },
             awaitBatch: { log.events.append("wait\($0.count)") })
         #expect(log.events.joined(separator: " ")

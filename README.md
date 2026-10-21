@@ -9,10 +9,12 @@ to that exact iTerm2 tab/pane.
 - The menu-bar badge counts only what's **blocking you** (waiting/error), and
   the glyph shows the most urgent state; finished sessions are a muted count
 - Optional notification when a session has been blocked too long
-- Row titles use each provider's own session name; click = acknowledge +
-  jump to the session (its iTerm pane, or the app hosting it — a Codex
-  session inside ChatGPT.app brings ChatGPT forward). ↑/↓ + Return, ⌘1–9,
-  filter field, right-click actions
+- Row titles use each provider's own session name; click = jump to the
+  session (its iTerm pane, or the app hosting it — a Codex session inside
+  ChatGPT.app brings ChatGPT forward) and mark it handled once you've
+  reached it. A blocked session in an app can't be confirmed reached, so
+  dismiss it with right-click → Dismiss. ↑/↓ + Return, ⌘1–9, filter field,
+  right-click actions
 - A marker on sessions running **unsupervised** (approvals off)
 - Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
 
@@ -31,7 +33,9 @@ Every edit preserves your existing settings and hooks, is idempotent, and
 creates a timestamped `.bak` backup next to the file (last 5 kept). Known
 trade-off: files are rewritten via JSON serialization, which normalizes
 formatting/key order and can change float representation (`1.1` →
-`1.1000000000000001`); the backups retain your original bytes.
+`1.1000000000000001`); the backups retain your original bytes. If the
+config is a symlink (into a dotfiles repo, say), the file it points to is
+edited and the link is left in place.
 
 The hooks invoke a small helper binary
 (`~/Library/Application Support/AgentDeck/bin/agentdeck-hook`) on session
@@ -264,7 +268,8 @@ they aren't there.
 
 Sessions known to be running outside iTerm (Terminal.app, an editor's
 terminal) aren't captured, since restoring them would move them into
-iTerm. Shell plugins that rewrite what's typed — auto-closing quotes, for
+iTerm. A Claude session inside tmux counts as outside: its terminal is
+tmux's, not an iTerm pane, so AgentDeck can't focus it either. Shell plugins that rewrite what's typed — auto-closing quotes, for
 instance — can mangle the restore command; restore types it as if at the
 keyboard.
 
@@ -347,8 +352,8 @@ defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disa
 | Component | Version |
 |---|---|
 | macOS | 14+ (developed on 26.x) |
-| Claude Code | 2.1.302 |
-| Codex CLI | 0.147.0 |
+| Claude Code | 2.1.306 |
+| Codex CLI | 0.159.3 |
 | iTerm2 | 3.7.0 |
 
 Other terminals: rows still appear and states are correct, but there's no
@@ -357,7 +362,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 276 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 285 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

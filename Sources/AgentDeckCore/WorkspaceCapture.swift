@@ -43,7 +43,10 @@ public enum WorkspaceCapture {
             guard !cwd.isEmpty else { return nil }
             return WorkspaceEntry(
                 provider: .claude, sessionId: s.sessionId, cwd: cwd,
-                displayName: registry?.isUserNamed == true ? registry?.name : nil,
+                // Explicitly user-set only. Claude builds before about
+                // 2.1.248 record no source at all, though they already
+                // generated names — so a missing source isn't a user's.
+                displayName: registry?.nameSource == "user" ? registry?.name : nil,
                 permissionMode: s.permissionMode, lastSeen: now
             )
         case .codex:

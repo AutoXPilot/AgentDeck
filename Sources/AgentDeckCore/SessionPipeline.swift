@@ -39,9 +39,19 @@ public enum SessionPipeline {
             let byPid = snapshot.agentPid.flatMap { registry[$0] }
                 .flatMap { $0.sessionId == snapshot.sessionId ? $0 : nil }
             let entry = liveSessions[snapshot.sessionId] ?? byPid
-            let outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
+            var outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
             if let reason = outcome.waitingFor {
                 reasons[snapshot.key] = ITermFocus.humanizeReason(reason)
+            }
+            // The registry knows the session's current process; the snapshot
+            // knows the one its last hook ran in. If they differ the session
+            // moved (resumed elsewhere, its hook missed), and the recorded
+            // pane is the old process's: clicking it would focus a stale tab
+            // and acknowledge a session it never reached. Adopt the live pid
+            // and drop the pane, so focus resolves through the live process.
+            if let live = liveSessions[snapshot.sessionId], live.pid != snapshot.agentPid {
+                outcome.snapshot.agentPid = live.pid
+                outcome.snapshot.terminalSessionId = nil
             }
             return outcome.snapshot
         }

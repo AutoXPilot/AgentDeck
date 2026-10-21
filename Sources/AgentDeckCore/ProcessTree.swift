@@ -156,10 +156,47 @@ public enum ProcessTree {
         let lowerPath = executablePath(of: pid)?.lowercased() ?? ""
         switch provider {
         case .claude:
-            return lowerName.contains("claude") || lowerPath.contains("claude")
-                || lowerName == "node" || lowerName == "bun"
+            if lowerName.contains("claude") || lowerPath.contains("claude") { return true }
+            // A node/bun runtime counts only if it is running Claude's
+            // script: any long-lived node process that inherited a
+            // session's pid would otherwise keep that row forever.
+            guard lowerName == "node" || lowerName == "bun" else { return false }
+            return argumentsMention("claude", pid: pid)
         case .codex:
             return lowerName.contains("codex") || lowerPath.contains("codex")
         }
+    }
+
+    /// Whether any of the process's arguments contains `needle`
+    /// (case-insensitive). Reads the same `KERN_PROCARGS2` block as
+    /// `launchPath`; the arguments are searched in place and nothing is
+    /// kept. Environment variables, which follow them, are not searched.
+    static func argumentsMention(_ needle: String, pid: pid_t) -> Bool {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size
+        else { return false }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else { return false }
+        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+        // layout: argc, exec path, NUL padding, then argc NUL-terminated args
+        var i = MemoryLayout<Int32>.size
+        while i < size, buffer[i] != 0 { i += 1 }        // exec path
+        while i < size, buffer[i] == 0 { i += 1 }        // padding
+        let target = Array(needle.lowercased().utf8)
+        for _ in 0..<max(0, Int(argc)) {
+            let start = i
+            while i < size, buffer[i] != 0 { i += 1 }
+            let arg = buffer[start..<i].map { $0 >= 65 && $0 <= 90 ? $0 + 32 : $0 }
+            if arg.count >= target.count,
+               (0...(arg.count - target.count)).contains(where: {
+                   Array(arg[$0..<($0 + target.count)]) == target
+               }) {
+                return true
+            }
+            i += 1
+        }
+        return false
     }
 }

@@ -235,6 +235,27 @@ final class SnapshotStoreTests {
         }
     }
 
+    @Test func aSecondSweeperDoesNotUnlinkTheLockThatReplacedTheOneItOpened() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(".claude-two.lock")
+        _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+        let secondSweeper = open(url.path, O_RDWR)        // opened A, not yet acted
+        defer { close(secondSweeper) }
+        let first = open(url.path, O_RDWR)
+        store.reclaimLock(openedAs: first, at: url)        // the first sweeper unlinks A
+        close(first)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        // a helper creates B at the same path and is holding it
+        let helper = open(url.path, O_CREAT | O_RDWR, 0o600)
+        defer { close(helper) }
+        var b = stat()
+        fstat(helper, &b)
+        store.reclaimLock(openedAs: secondSweeper, at: url)
+        var atPath = stat()
+        #expect(stat(url.path, &atPath) == 0, "B must still be at the path")
+        #expect(atPath.st_ino == b.st_ino)
+    }
+
     @Test func concurrentWritesNeverExposePartialJSON() throws {
         let store = self.store
         DispatchQueue.concurrentPerform(iterations: 100) { i in

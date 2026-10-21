@@ -186,9 +186,22 @@ public struct SnapshotStore: Sendable {
         let fd = open(url.path, O_RDWR)
         guard fd >= 0 else { return }
         defer { close(fd) }
+        reclaimLock(openedAs: fd, at: url)
+    }
+
+    /// Split from the open so a test can hold a descriptor opened earlier,
+    /// as a second sweeper would have.
+    func reclaimLock(openedAs fd: Int32, at url: URL) {
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return }  // in use
+        defer { flock(fd, LOCK_UN) }
+        // Unlink only the file this sweep locked. Two app copies can open
+        // the same old lock file; if the first reclaims it and a helper then
+        // creates and locks a new one at the path, the second would unlink
+        // that live lock — and the next helper would make a third.
+        var held = stat(), atPath = stat()
+        guard fstat(fd, &held) == 0, stat(url.path, &atPath) == 0,
+              held.st_ino == atPath.st_ino, held.st_dev == atPath.st_dev else { return }
         try? FileManager.default.removeItem(at: url)
-        flock(fd, LOCK_UN)
     }
 
     public func sweepOrphans(olderThan interval: TimeInterval = 3600, now: Date = Date()) {

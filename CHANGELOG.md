@@ -72,6 +72,35 @@
 
 ### Fixed
 
+- **A session blocked all evening was notified again every hour.** One
+  refresh where it briefly didn't read as waiting ended the "episode", so
+  the hourly cooldown re-armed it (seen in the log: the same session at
+  19:56 and 20:56 with no restart between). An episode now ends only
+  after two refreshes in a row, and a newer wait that arrives without a
+  gap is recognised as a new one.
+- **A session that moved to a new process kept its old pane.** If a
+  session resumed elsewhere and its hook was missed, a click could focus
+  the old tab and mark the session handled. The live process from
+  Claude's registry now replaces the recorded one, and the stale pane is
+  dropped.
+- **`/clear` left the old conversation's row behind for as long as the
+  process ran.** It is removed once the registry names the new session
+  for that process.
+- **Two copies of AgentDeck could delete a lock file a hook was holding**
+  while tidying old ones. Cleanup now only removes the file it locked.
+- **Reinstalling hooks with an apostrophe in the helper path added a
+  duplicate hook each time**, and installing into a symlinked config
+  replaced the link with a regular file. Both fixed.
+- **Codex conversations weren't checked before restoring**, though the
+  docs said they were. Restore now asks Codex's database, and skips a
+  conversation it doesn't have — on the development machine, six Codex
+  sessions that were opened and closed without a message had no saved
+  thread to resume.
+- **Workspace files could store a name you didn't set.** Claude builds
+  before about 2.1.248 don't record whether a name was generated; those
+  are no longer stored.
+- A node/bun process counts as Claude only if it is running Claude.
+
 - **A second wait could stay hidden behind the first one's
   acknowledgement.** If a session was answered and blocked again with no
   hook in between, both sources still said "waiting", so the new wait

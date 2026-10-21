@@ -40,4 +40,26 @@ struct CodexSessionIndexTests {
         let missing = URL(fileURLWithPath: "/nonexistent/session_index.jsonl")
         #expect(CodexSessionIndex.load(from: missing).isEmpty)
     }
+
+    @Test func threadExistenceDistinguishesAbsentFromUnreadable() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("state.sqlite")
+        let id = "01a14a60-ebb5-70c1-a848-1a32a0d6ee08"
+        let make = Process()
+        make.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        make.arguments = [db.path, "create table threads(id text); insert into threads values('\(id)');"]
+        try make.run()
+        make.waitUntilExit()
+        #expect(CodexThreads.exists(id: id, in: db) == true)
+        #expect(CodexThreads.exists(id: id.uppercased(), in: db) == true)
+        #expect(CodexThreads.exists(id: "11111111-1111-4111-8111-111111111111", in: db) == false)
+        #expect(CodexThreads.exists(id: id, in: dir.appendingPathComponent("missing.sqlite")) == nil)
+        #expect(CodexThreads.exists(id: "'; drop table threads; --", in: db) == nil, "not a UUID")
+        let garbage = dir.appendingPathComponent("garbage.sqlite")
+        try Data("not a database".utf8).write(to: garbage)
+        #expect(CodexThreads.exists(id: id, in: garbage) == nil, "unreadable is unknown, not absent")
+    }
 }

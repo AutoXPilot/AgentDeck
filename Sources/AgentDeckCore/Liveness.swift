@@ -95,10 +95,23 @@ public enum Liveness {
         startSlack: TimeInterval = 120,
         bootedAt: Date? = Liveness.bootTime(),
         confirmedLive: Set<String> = [],
+        liveByPid: [Int32: ClaudeSessionRegistry.Entry] = [:],
         probe: ProcessProbe = .system
     ) -> [String] {
         snapshots.compactMap { s in
             if s.provider == .claude, confirmedLive.contains(s.sessionId) { return nil }
+            // Superseded: after /clear the process keeps running under a new
+            // session id, and the registry, observed after this snapshot was
+            // last written, names that new one for this pid. The old
+            // conversation's row would otherwise live as long as the
+            // process. Only when the registry is the newer of the two — a
+            // brand-new session's first hook can land before its registry
+            // entry is rewritten.
+            if s.provider == .claude, let pid = s.agentPid, let live = liveByPid[pid],
+               live.sessionId != s.sessionId,
+               (live.observedAt ?? .distantPast) > s.updatedAt {
+                return s.key
+            }
             if let pid = s.agentPid {
                 guard pidIsTrustworthy(
                     pid, forUpdatedAt: s.updatedAt, slack: startSlack,

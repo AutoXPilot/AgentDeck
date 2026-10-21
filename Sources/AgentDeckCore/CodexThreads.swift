@@ -85,4 +85,22 @@ public enum CodexThreads {
         guard result.status == 0, !result.timedOut else { return [:] }
         return parse(String(decoding: result.output, as: UTF8.self))
     }
+
+    /// Whether a thread exists: true or false from a successful read, nil
+    /// when the database couldn't be read. Restore needs the difference — a
+    /// deleted conversation should be reported, while a database it simply
+    /// couldn't read shouldn't block the launch. The id must be a UUID, so
+    /// it can sit in the query text without being an injection vector.
+    public static func exists(id: String, in url: URL = CodexThreads.defaultURL) -> Bool? {
+        guard let uuid = UUID(uuidString: id),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let query = "select count(*) from threads where lower(id) = '\(uuid.uuidString.lowercased())'"
+        let result = BoundedSubprocess.run(
+            "/usr/bin/sqlite3", arguments: ["-readonly", url.path, query], timeout: 5)
+        guard result.status == 0, !result.timedOut,
+              let count = Int(String(decoding: result.output, as: UTF8.self)
+                                .trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return nil }
+        return count > 0
+    }
 }

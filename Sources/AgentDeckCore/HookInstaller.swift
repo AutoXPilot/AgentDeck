@@ -103,11 +103,15 @@ public struct HookInstaller: Sendable {
 
     // MARK: - Internals
 
-    private func install(provider: Provider, fileURL: URL) throws -> Bool {
+    private func install(provider: Provider, fileURL requested: URL) throws -> Bool {
+        // Edit the file a symlinked config points to, not the link: the
+        // atomic replace would otherwise swap the link for a regular file,
+        // silently detaching it from wherever it was managed.
+        let fileURL = requested.resolvingSymlinksInPath()
         // Serialize AgentDeck's own installs. Two of them racing would each
         // read, modify and write the whole file, and the loser's hooks
         // would vanish.
-        try Self.withInstallLock(for: fileURL) {
+        return try Self.withInstallLock(for: fileURL) {
             try self.installLocked(provider: provider, fileURL: fileURL)
         }
     }
@@ -130,10 +134,15 @@ public struct HookInstaller: Sendable {
                     entries.append(entry)  // unrecognized shape: never touch
                     continue
                 }
-                // remove only OUR sub-hooks; keep foreign ones in the group
+                // remove only OUR sub-hooks; keep foreign ones in the group.
+                // Matched on the raw path (earlier unquoted/double-quoted
+                // forms) or the quoted one: a path with an apostrophe is
+                // written as it'\''s, which the raw path doesn't match, and
+                // every reinstall added another copy of the hook.
+                let quoted = WorkspaceRestore.shellQuote(helperPath)
                 let kept = subs.filter { sub in
-                    let cmd = (sub as? [String: Any])?["command"] as? String
-                    return !(cmd?.contains(helperPath) ?? false)
+                    guard let cmd = (sub as? [String: Any])?["command"] as? String else { return true }
+                    return !(cmd.contains(helperPath) || cmd.contains(quoted))
                 }
                 if kept.isEmpty && kept.count != subs.count {
                     continue  // group contained only our hooks — drop it
