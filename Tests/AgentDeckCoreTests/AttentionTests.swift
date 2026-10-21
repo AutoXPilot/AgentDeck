@@ -57,18 +57,29 @@ struct AttentionTests {
 
     @Test func sortOrder() {
         let now = Date()
-        let ackedDone = snap("ackedDone", .done, updated: now.addingTimeInterval(-10))
         let snaps = [
-            snap("ready", .ready, updated: now),
-            snap("working", .working, updated: now),
-            ackedDone,
-            snap("err", .error, updated: now),
-            snap("waiting", .waiting, updated: now),
-            snap("done", .done, updated: now),
+            snap("ready", .ready, updated: now.addingTimeInterval(-60)),
+            snap("working", .working, updated: now.addingTimeInterval(-30)),
+            snap("ackedDone", .done, updated: now.addingTimeInterval(-10)),
+            snap("err", .error, updated: now.addingTimeInterval(-500)),
+            snap("waiting", .waiting, updated: now.addingTimeInterval(-900)),
+            snap("done", .done, updated: now.addingTimeInterval(-700)),
         ]
         let acks = ["claude-ackedDone": now]
         let order = Attention.sorted(snaps, acks: acks).map(\.sessionId)
-        #expect(order == ["waiting", "err", "done", "working", "ready", "ackedDone"])
+        // needs-you first by severity, however old; the rest newest first
+        #expect(order == ["waiting", "err", "done", "ackedDone", "working", "ready"])
+    }
+
+    @Test func aRecentlyFinishedSessionIsNotBuriedUnderOldIdleOnes() {
+        // done an hour ago, auto-acknowledged after 30 minutes; the other
+        // has been idle for two months
+        let now = Date()
+        let finished = snap("finished", .done, updated: now.addingTimeInterval(-3600))
+        let idle = snap("idle", .ready, updated: now.addingTimeInterval(-60 * 86400))
+        let order = Attention.sorted([idle, finished], acks: ["claude-finished": now - 1800])
+            .map(\.sessionId)
+        #expect(order == ["finished", "idle"])
     }
 
     @Test func sortTieBreaksOnRecency() {

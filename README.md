@@ -139,8 +139,10 @@ Codex; the liveness sweep backstops removal for crashes.
 
 Sessions are removed when their agent exits (SessionEnd, or the sweep for
 crashed/closed terminals) — except on `/clear` and resume, where the process
-keeps running. Row order freezes while the popover is open so live events
-don't reshuffle rows under your cursor; each open re-sorts.
+keeps running. Sessions that need you (waiting, error, or done and not yet
+acknowledged) sort first; everything else follows, newest first. Row order
+freezes while the popover is open so live events don't reshuffle rows under
+your cursor; each open re-sorts.
 
 **Hooks alone aren't enough to know a session exists.** They only report
 sessions that were running when they fired, so a session started before
@@ -355,7 +357,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 275 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 276 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

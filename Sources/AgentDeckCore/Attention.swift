@@ -45,21 +45,24 @@ public enum Attention {
         return nil
     }
 
-    /// Unacknowledged waiting/error/done first (in that severity order),
-    /// then working, ready, and finally acknowledged attention states.
-    /// Ties break on most-recent activity.
+    /// Unacknowledged waiting/error/done first (in that severity order) —
+    /// the sessions that need you. Everything else after them, newest
+    /// first, whatever its state.
+    ///
+    /// The rest used to be grouped too — working, then ready, then
+    /// acknowledged — which read as random: done sessions are acknowledged
+    /// automatically half an hour after finishing, so a session that
+    /// finished an hour ago sorted below one idle for two months.
     public static func sorted(
         _ snapshots: [SessionSnapshot], acks: [String: Date]
     ) -> [SessionSnapshot] {
         func rank(_ s: SessionSnapshot) -> Int {
-            let attention = needsAttention(s, ackedAt: acks[s.key])
-            switch (attention, s.state) {
-            case (true, .waiting): return 0
-            case (true, .error): return 1
-            case (true, .done): return 2
-            case (_, .working): return 10
-            case (_, .ready): return 11
-            default: return 12  // acknowledged waiting/error/done
+            guard needsAttention(s, ackedAt: acks[s.key]) else { return 10 }
+            switch s.state {
+            case .waiting: return 0
+            case .error: return 1
+            case .done: return 2
+            default: return 10
             }
         }
         return snapshots.sorted {

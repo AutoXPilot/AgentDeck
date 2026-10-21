@@ -135,6 +135,9 @@ final class SessionsModel: ObservableObject {
         loadAcks()
         if forRendering {
             readOnly = true
+            // twice: the first applies auto-acknowledgements, the second
+            // sorts with them, as consecutive reloads do in the app
+            reload()
             reload()
             refreshWorkspaces()
             refreshTerminalTitles()
@@ -357,13 +360,13 @@ final class SessionsModel: ObservableObject {
         // Auto-acknowledge done sessions finished > 30 min ago so the
         // done-count reflects only fresh finishes. Persist once, like a
         // manual ack, so it survives relaunch.
-        if !readOnly {
-            let expired = AutoAck.expiredDoneKeys(output.rows, acks: acks)
-            if !expired.isEmpty {
-                let now = Date()
-                for key in expired { acks[key] = now }
-                saveAcks()
-            }
+        // Applied in read-only mode too, in memory only, so a render shows
+        // what the app shows.
+        let expired = AutoAck.expiredDoneKeys(output.rows, acks: acks)
+        if !expired.isEmpty {
+            let now = Date()
+            for key in expired { acks[key] = now }
+            if !readOnly { saveAcks() }
         }
 
         sessions = output.rows
@@ -374,10 +377,8 @@ final class SessionsModel: ObservableObject {
         mostUrgent = output.mostUrgent
         // recompute the two acked-dependent counts after auto-ack so the
         // header reflects it this cycle, not next
-        if !readOnly {
-            doneCount = Attention.doneCount(output.rows, acks: acks)
-            alertCount = Attention.alertCount(output.rows, acks: acks)
-        }
+        doneCount = Attention.doneCount(output.rows, acks: acks)
+        alertCount = Attention.alertCount(output.rows, acks: acks)
         // The first reload of a process must not fire a banner for every
         // session that was already blocked before the app started — which
         // discovery makes a real possibility, since it surfaces sessions
@@ -1041,7 +1042,14 @@ final class SessionsModel: ObservableObject {
     }
 
     private func loadAcks() {
-        guard let stored = UserDefaults.standard.dictionary(forKey: Self.acksDefaultsKey)
+        // Run unbundled — the --render-popover harness from .build — the
+        // standard defaults are a different, stale domain named after the
+        // executable, and renders showed every finished session as
+        // unacknowledged. Read the app's own.
+        let defaults = Bundle.main.bundleIdentifier == nil
+            ? (UserDefaults(suiteName: "com.tonyhoang.agentdeck") ?? .standard)
+            : .standard
+        guard let stored = defaults.dictionary(forKey: Self.acksDefaultsKey)
         else { return }
         acks = stored.compactMapValues { value in
             (value as? Double).map { Date(timeIntervalSince1970: $0) }

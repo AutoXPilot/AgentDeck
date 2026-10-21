@@ -62,6 +62,14 @@
   Sessions already blocked when this first runs don't all fire a
   notification at once — the backlog starts its cooldown instead.
 
+### Changed
+
+- **Row order is simpler.** Sessions that need you still sort first;
+  everything else is now newest first, whatever its state. It used to be
+  grouped as working, then ready, then acknowledged — and since a done
+  session is acknowledged automatically half an hour after finishing, one
+  that finished an hour ago sorted below sessions idle for two months.
+
 ### Fixed
 
 - **A second wait could stay hidden behind the first one's
