@@ -68,8 +68,7 @@ public enum ClaudeSessionRegistry {
         if let override = ProcessInfo.processInfo.environment["AGENTDECK_REGISTRY_DIR"] {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/sessions", isDirectory: true)
+        return ClaudeConfig.current.appendingPathComponent("sessions", isDirectory: true)
     }
 
     public static func parse(_ data: Data, fileModifiedAt: Date? = nil) -> Entry? {

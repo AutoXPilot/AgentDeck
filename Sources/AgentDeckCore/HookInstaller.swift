@@ -5,9 +5,15 @@ public enum InstallerError: Error, CustomStringConvertible {
     /// Someone else wrote the file between reading and writing it.
     case changedWhileInstalling(String)
     case writeFailed(String)
+    /// The organization's Claude Code policy runs only its own hooks.
+    case blockedByPolicy
 
     public var description: String {
         switch self {
+        case .blockedByPolicy:
+            return "your organization's Claude Code policy runs only its own hooks "
+                + "(allowManagedHooksOnly), so AgentDeck's would never run — "
+                + "settings.json was left untouched"
         case .notAJSONObject(let path):
             return "\(path) exists but is not a JSON object; refusing to modify it"
         case .changedWhileInstalling(let path):
@@ -48,8 +54,7 @@ public struct HookInstaller: Sendable {
     ]
 
     public static var defaultClaudeSettingsURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/settings.json")
+        ClaudeConfig.current.appendingPathComponent("settings.json")
     }
     public static var defaultCodexHooksURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -80,8 +85,13 @@ public struct HookInstaller: Sendable {
     }
 
     @discardableResult
-    public func installClaude(settingsURL: URL = defaultClaudeSettingsURL) throws -> Bool {
-        try install(provider: .claude, fileURL: settingsURL)
+    public func installClaude(
+        settingsURL: URL = defaultClaudeSettingsURL, policy: ClaudePolicy = .load()
+    ) throws -> Bool {
+        // Writing hooks that policy will never run would edit the user's
+        // config on a managed machine for no effect.
+        guard !policy.hooksBlocked else { throw InstallerError.blockedByPolicy }
+        return try install(provider: .claude, fileURL: settingsURL)
     }
 
     @discardableResult
@@ -327,5 +337,30 @@ public struct HookInstaller: Sendable {
         // repeat, which the lexicographic prune then mis-orders.
         f.timeZone = TimeZone(identifier: "UTC")
         return f.string(from: date)
+    }
+}
+
+/// What the footer says about each integration.
+public enum HookStatus: Equatable, Sendable {
+    case installed
+    /// Could be installed and isn't: offer the button.
+    case missing
+    /// Organization policy runs only its own hooks. AgentDeck still lists
+    /// Claude sessions from Claude's own session files.
+    case blockedByPolicy
+    /// Nothing to hook into: Codex isn't on this machine.
+    case notApplicable
+
+    public static func claude(installed: Bool, policy: ClaudePolicy) -> HookStatus {
+        if policy.hooksBlocked { return .blockedByPolicy }
+        return installed ? .installed : .missing
+    }
+
+    /// `codexPresent`: Codex's own directory exists. Without it there is
+    /// nothing to install into, and writing `~/.codex/hooks.json` would
+    /// create a config for a tool that isn't there.
+    public static func codex(installed: Bool, codexPresent: Bool) -> HookStatus {
+        if installed { return .installed }
+        return codexPresent ? .missing : .notApplicable
     }
 }

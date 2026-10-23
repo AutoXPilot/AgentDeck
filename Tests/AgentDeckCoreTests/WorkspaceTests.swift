@@ -480,6 +480,21 @@ struct WorkspaceRestoreTests {
         }
     }
 
+    @Test func aModeThePolicyRefusesIsLeftOff() {
+        // Claude Code rejects --permission-mode bypassPermissions under
+        // disableBypassPermissionsMode; better to start in the default mode
+        let e = entry(mode: "bypassPermissions")
+        #expect(WorkspaceRestore.commandLine(for: e, refusedPermissionModes: ["bypassPermissions"])?
+                .contains("--permission-mode") == false)
+        #expect(WorkspaceRestore.commandLine(for: entry(mode: "acceptEdits"),
+                                             refusedPermissionModes: ["bypassPermissions"])?
+                .hasSuffix("--permission-mode acceptEdits") == true)
+        let plan = WorkspaceRestore.plan([e], facts: .init(
+            live: [], directoryExists: { _ in true }, conversationExists: { _ in true },
+            refusedPermissionModes: ["bypassPermissions"]))
+        #expect(plan.launches.first?.commandLine.contains("bypassPermissions") == false)
+    }
+
     @Test func onlyKnownPermissionModesPassThrough() {
         #expect(WorkspaceRestore.commandLine(for: entry(mode: "bypassPermissions"))?
                 .hasSuffix(" --permission-mode bypassPermissions") == true)

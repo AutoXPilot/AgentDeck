@@ -301,6 +301,41 @@ Restore builds the command from the id, which must be a UUID, and refuses
 a folder path that is relative or contains a control character (typed
 into a terminal, a control character acts as a keystroke).
 
+## Managed Macs
+
+On a work Mac whose Claude Code is managed by an organization policy,
+AgentDeck adapts to what the policy allows. It reads the policy
+(`/Library/Application Support/ClaudeCode/managed-settings.json`, its
+`managed-settings.d/` drop-ins, and an MDM profile in the
+`com.anthropic.claudecode` domain) but never writes it.
+
+- **Hooks blocked by policy** (`allowManagedHooksOnly`, or `disableAllHooks`
+  set by the organization): AgentDeck's hooks would never run, so it doesn't
+  offer to install them and doesn't touch `settings.json`. The footer shows
+  Claude with a lock instead of a red X. Sessions still appear, read from
+  Claude's own session files: every live session, "waiting on you" badges
+  and notifications, click to focus, and restore. What you lose without
+  hooks: "done" and "error" states, permission modes in restore, and Codex.
+- **Permission modes the policy refuses** (`disableBypassPermissionsMode`,
+  `disableAutoMode`) are left off restore commands, so a session comes back
+  in the default mode instead of failing to start.
+- **`CLAUDE_CONFIG_DIR`** is honoured for session files, transcripts and
+  settings, whether it comes from the environment, the policy's `env`, or
+  your own `settings.json`. A menu-bar app doesn't see variables exported
+  only in a shell profile; Copy diagnostics shows which directory it used.
+- **No Codex installed**: the Codex dot is neutral, not red, and nothing is
+  written to `~/.codex`.
+- **No iTerm2 installed**: monitoring works; restore says it needs iTerm2.
+
+Discovery reads Claude's session files, which aren't a documented
+interface. They have carried the fields AgentDeck needs from Claude Code
+2.1.206 onward, including the 2.1.219 build seen on one managed Mac. A Mac
+whose policy pins an older Claude may not show sessions.
+
+Installing third-party software on a company-managed computer is a
+question for your IT team. A notarized build and the "What it writes on
+your machine" section above are what such a request usually needs.
+
 ## Hardening notes
 
 - On launch the app compares the bundled helper's SHA-256 against the stable
@@ -362,7 +397,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 285 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 301 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

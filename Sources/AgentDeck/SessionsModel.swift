@@ -15,6 +15,19 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var mostUrgent: SessionState?
     @Published private(set) var claudeHooksInstalled = false
     @Published private(set) var codexHooksInstalled = false
+    /// Hook health as the footer shows it: installed, missing, blocked by
+    /// the organization's Claude policy, or not applicable (no Codex).
+    @Published private(set) var claudeStatus: HookStatus = .missing
+    @Published private(set) var codexStatus: HookStatus = .missing
+    @Published private(set) var claudePolicy = ClaudePolicy.none
+    /// iTerm2 is installed, not merely running. Restore opens tabs in it;
+    /// without it there's nowhere to open them.
+    @Published private(set) var iTermInstalled = true
+
+    /// Anything the Install button would actually fix.
+    var hooksNeedInstalling: Bool {
+        !helperInstalled || claudeStatus == .missing || codexStatus == .missing
+    }
     @Published private(set) var helperInstalled = false
     /// A message counts as seen only at an open that happens after it was
     /// set. Restore reports while the popover is closed — progress, the
@@ -740,8 +753,12 @@ final class SessionsModel: ObservableObject {
             "AgentDeck \(AgentDeckVersion.current)",
             "macOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "sessions: \(sessions.count) (alerts \(alertCount), done \(doneCount))",
-            "hooks: helper=\(helperInstalled) claude=\(claudeHooksInstalled) "
-                + "codex=\(codexHooksInstalled)",
+            "hooks: helper=\(helperInstalled) claude=\(claudeStatus) codex=\(codexStatus)",
+            "claude config dir: \(ClaudeConfig.current.path)",
+            "claude policy: hooksBlocked=\(claudePolicy.hooksBlocked) "
+                + "refusedModes=\(claudePolicy.refusedPermissionModes.sorted()) "
+                + "sources=\(claudePolicy.sources.count)",
+            "iTerm installed: \(iTermInstalled)",
             "iTerm running: \(iTermRunning), titles cached: \(terminalTitles.count)",
             "claude registry entries: \(claudeRegistry.count), "
                 + "codex threads: \(codexThreads.count)",
@@ -962,6 +979,18 @@ final class SessionsModel: ObservableObject {
         )
         iTermRunning = NSWorkspace.shared.runningApplications
             .contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+        // Policy is a handful of small files; re-read on each health check
+        // so an admin change shows without a relaunch.
+        let policy = ClaudePolicy.load()
+        if policy != claudePolicy { claudePolicy = policy }
+        claudeStatus = HookStatus.claude(installed: claudeHooksInstalled, policy: policy)
+        let codexHome = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+        codexStatus = HookStatus.codex(
+            installed: codexHooksInstalled,
+            codexPresent: FileManager.default.fileExists(atPath: codexHome.path))
+        iTermInstalled = NSWorkspace.shared
+            .urlForApplication(withBundleIdentifier: "com.googlecode.iterm2") != nil
     }
 
     /// isInstalled parses the whole config file; cache the result until the
@@ -1274,6 +1303,10 @@ extension SessionsModel {
             installMessage = "A restore is already running."
             return
         }
+        guard iTermInstalled else {
+            installMessage = "Restore opens sessions in iTerm2, which isn't installed."
+            return
+        }
         let threads = codexThreads
         let facts = WorkspaceRestore.Facts(
             live: runningKeys(sessions),
@@ -1289,7 +1322,8 @@ extension SessionsModel {
                     if threads[entry.sessionId] != nil { return true }
                     return CodexThreads.exists(id: entry.sessionId)
                 }
-            }
+            },
+            refusedPermissionModes: claudePolicy.refusedPermissionModes
         )
         let plan = WorkspaceRestore.plan(entries, facts: facts)
         // each missing folder remembers which named workspace it came from,

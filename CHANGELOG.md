@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Works on a Mac with a managed Claude Code policy.** AgentDeck reads
+  the organization's policy (never writes it). When the policy runs only
+  its own hooks, AgentDeck stops offering to install hooks and leaves
+  `settings.json` alone, shows Claude as "off by policy" rather than
+  broken, and keeps listing sessions from Claude's own session files.
+  Permission modes the policy refuses are left off restore commands.
+- **`CLAUDE_CONFIG_DIR` is honoured** for session files, transcripts and
+  the settings file AgentDeck edits, from the environment, the policy, or
+  the user's own settings. It used to assume `~/.claude` everywhere.
+- **No Codex or no iTerm2 is a state, not an error.** Without Codex the
+  footer shows it as not applicable and nothing is written to `~/.codex`;
+  without iTerm2, restore explains why it can't run.
+
 ## 0.5.0
 
 Restore your agent sessions after a reboot or an iTerm restart, a list

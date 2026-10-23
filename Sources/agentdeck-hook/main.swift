@@ -88,14 +88,24 @@ func runInstall() {
         }
 
         let installer = HookInstaller(helperPath: stableHelperURL.path)
-        let claudeChanged = try installer.installClaude()
-        print("claude hooks: \(claudeChanged ? "installed/updated" : "already current") "
-            + "(\(HookInstaller.defaultClaudeSettingsURL.path))")
-        let codexChanged = try installer.installCodex()
-        print("codex hooks: \(codexChanged ? "installed/updated" : "already current") "
-            + "(\(HookInstaller.defaultCodexHooksURL.path))")
-        if codexChanged {
-            print("note: codex will ask to trust the changed hooks on next launch")
+        do {
+            let claudeChanged = try installer.installClaude()
+            print("claude hooks: \(claudeChanged ? "installed/updated" : "already current") "
+                + "(\(HookInstaller.defaultClaudeSettingsURL.path))")
+        } catch InstallerError.blockedByPolicy {
+            // not a failure: sessions still come from Claude's session list
+            print("claude hooks: skipped — \(InstallerError.blockedByPolicy)")
+        }
+        let codexHome = HookInstaller.defaultCodexHooksURL.deletingLastPathComponent()
+        if fm.fileExists(atPath: codexHome.path) {
+            let codexChanged = try installer.installCodex()
+            print("codex hooks: \(codexChanged ? "installed/updated" : "already current") "
+                + "(\(HookInstaller.defaultCodexHooksURL.path))")
+            if codexChanged {
+                print("note: codex will ask to trust the changed hooks on next launch")
+            }
+        } else {
+            print("codex hooks: skipped — Codex isn't set up on this Mac (no \(codexHome.path))")
         }
     } catch {
         FileHandle.standardError.write(Data("install failed: \(error)\n".utf8))
@@ -120,6 +130,8 @@ func runStatus() {
             provider: .codex, in: HookInstaller.defaultCodexHooksURL
         ),
         "sessionsDirectory": store.directory.path,
+        "claudeConfigDirectory": ClaudeConfig.current.path,
+        "claudeHooksBlockedByPolicy": ClaudePolicy.load().hooksBlocked,
         "activeSessions": store.loadAll().count,
         "bootedAt": Liveness.bootTime().map {
             SnapshotStore.isoFractional.string(from: $0)

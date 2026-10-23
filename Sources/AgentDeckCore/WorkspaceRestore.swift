@@ -58,12 +58,16 @@ public enum WorkspaceRestore {
         /// nil = can't tell (e.g. Codex's database unreadable); the launch
         /// goes ahead rather than being refused on missing evidence.
         public var conversationExists: (WorkspaceEntry) -> Bool?
+        /// Permission modes the organization's policy refuses.
+        public var refusedPermissionModes: Set<String>
 
         public init(
             live: Set<String>, inFlight: Set<String> = [],
             directoryExists: @escaping (String) -> Bool = WorkspaceRestore.isEnterableDirectory,
-            conversationExists: @escaping (WorkspaceEntry) -> Bool?
+            conversationExists: @escaping (WorkspaceEntry) -> Bool?,
+            refusedPermissionModes: Set<String> = []
         ) {
+            self.refusedPermissionModes = refusedPermissionModes
             self.live = live
             self.inFlight = inFlight
             self.directoryExists = directoryExists
@@ -96,7 +100,8 @@ public enum WorkspaceRestore {
             }
             if let reason {
                 plan.skipped.append((entry, reason))
-            } else if let line = commandLine(for: entry) {
+            } else if let line = commandLine(
+                for: entry, refusedPermissionModes: facts.refusedPermissionModes) {
                 plan.launches.append(Launch(entry: entry, commandLine: line))
             } else {
                 plan.skipped.append((entry, .invalidSessionId))
@@ -151,7 +156,11 @@ public enum WorkspaceRestore {
     ///
     /// No `exec`: when the agent exits the pane drops back to a shell
     /// instead of closing.
-    public static func commandLine(for entry: WorkspaceEntry) -> String? {
+    /// A recorded mode the policy refuses is left off, so the session
+    /// starts in the default mode instead of Claude Code refusing to start.
+    public static func commandLine(
+        for entry: WorkspaceEntry, refusedPermissionModes: Set<String> = []
+    ) -> String? {
         guard let uuid = UUID(uuidString: entry.sessionId),
               isTypeableDirectory(entry.cwd) else { return nil }
         let id = uuid.uuidString.lowercased()
@@ -159,7 +168,8 @@ public enum WorkspaceRestore {
         switch entry.provider {
         case .claude:
             var line = "\(cd) && claude --resume \(id)"
-            if let mode = entry.permissionMode, claudePermissionModes.contains(mode) {
+            if let mode = entry.permissionMode, claudePermissionModes.contains(mode),
+               !refusedPermissionModes.contains(mode) {
                 line += " --permission-mode \(mode)"
             }
             return line

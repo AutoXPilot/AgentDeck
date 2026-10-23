@@ -6,8 +6,7 @@ import Foundation
 /// evidence and the trade-off.
 public enum ClaudeTranscript {
     public static var defaultProjectsDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+        ClaudeConfig.current.appendingPathComponent("projects", isDirectory: true)
     }
 
     /// Claude derives the directory name from the working directory, but the

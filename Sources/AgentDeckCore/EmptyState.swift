@@ -10,6 +10,9 @@ public enum EmptyState: Equatable, Sendable {
     case noFilterMatch(query: String)
     /// The core pipeline isn't wired: the helper or Claude hooks are missing.
     case coreHooksMissing
+    /// Policy runs only the organization's hooks. Claude sessions still
+    /// appear, from Claude's own session files; there just aren't any.
+    case hooksBlockedByPolicy
     /// Everything Claude works, but Codex hooks aren't installed — Codex
     /// sessions won't appear. Informational, not an error.
     case codexHooksMissing
@@ -18,14 +21,15 @@ public enum EmptyState: Equatable, Sendable {
 
     public static func determine(
         helperInstalled: Bool,
-        claudeHooksInstalled: Bool,
-        codexHooksInstalled: Bool,
+        claude: HookStatus,
+        codex: HookStatus,
         filter: String
     ) -> EmptyState {
         let trimmed = filter.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty { return .noFilterMatch(query: trimmed) }
-        if !helperInstalled || !claudeHooksInstalled { return .coreHooksMissing }
-        if !codexHooksInstalled { return .codexHooksMissing }
+        if claude == .blockedByPolicy { return .hooksBlockedByPolicy }
+        if !helperInstalled || claude == .missing { return .coreHooksMissing }
+        if codex == .missing { return .codexHooksMissing }
         return .idle
     }
 }

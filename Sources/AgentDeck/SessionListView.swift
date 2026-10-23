@@ -141,8 +141,8 @@ struct SessionListView: View {
     private var emptyState: some View {
         let reason = EmptyState.determine(
             helperInstalled: model.helperInstalled,
-            claudeHooksInstalled: model.claudeHooksInstalled,
-            codexHooksInstalled: model.codexHooksInstalled,
+            claude: model.claudeStatus,
+            codex: model.codexStatus,
             filter: model.filterText
         )
         return VStack(spacing: 6) {
@@ -155,6 +155,16 @@ struct SessionListView: View {
                 Text("Click “Install hooks” below, then start a session.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+            case .hooksBlockedByPolicy:
+                Text("No active Claude sessions").font(.callout)
+                Text(
+                    "Your organization's Claude policy runs only its own hooks, "
+                    + "so AgentDeck reads sessions from Claude's own session list. "
+                    + "Start `claude` and it will appear here."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             case .codexHooksMissing:
                 Text("No active agent sessions").font(.callout)
                 Text(
@@ -241,11 +251,10 @@ struct SessionListView: View {
                     .foregroundStyle(.secondary)
                     .help("Setup health — are the lifecycle hooks installed? (Not session activity.)")
                 healthDot(ok: model.helperInstalled, label: "helper")
-                healthDot(ok: model.claudeHooksInstalled, label: "claude")
-                healthDot(ok: model.codexHooksInstalled, label: "codex")
+                healthDot(model.claudeStatus, label: "claude")
+                healthDot(model.codexStatus, label: "codex")
                 Spacer()
-                if !(model.helperInstalled && model.claudeHooksInstalled
-                    && model.codexHooksInstalled) {
+                if model.hooksNeedInstalling {
                     Button(model.isInstalling ? "Installing…" : "Install hooks") {
                         model.installHooks()
                     }
@@ -327,7 +336,7 @@ struct SessionListView: View {
                     }
                 }
             }
-            .disabled(model.isRestoring)
+            .disabled(model.isRestoring || !model.iTermInstalled)
         }
         Button("Save open sessions as workspace…") { model.promptSaveWorkspace() }
         if !model.namedWorkspaces.isEmpty {
@@ -363,7 +372,7 @@ struct SessionListView: View {
                             Spacer()
                             Button("Locate…") { model.locateFolder(missing) }
                                 .font(.caption2)
-                                .disabled(model.isRestoring)
+                                .disabled(model.isRestoring || !model.iTermInstalled)
                             Button {
                                 model.dismissMissingFolder(missing)
                             } label: {
@@ -408,7 +417,7 @@ struct SessionListView: View {
             }
             Spacer()
             Button("Restore") { model.restore(offer.entries, dismissesLaunchOffer: true) }
-                .disabled(model.isRestoring)
+                .disabled(model.isRestoring || !model.iTermInstalled)
             Button {
                 model.dismissLaunchRestoreOffer()
             } label: {
@@ -421,7 +430,29 @@ struct SessionListView: View {
         .padding(.vertical, 8)
     }
 
-    /// Symbol + label, so health isn't encoded in colour alone.
+    /// Symbol + label, so health isn't encoded in colour alone. Policy and
+    /// not-applicable states are neutral, not red: nothing is broken, and
+    /// there's nothing for the user to fix.
+    private func healthDot(_ status: HookStatus, label: String) -> some View {
+        let (symbol, color, words): (String, Color, String) = switch status {
+        case .installed: ("checkmark.circle.fill", .green, "installed")
+        case .missing: ("xmark.circle.fill", .red, "not installed")
+        case .blockedByPolicy: ("lock.circle.fill", .secondary,
+                                "off — your organization's policy runs only its own hooks; "
+                                + "sessions come from Claude's session list")
+        case .notApplicable: ("minus.circle.fill", .secondary, "not on this Mac")
+        }
+        return HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 9))
+                .foregroundStyle(color)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label) hooks \(words)")
+        .help("\(label): \(words)")
+    }
+
     private func healthDot(ok: Bool, label: String) -> some View {
         HStack(spacing: 3) {
             Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
