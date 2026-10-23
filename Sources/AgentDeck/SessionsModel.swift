@@ -1250,10 +1250,12 @@ extension SessionsModel {
         case .claude:
             return ClaudeSessionRegistry.liveSessions()[entry.sessionId] != nil
         case .codex:
-            guard let snapshot = SnapshotStore().load(key: entry.key),
-                  let pid = snapshot.agentPid else { return false }
-            return Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt,
-                                             provider: .codex)
+            if let snapshot = SnapshotStore().load(key: entry.key), let pid = snapshot.agentPid,
+               Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt, provider: .codex) {
+                return true
+            }
+            // resumed but silent: no hook has fired yet
+            return !ProcessTree.codexThreadsRunning([entry.sessionId]).isEmpty
         }
     }
 
@@ -1265,7 +1267,15 @@ extension SessionsModel {
         guard !readOnly else { return }
         let reserved = workspaceStore.reservations()
         guard !reserved.isEmpty || !pendingRestores.isEmpty else { return }
-        let running = runningKeys(rows)
+        var running = runningKeys(rows)
+        // a Codex session resumed by a restore runs no hook until its first
+        // message; its process is the evidence. Scanned only while one is
+        // reserved, not on every reload.
+        let codexReserved = reserved.keys.filter { $0.hasPrefix("codex-") && !running.contains($0) }
+        if !codexReserved.isEmpty {
+            let ids = Set(codexReserved.map { String($0.dropFirst("codex-".count)) })
+            for id in ProcessTree.codexThreadsRunning(ids) { running.insert("codex-\(id)") }
+        }
         let confirmed = Set(reserved.keys).intersection(running)
         do {
             try workspaceStore.releaseReservations(confirmed)
@@ -1433,6 +1443,12 @@ extension SessionsModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             Task.detached {
                 let notRunning = report.typed.filter { !SessionsModel.isRunning($0) }
+                // running, but stopped at a question in its tab
+                let live = ClaudeSessionRegistry.liveSessions()
+                let awaiting = report.typed.filter { entry in
+                    entry.provider == .claude
+                        && (live[entry.sessionId]?.waitingFor?.lowercased().contains("dialog") ?? false)
+                }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     Self.appLog("restore: \(report.typed.count - notRunning.count)/"
@@ -1440,7 +1456,9 @@ extension SessionsModel {
                     self.reload()
                     // a newer restore's messages win over this one's
                     guard generation == self.restoreGeneration else { return }
-                    self.installMessage = report.confirmationMessage(notRunning: notRunning)
+                    self.installMessage = report.confirmationMessage(
+                        notRunning: notRunning, awaitingConfirmation: awaiting,
+                        homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path)
                 }
             }
         }

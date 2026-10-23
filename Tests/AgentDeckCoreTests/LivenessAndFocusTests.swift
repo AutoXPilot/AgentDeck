@@ -288,6 +288,34 @@ struct LivenessAndFocusTests {
         #expect(!ProcessTree.looksLikeAgent(child.processIdentifier, provider: .claude))
     }
 
+    @Test func aRunningCodexIsFoundByTheThreadIdInItsArguments() throws {
+        // a fake "codex" (a compiled sleeper named codex) started the way a
+        // restore starts one: `codex resume <id>`
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("codexprobe-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let src = dir.appendingPathComponent("s.c"), bin = dir.appendingPathComponent("codex")
+        try "#include <unistd.h>\nint main(void){sleep(20);return 0;}\n"
+            .write(to: src, atomically: true, encoding: .utf8)
+        let cc = Process()
+        cc.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
+        cc.arguments = [src.path, "-o", bin.path]
+        try cc.run(); cc.waitUntilExit()
+        try #require(cc.terminationStatus == 0)
+        let id = "01a1abcd-1234-7000-8000-00000000beef"
+        let p = Process()
+        p.executableURL = bin
+        p.arguments = ["resume", id]
+        try p.run()
+        defer { p.terminate() }
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(ProcessTree.codexThreadsRunning([id, "01a1abcd-0000-7000-8000-000000000000"]) == [id])
+        #expect(ProcessTree.codexThreadsRunning([id.uppercased()]) == [id], "ids compared case-insensitively")
+        p.terminate(); p.waitUntilExit()
+        #expect(ProcessTree.codexThreadsRunning([id]).isEmpty, "gone once it exits")
+    }
+
     @Test func aProcessOnATerminalHasItsTTYRead() throws {
         // `script` runs its child on a fresh pseudo-terminal, so this works
         // with or without one for the test runner itself (CI has none) —

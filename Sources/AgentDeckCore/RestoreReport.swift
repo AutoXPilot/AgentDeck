@@ -71,12 +71,50 @@ public struct RestoreReport: Equatable, Sendable {
 
     /// Once the typed sessions have had time to come up. `notRunning` are
     /// the typed ones the registry doesn't show.
-    public func confirmationMessage(notRunning: [WorkspaceEntry]) -> String {
+    /// - notRunning: typed but not registered as running.
+    /// - awaitingConfirmation: running, but stopped at a question in its tab
+    ///   (Claude asks before resuming a long conversation idle for a while).
+    /// - homeDirectory: Claude asks whether to trust the home folder on every
+    ///   launch and never remembers the answer there, so a session started
+    ///   in it always stops at that question — the usual reason a restore
+    ///   "didn't start". Named, so the user knows what to answer.
+    public func confirmationMessage(
+        notRunning: [WorkspaceEntry], awaitingConfirmation: [WorkspaceEntry] = [],
+        homeDirectory: String? = nil
+    ) -> String {
         let running = typed.count - notRunning.count
-        return message(notRunning.isEmpty
-            ? "Restored \(typed.count) session\(typed.count == 1 ? "" : "s")"
-            : "\(running) of \(typed.count) running; not yet: "
-                + notRunning.map(\.label).joined(separator: ", ")
-                + " — check those tabs for a prompt")
+        guard !notRunning.isEmpty || !awaitingConfirmation.isEmpty else {
+            return message("Restored \(typed.count) session\(typed.count == 1 ? "" : "s")")
+        }
+        var parts: [String] = []
+        let home = homeDirectory.map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
+        let inHome = notRunning.filter { home != nil && $0.cwd == home }
+        let elsewhere = notRunning.filter { home == nil || $0.cwd != home }
+        if !inHome.isEmpty {
+            parts.append(names(inHome) + " — Claude asks whether to trust your home folder "
+                         + "every time; answer it in \(inHome.count == 1 ? "that tab" : "those tabs")")
+        }
+        if !elsewhere.isEmpty {
+            parts.append(names(elsewhere) + " — check \(elsewhere.count == 1 ? "that tab" : "those tabs") "
+                         + "for a prompt")
+        }
+        if !awaitingConfirmation.isEmpty {
+            // the registry says only "dialog open"; the usual one after a
+            // restore is Claude asking before resuming a long, idle
+            // conversation, so it's named as likely, not certain
+            parts.append(names(awaitingConfirmation) + " — waiting on a question in "
+                         + "\(awaitingConfirmation.count == 1 ? "its tab" : "their tabs") "
+                         + "(usually Claude asking whether to resume a long, idle conversation)")
+        }
+        let headline = notRunning.isEmpty
+            ? "Restored \(typed.count); waiting on you"
+            : "\(running) of \(typed.count) running; not yet"
+        return message(headline + ": " + parts.joined(separator: "; "))
+    }
+
+    private func names(_ entries: [WorkspaceEntry]) -> String {
+        let labels = entries.map(\.label)
+        return labels.prefix(5).joined(separator: ", ")
+            + (labels.count > 5 ? " +\(labels.count - 5) more" : "")
     }
 }

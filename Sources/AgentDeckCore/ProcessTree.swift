@@ -199,4 +199,33 @@ public enum ProcessTree {
         }
         return false
     }
+
+    /// Every process id on the machine.
+    public static func allPids() -> [pid_t] {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 64)
+        let filled = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard filled > 0 else { return [] }
+        return Array(pids.prefix(Int(filled))).filter { $0 > 0 }
+    }
+
+    /// Which of `threadIds` a running Codex process was started with —
+    /// `codex resume <id>` carries the id in its arguments. Codex has no
+    /// session registry and runs no hook until the first message after a
+    /// resume, so without this a restored Codex session looked like it had
+    /// never started. Only processes that look like Codex are examined, and
+    /// their arguments are searched in place, not kept.
+    public static func codexThreadsRunning(_ threadIds: Set<String>) -> Set<String> {
+        guard !threadIds.isEmpty else { return [] }
+        let wanted = threadIds.map { $0.lowercased() }
+        var found = Set<String>()
+        for pid in allPids() where looksLikeAgent(pid, provider: .codex) {
+            for id in wanted where !found.contains(id) && argumentsMention(id, pid: pid) {
+                found.insert(id)
+            }
+            if found.count == wanted.count { break }
+        }
+        return found
+    }
 }

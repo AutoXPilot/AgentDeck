@@ -92,8 +92,31 @@ struct RestoreReportTests {
         let report = RestoreReport(launches: launches([a, b]),
                                    outcomes: [a.key: .launched, b.key: .launched], skipped: [])
         #expect(report.confirmationMessage(notRunning: [b])
-                == "1 of 2 running; not yet: beta — check those tabs for a prompt.")
+                == "1 of 2 running; not yet: beta — check that tab for a prompt.")
         #expect(report.confirmationMessage(notRunning: []) == "Restored 2 sessions.")
+    }
+
+    @Test func homeFolderSessionsAreToldWhatToAnswer() {
+        // the reboot restore where every stalled session was in ~: Claude
+        // asks to trust the home folder on each launch
+        func at(_ n: Int, _ label: String, _ cwd: String) -> WorkspaceEntry {
+            WorkspaceEntry(provider: .claude, sessionId: String(format: "%08d-0000-4000-8000-000000000000", n),
+                           cwd: cwd, displayName: label, lastSeen: .distantPast)
+        }
+        let a = at(1, "tax-review", "/Users/t"), b = at(2, "api", "/Users/t/Code/api"),
+            c = at(3, "notes", "/Users/t"), d = at(4, "big-one", "/Users/t/Code")
+        let report = RestoreReport(launches: launches([a, b, c, d]),
+                                   outcomes: [a.key: .launched, b.key: .launched,
+                                              c.key: .launched, d.key: .launched], skipped: [])
+        let msg = report.confirmationMessage(notRunning: [a, b, c], awaitingConfirmation: [d],
+                                             homeDirectory: "/Users/t/")
+        #expect(msg.hasPrefix("1 of 4 running; not yet: "))
+        #expect(msg.contains("tax-review, notes — Claude asks whether to trust your home folder every time; answer it in those tabs"))
+        #expect(msg.contains("api — check that tab for a prompt"))
+        #expect(msg.contains("big-one — waiting on a question in its tab"))
+        // all running, one waiting on a question: not "Restored" outright
+        #expect(report.confirmationMessage(notRunning: [], awaitingConfirmation: [d])
+                .hasPrefix("Restored 4; waiting on you: big-one"))
     }
 
     @Test func aSessionThatCameBackOnItsOwnIsReleased() {

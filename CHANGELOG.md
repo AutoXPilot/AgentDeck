@@ -13,6 +13,15 @@
 - **`CLAUDE_CONFIG_DIR` is honoured** for session files, transcripts and
   the settings file AgentDeck edits, from the environment, the policy, or
   the user's own settings. It used to assume `~/.claude` everywhere.
+- **A restore says why a session didn't start.** Claude asks whether to
+  trust the home folder on every launch, so sessions in `~` always stop at
+  that question after a restore; the follow-up message now names them and
+  says what to answer. Sessions that started but are waiting on a question
+  in their tab (usually Claude asking before resuming a long, idle
+  conversation) are named too, instead of being counted as restored.
+- **A restored Codex session is confirmed by its process.** Codex runs no
+  hook until the first message after a resume, so it used to stay
+  "not yet running" (and reserved) until you typed something in it.
 - **No Codex or no iTerm2 is a state, not an error.** Without Codex the
   footer shows it as not applicable and nothing is written to `~/.codex`;
   without iTerm2, restore explains why it can't run.
