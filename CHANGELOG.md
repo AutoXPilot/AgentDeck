@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.5.1
+
+### Compatibility
+
+- **Two versions of AgentDeck can now run side by side** — a source
+  build beside the installed app, or an older copy launched after an
+  upgrade — without one destroying the other's data. Snapshots and
+  workspace entries for a provider this version doesn't know are kept as
+  written, never deleted or overwritten; a workspace file it can't read
+  at all is left untouched instead of replaced; and an older app no
+  longer downgrades the shared hook helper (it compares versions before
+  replacing it, and counts a newer helper as healthy).
+- **0.5.1 is the minimum for mixed versions.** 0.5.0 still deletes
+  snapshots it can't decode after an hour and can overwrite a workspace
+  file holding an entry it doesn't know, so don't run 0.5.0 beside a
+  newer build.
+- Snapshots are now schema 3 (two optional host fields, not yet written);
+  older builds ignore them.
 
 ### Added
 
