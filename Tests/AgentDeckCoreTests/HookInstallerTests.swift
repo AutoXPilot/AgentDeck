@@ -96,7 +96,7 @@ final class HookInstallerTests {
         let url = dir.appendingPathComponent("settings.json")
         try write(fixtureSettings(), to: url)
 
-        #expect(try installer.installClaude(settingsURL: url))
+        #expect(try installer.install(.claude, fileURL: url))
         let after = try read(url)
 
         #expect(after["model"] as? String == "claude-fable-5")
@@ -109,7 +109,7 @@ final class HookInstallerTests {
         #expect(HookInstaller.contains("/usr/bin/say", in: stopEntries))
         #expect(HookInstaller.contains(helperPath, in: stopEntries))
 
-        for event in HookInstaller.claudeEvents {
+        for event in HookInstaller.events(for: .claude) {
             let entries = try #require(hooks[event] as? [Any], "missing hook for \(event)")
             #expect(HookInstaller.contains(helperPath, in: entries))
         }
@@ -118,11 +118,11 @@ final class HookInstallerTests {
     @Test func installIsIdempotent() throws {
         let url = dir.appendingPathComponent("settings.json")
         try write(fixtureSettings(), to: url)
-        #expect(try installer.installClaude(settingsURL: url))
-        #expect(try !installer.installClaude(settingsURL: url))
+        #expect(try installer.install(.claude, fileURL: url))
+        #expect(try !installer.install(.claude, fileURL: url))
 
         let hooks = try #require(try read(url)["hooks"] as? [String: Any])
-        for event in HookInstaller.claudeEvents {
+        for event in HookInstaller.events(for: .claude) {
             let entries = try #require(hooks[event] as? [Any])
             let ours = entries.filter { HookInstaller.contains(helperPath, in: $0) }
             #expect(ours.count == 1, "duplicate entries for \(event)")
@@ -132,7 +132,7 @@ final class HookInstallerTests {
     @Test func backupCreatedOnChange() throws {
         let url = dir.appendingPathComponent("settings.json")
         try write(fixtureSettings(), to: url)
-        _ = try installer.installClaude(settingsURL: url)
+        _ = try installer.install(.claude, fileURL: url)
         let backups = try FileManager.default.contentsOfDirectory(atPath: dir.path)
             .filter { $0.contains(".agentdeck-") && $0.hasSuffix(".bak") }
         #expect(backups.count == 1)
@@ -144,10 +144,10 @@ final class HookInstallerTests {
 
     @Test func installIntoMissingFileCreatesIt() throws {
         let url = dir.appendingPathComponent("hooks.json")
-        #expect(try installer.installCodex(hooksURL: url))
+        #expect(try installer.install(.codex, fileURL: url))
         let after = try read(url)
         let hooks = try #require(after["hooks"] as? [String: Any])
-        #expect(Set(hooks.keys) == Set(HookInstaller.codexEvents))
+        #expect(Set(hooks.keys) == Set(HookInstaller.events(for: .codex)))
         #expect(installer.isInstalled(provider: .codex, in: url))
     }
 
@@ -165,7 +165,7 @@ final class HookInstallerTests {
         #expect(!installer.isInstalled(provider: .claude, in: url),
                 "one surviving entry must not paint the integration green")
         // and install repairs it to fully healthy
-        #expect(try installer.installClaude(settingsURL: url))
+        #expect(try installer.install(.claude, fileURL: url))
         #expect(installer.isInstalled(provider: .claude, in: url))
     }
 
@@ -188,7 +188,7 @@ final class HookInstallerTests {
                 ]
             ]
         ], to: url)
-        _ = try installer.installClaude(settingsURL: url)
+        _ = try installer.install(.claude, fileURL: url)
         let hooks = try #require(try read(url)["hooks"] as? [String: Any])
         let stop = try #require(hooks["Stop"] as? [Any])
         #expect(HookInstaller.contains("/usr/bin/say", in: stop),
@@ -202,7 +202,7 @@ final class HookInstallerTests {
         let url = dir.appendingPathComponent("settings.json")
         try Data("[1,2,3]".utf8).write(to: url)
         #expect(throws: InstallerError.self) {
-            try self.installer.installClaude(settingsURL: url)
+            try self.installer.install(.claude, fileURL: url)
         }
         #expect(try Data(contentsOf: url) == Data("[1,2,3]".utf8))
     }

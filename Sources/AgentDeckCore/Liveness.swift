@@ -81,8 +81,10 @@ public enum Liveness {
     /// cap silently deleted live sessions waiting overnight — and they could
     /// never come back. A live, identity-verified pid is never expired for
     /// being quiet.
-    /// `confirmedLive` names sessions another source has independently
-    /// verified as running (Claude's registry). Their snapshots are never
+    /// `confirmedLive` names session KEYS another source has independently
+    /// verified as running (Claude's registry). Keys, not bare session ids,
+    /// so one provider's evidence can never protect another provider's
+    /// snapshot that happens to share an id. Their snapshots are never
     /// aged out: deleting one doesn't hide the session any more — discovery
     /// re-adds it on the same key — it just silently strips the pane id,
     /// permission mode and hook-derived state, leaving a row that looks
@@ -99,7 +101,7 @@ public enum Liveness {
         probe: ProcessProbe = .system
     ) -> [String] {
         snapshots.compactMap { s in
-            if s.provider == .claude, confirmedLive.contains(s.sessionId) { return nil }
+            if confirmedLive.contains(s.key) { return nil }
             // Superseded: after /clear the process keeps running under a new
             // session id, and the registry, observed after this snapshot was
             // last written, names that new one for this pid. The old

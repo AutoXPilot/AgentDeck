@@ -407,7 +407,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 315 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 330 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

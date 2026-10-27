@@ -248,4 +248,26 @@ struct SessionPipelineTests {
         // deduped before counting: one blocked session is one in the badge
         #expect(out.alertCount == 1)
     }
+
+    @Test func aCodexRowWhoseIdMatchesAClaudeSessionKeepsItsPaneAndPid() {
+        // Claude's registry describes Claude sessions only. A Codex row
+        // sharing an id with one must not adopt that process or lose its
+        // pane, and must not take its state from it either.
+        let codex = SessionSnapshot(
+            provider: .codex, sessionId: "same", projectPath: "/p/codex",
+            state: .working, event: "UserPromptSubmit",
+            updatedAt: now.addingTimeInterval(-60),
+            terminalSessionId: "w0t0p0:CODEX-PANE", agentPid: 42)
+        let claudeEntry = entry(pid: 77, id: "same", "waiting", waitingFor: "permission prompt")
+        let out = SessionPipeline.run(
+            snapshots: [codex], registry: [42: entry(pid: 42, id: "same", "waiting")],
+            liveSessions: ["same": claudeEntry], acks: [:],
+            frozenOrder: nil, popoverVisible: false, now: now)
+        let row = try? #require(out.rows.first { $0.provider == .codex })
+        #expect(row?.agentPid == 42)
+        #expect(row?.terminalSessionId == "w0t0p0:CODEX-PANE")
+        #expect(row?.state == .working)
+        // the Claude session is still listed, as its own row
+        #expect(out.rows.contains { $0.key == "claude-same" })
+    }
 }

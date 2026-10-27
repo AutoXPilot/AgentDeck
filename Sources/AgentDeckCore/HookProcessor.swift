@@ -54,7 +54,7 @@ public enum HookProcessor {
             notificationType: meta.notificationType,
             endReason: payload["reason"] as? String
         )
-        let key = "\(provider.rawValue)-\(sessionId)"
+        let key = SessionKey.make(provider, sessionId)
 
         // Serialize the whole load-merge-write/remove for this key so a `Stop`
         // and a racing `SessionEnd` for the same session can't resurrect a

@@ -161,24 +161,40 @@ public enum WorkspaceRestore {
     public static func commandLine(
         for entry: WorkspaceEntry, refusedPermissionModes: Set<String> = []
     ) -> String? {
+        switch entry.provider.spec.resume {
+        case .shell(let build): return build(entry, refusedPermissionModes)
+        case .none: return nil
+        }
+    }
+
+    /// The safe prefix every resume line starts with: the id as a
+    /// lowercased UUID and a quoted `cd`. nil if either is unusable.
+    static func resumePrefix(_ entry: WorkspaceEntry) -> (cd: String, id: String)? {
         guard let uuid = UUID(uuidString: entry.sessionId),
               isTypeableDirectory(entry.cwd) else { return nil }
-        let id = uuid.uuidString.lowercased()
-        let cd = "cd -- \(shellQuote(entry.cwd))"
-        switch entry.provider {
-        case .claude:
-            var line = "\(cd) && claude --resume \(id)"
-            if let mode = entry.permissionMode, claudePermissionModes.contains(mode),
-               !refusedPermissionModes.contains(mode) {
-                line += " --permission-mode \(mode)"
-            }
-            return line
-        case .codex:
-            // Approval flags are not restored: Codex's are spread over
-            // several options with no single recorded mode to map back,
-            // and guessing wrong in the permissive direction is worse.
-            return "\(cd) && codex resume \(id)"
+        return ("cd -- \(shellQuote(entry.cwd))", uuid.uuidString.lowercased())
+    }
+
+    @Sendable static func claudeCommandLine(
+        _ entry: WorkspaceEntry, refusedPermissionModes: Set<String>
+    ) -> String? {
+        guard let (cd, id) = resumePrefix(entry) else { return nil }
+        var line = "\(cd) && claude --resume \(id)"
+        if let mode = entry.permissionMode, claudePermissionModes.contains(mode),
+           !refusedPermissionModes.contains(mode) {
+            line += " --permission-mode \(mode)"
         }
+        return line
+    }
+
+    /// Approval flags are not restored: Codex's are spread over several
+    /// options with no single recorded mode to map back, and guessing wrong
+    /// in the permissive direction is worse.
+    @Sendable static func codexCommandLine(
+        _ entry: WorkspaceEntry, refusedPermissionModes: Set<String>
+    ) -> String? {
+        guard let (cd, id) = resumePrefix(entry) else { return nil }
+        return "\(cd) && codex resume \(id)"
     }
 
     /// POSIX single-quoting: everything literal, `'` written as `'\''`.

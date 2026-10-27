@@ -117,7 +117,7 @@ public enum ITermFocus {
     static let statusGlyphs = CharacterSet(charactersIn: "✳✽✻✢·*⠂⠄⠆⠇⠋⠙⠸⠰⠠⠐⢀⡀⣀⠈⠉⠊⠞⠟⠻⠽⠾⠷⠯⠟")
 
     /// Trailing `(claude)` / `(codex)` — the provider badge already shows it.
-    static let providerSuffixes = ["(claude)", "(codex)"]
+    static let providerSuffixes = Provider.allCases.map { "(\($0.rawValue))" }
 
     /// Titles are whatever the shell or agent emitted. codex-cli emits an
     /// unbalanced quote — `Code (codex")` — so drop stray quotes, while

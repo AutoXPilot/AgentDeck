@@ -55,19 +55,19 @@ final class CommandQuotingTests {
         try JSONSerialization.data(withJSONObject: ["hooks": hooks]).write(to: url)
         #expect(installer.isInstalled(provider: .claude, in: url),
                 "the same command for a plain path; no forced reinstall")
-        #expect(try installer.installClaude(settingsURL: url))
+        #expect(try installer.install(.claude, fileURL: url))
         // read back as commands, not by searching the JSON text — the
         // serializer escapes "/" so a text search can never match a path
         let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
         let written = HookInstaller.commandStrings(in: (root["hooks"] as! [String: Any])["Stop"] ?? [])
         #expect(written == [installer.command(for: .claude)], "legacy form replaced, not duplicated")
         #expect(installer.isInstalled(provider: .claude, in: url))
-        #expect(try !installer.installClaude(settingsURL: url), "and then it is a no-op")
+        #expect(try !installer.install(.claude, fileURL: url), "and then it is a no-op")
     }
 
     @Test func installWritesQuotedCommand() throws {
         let url = dir.appendingPathComponent("settings.json")
-        #expect(try installer.installClaude(settingsURL: url))
+        #expect(try installer.install(.claude, fileURL: url))
         let root = try JSONSerialization.jsonObject(
             with: Data(contentsOf: url)) as! [String: Any]
         let hooks = root["hooks"] as! [String: Any]
@@ -81,8 +81,8 @@ final class CommandQuotingTests {
         let path = "/Users/o'brien/Library/Application Support/AgentDeck/bin/agentdeck-hook"
         let quirky = HookInstaller(helperPath: path)
         let url = dir.appendingPathComponent("settings.json")
-        #expect(try quirky.installClaude(settingsURL: url))
-        #expect(try !quirky.installClaude(settingsURL: url), "second install is a no-op")
+        #expect(try quirky.install(.claude, fileURL: url))
+        #expect(try !quirky.install(.claude, fileURL: url), "second install is a no-op")
         let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
         let stop = HookInstaller.commandStrings(in: (root["hooks"] as! [String: Any])["Stop"] ?? [])
         #expect(stop == [quirky.command(for: .claude)], "one hook, not one per install")
@@ -93,7 +93,7 @@ final class CommandQuotingTests {
         try Data("{}".utf8).write(to: real)
         let link = dir.appendingPathComponent("settings.json")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
-        #expect(try installer.installClaude(settingsURL: link))
+        #expect(try installer.install(.claude, fileURL: link))
         let attrs = try FileManager.default.attributesOfItem(atPath: link.path)
         #expect(attrs[.type] as? FileAttributeType == .typeSymbolicLink)
         #expect(installer.isInstalled(provider: .claude, in: real), "the target got the hooks")
@@ -112,7 +112,7 @@ final class CommandQuotingTests {
         ]
         try JSONSerialization.data(withJSONObject: broken).write(to: url)
 
-        #expect(try installer.installClaude(settingsURL: url), "repair counts as a change")
+        #expect(try installer.install(.claude, fileURL: url), "repair counts as a change")
         let root = try JSONSerialization.jsonObject(
             with: Data(contentsOf: url)) as! [String: Any]
         let hooks = root["hooks"] as! [String: Any]
@@ -123,6 +123,6 @@ final class CommandQuotingTests {
         #expect(HookInstaller.contains("/usr/bin/say", in: stop), "unrelated hook preserved")
 
         // and running again is a no-op
-        #expect(try !installer.installClaude(settingsURL: url))
+        #expect(try !installer.install(.claude, fileURL: url))
     }
 }

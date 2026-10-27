@@ -111,60 +111,33 @@ public enum ProcessTree {
 
     /// Hooks run under a shell the CLI spawned, so getppid() is usually
     /// sh — walk ancestors until we find the agent process itself, matching
-    /// on the executable path (not p_comm; see above).
+    /// on the executable path (not p_comm; see above). The per-provider
+    /// rule is `ExecutableMatch.matchesAncestor`.
     /// Returns nil when no plausible agent ancestor exists; callers should
     /// then omit the pid rather than record a short-lived shell's.
     public static func findAgentAncestor(
         provider: Provider, startingAt pid: pid_t
     ) -> pid_t? {
+        let match = provider.spec.executableMatch
         var current = pid
-        for remaining in stride(from: 12, to: 0, by: -1) {
+        for depth in 0..<12 {
             guard let (name, ppid) = nameAndParent(of: current) else { return nil }
-            let lowerName = name.lowercased()
-            let lowerPath = executablePath(of: current)?.lowercased() ?? ""
-            // Match on the executable PATH first (the project's stated rule —
-            // p_comm is the version number for claude). The node/bun name
-            // fallback stays for wrapper-hosted installs where the agent runs
-            // via a JS launcher, but only ABOVE the starting process: the
-            // start pid is the hook's own short-lived shell, and matching it
-            // as "node" would record a pid the liveness sweep deletes at once.
-            let depth = 12 - remaining
-            let matches: Bool
-            switch provider {
-            case .claude:
-                let pathMatch = lowerName.contains("claude") || lowerPath.contains("claude")
-                let wrapperMatch = depth > 0 && (lowerName == "node" || lowerName == "bun")
-                matches = pathMatch || wrapperMatch
-            case .codex:
-                matches = lowerName.contains("codex") || lowerPath.contains("codex")
+            if match.matchesAncestor(name: name, path: executablePath(of: current), depth: depth) {
+                return current
             }
-            if matches { return current }
             guard ppid > 1, ppid != current else { return nil }
             current = ppid
         }
         return nil
     }
 
-    /// Whether the process at `pid` is plausibly the agent itself: its
-    /// executable path or name names the provider, or (Claude only) it is
-    /// the node/bun runtime a wrapper-hosted install runs under. A reused
-    /// pid is almost always something else — a shell, a helper — which is
-    /// what this exists to reject; it is not proof of identity.
+    /// Whether the process at `pid` is plausibly the agent itself; see
+    /// `ExecutableMatch.looksLikeAgent`.
     public static func looksLikeAgent(_ pid: pid_t, provider: Provider) -> Bool {
         guard let (name, _) = nameAndParent(of: pid) else { return false }
-        let lowerName = name.lowercased()
-        let lowerPath = executablePath(of: pid)?.lowercased() ?? ""
-        switch provider {
-        case .claude:
-            if lowerName.contains("claude") || lowerPath.contains("claude") { return true }
-            // A node/bun runtime counts only if it is running Claude's
-            // script: any long-lived node process that inherited a
-            // session's pid would otherwise keep that row forever.
-            guard lowerName == "node" || lowerName == "bun" else { return false }
-            return argumentsMention("claude", pid: pid)
-        case .codex:
-            return lowerName.contains("codex") || lowerPath.contains("codex")
-        }
+        return provider.spec.executableMatch.looksLikeAgent(
+            name: name, path: executablePath(of: pid),
+            argvMentions: { argumentsMention($0, pid: pid) })
     }
 
     /// Whether any of the process's arguments contains `needle`
@@ -210,22 +183,26 @@ public enum ProcessTree {
         return Array(pids.prefix(Int(filled))).filter { $0 > 0 }
     }
 
-    /// Which of `threadIds` a running Codex process was started with —
-    /// `codex resume <id>` carries the id in its arguments. Codex has no
-    /// session registry and runs no hook until the first message after a
+    /// Which of `ids` a running agent process of `provider` was started
+    /// with — `codex resume <id>` carries the id in its arguments. Codex has
+    /// no session registry and runs no hook until the first message after a
     /// resume, so without this a restored Codex session looked like it had
-    /// never started. Only processes that look like Codex are examined, and
-    /// their arguments are searched in place, not kept.
-    public static func codexThreadsRunning(_ threadIds: Set<String>) -> Set<String> {
-        guard !threadIds.isEmpty else { return [] }
-        let wanted = threadIds.map { $0.lowercased() }
+    /// never started. Only processes that look like the provider's agent are
+    /// examined, and their arguments are searched in place, not kept.
+    public static func sessionsRunning(provider: Provider, ids: Set<String>) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let wanted = ids.map { $0.lowercased() }
         var found = Set<String>()
-        for pid in allPids() where looksLikeAgent(pid, provider: .codex) {
+        for pid in allPids() where looksLikeAgent(pid, provider: provider) {
             for id in wanted where !found.contains(id) && argumentsMention(id, pid: pid) {
                 found.insert(id)
             }
             if found.count == wanted.count { break }
         }
         return found
+    }
+
+    public static func codexThreadsRunning(_ threadIds: Set<String>) -> Set<String> {
+        sessionsRunning(provider: .codex, ids: threadIds)
     }
 }

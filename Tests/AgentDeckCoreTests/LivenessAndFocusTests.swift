@@ -57,11 +57,11 @@ struct LivenessAndFocusTests {
         #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
                                       probe: probe([:])) == ["claude-s"])
         #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
-                                      confirmedLive: ["s"],
+                                      confirmedLive: ["claude-s"],
                                       probe: probe([:])).isEmpty)
         // a different session being live protects nothing
         #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
-                                      confirmedLive: ["other"],
+                                      confirmedLive: ["claude-other"],
                                       probe: probe([:])) == ["claude-s"])
     }
 
@@ -74,8 +74,12 @@ struct LivenessAndFocusTests {
             updatedAt: now.addingTimeInterval(-48 * 3600)
         )
         #expect(Liveness.keysToRemove([codex], now: now, bootedAt: nil,
-                                      confirmedLive: ["s"],
+                                      confirmedLive: ["claude-s"],
                                       probe: probe([:])) == ["codex-s"])
+        // evidence keyed to the Codex session itself does protect it
+        #expect(Liveness.keysToRemove([codex], now: now, bootedAt: nil,
+                                      confirmedLive: ["codex-s"],
+                                      probe: probe([:])).isEmpty)
     }
 
     @Test func keysToRemoveByIdentityAndIdle() {

@@ -40,30 +40,18 @@ public struct HookInstaller: Sendable {
         self.helperPath = helperPath
     }
 
-    public static let claudeEvents = [
-        "SessionStart", "UserPromptSubmit", "PermissionRequest",
-        "Notification", "Stop", "StopFailure", "SessionEnd",
-    ]
-    /// Verified against codex-cli 0.145.0: SessionStart/UserPromptSubmit/
-    /// Stop/SessionEnd all fire (SessionEnd's timeout is clamped to 3s).
-    /// PermissionRequest is accepted without warning; firing not yet
-    /// observed (exec mode never prompts) — registered so interactive
-    /// approvals surface as "waiting" if/when codex emits it.
-    public static let codexEvents = [
-        "SessionStart", "UserPromptSubmit", "PermissionRequest", "Stop", "SessionEnd",
-    ]
-
-    public static var defaultClaudeSettingsURL: URL {
-        ClaudeConfig.current.appendingPathComponent("settings.json")
-    }
-    public static var defaultCodexHooksURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/hooks.json")
-    }
-
+    /// The hook events registered for `provider` (see `ProviderSpec`).
     public static func events(for provider: Provider) -> [String] {
-        provider == .claude ? claudeEvents : codexEvents
+        provider.spec.hooks?.events ?? []
     }
+
+    /// Where `provider`'s hooks live, or nil if it has none.
+    public static func configURL(for provider: Provider) -> URL? {
+        provider.spec.hooks?.fileURL()
+    }
+
+    public static var defaultClaudeSettingsURL: URL { configURL(for: .claude)! }
+    public static var defaultCodexHooksURL: URL { configURL(for: .codex)! }
 
     /// Single-quoted, so the path is one literal word whatever it
     /// contains. It used to be double-quoted, which handles the space in
@@ -84,19 +72,38 @@ public struct HookInstaller: Sendable {
         return "\"\(helperPath)\" \(provider.rawValue)"
     }
 
+    /// Registers `provider`'s hooks in `fileURL` (default: its own config).
+    /// Returns whether the file changed.
     @discardableResult
-    public func installClaude(
-        settingsURL: URL = defaultClaudeSettingsURL, policy: ClaudePolicy = .load()
+    public func install(
+        _ provider: Provider, fileURL: URL? = nil, policy: @autoclosure () -> ClaudePolicy = .load()
     ) throws -> Bool {
+        guard let hooks = provider.spec.hooks else { return false }
         // Writing hooks that policy will never run would edit the user's
         // config on a managed machine for no effect.
-        guard !policy.hooksBlocked else { throw InstallerError.blockedByPolicy }
-        return try install(provider: .claude, fileURL: settingsURL)
+        if hooks.policyGated, policy().hooksBlocked { throw InstallerError.blockedByPolicy }
+        return try writeHooks(provider: provider, fileURL: fileURL ?? hooks.fileURL())
     }
 
-    @discardableResult
-    public func installCodex(hooksURL: URL = defaultCodexHooksURL) throws -> Bool {
-        try install(provider: .codex, fileURL: hooksURL)
+    /// What `install` does for each provider, decided up front so the loop
+    /// in the helper is tested: inapplicable providers are skipped (no
+    /// config is ever created for a tool that isn't there), and a
+    /// policy-blocked one doesn't stop the rest.
+    public enum InstallStep: Equatable, Sendable {
+        case install
+        case skipNotApplicable
+        case skipBlockedByPolicy
+    }
+
+    public static func installPlan(
+        applicable: (Provider) -> Bool, policy: ClaudePolicy
+    ) -> [(provider: Provider, step: InstallStep)] {
+        Provider.allCases.compactMap { provider in
+            guard let hooks = provider.spec.hooks else { return nil }
+            if !applicable(provider) { return (provider, .skipNotApplicable) }
+            if hooks.policyGated, policy.hooksBlocked { return (provider, .skipBlockedByPolicy) }
+            return (provider, .install)
+        }
     }
 
     /// Strict health check: every required event must carry our exact
@@ -113,7 +120,7 @@ public struct HookInstaller: Sendable {
 
     // MARK: - Internals
 
-    private func install(provider: Provider, fileURL requested: URL) throws -> Bool {
+    private func writeHooks(provider: Provider, fileURL requested: URL) throws -> Bool {
         // Edit the file a symlinked config points to, not the link: the
         // atomic replace would otherwise swap the link for a regular file,
         // silently detaching it from wherever it was managed.
@@ -351,16 +358,15 @@ public enum HookStatus: Equatable, Sendable {
     /// Nothing to hook into: Codex isn't on this machine.
     case notApplicable
 
-    public static func claude(installed: Bool, policy: ClaudePolicy) -> HookStatus {
-        if policy.hooksBlocked { return .blockedByPolicy }
-        return installed ? .installed : .missing
-    }
-
-    /// `codexPresent`: Codex's own directory exists. Without it there is
-    /// nothing to install into, and writing `~/.codex/hooks.json` would
-    /// create a config for a tool that isn't there.
-    public static func codex(installed: Bool, codexPresent: Bool) -> HookStatus {
+    /// `applicable`: the provider is set up on this Mac (Codex: its own
+    /// directory exists). Without it there is nothing to install into, and
+    /// writing `~/.codex/hooks.json` would create a config for a tool that
+    /// isn't there. Policy applies only to providers it governs (Claude).
+    public static func status(
+        for provider: Provider, installed: Bool, policy: ClaudePolicy, applicable: Bool
+    ) -> HookStatus {
+        if provider.spec.hooks?.policyGated == true, policy.hooksBlocked { return .blockedByPolicy }
         if installed { return .installed }
-        return codexPresent ? .missing : .notApplicable
+        return applicable ? .missing : .notApplicable
     }
 }

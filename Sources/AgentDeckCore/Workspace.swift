@@ -36,7 +36,7 @@ public struct WorkspaceEntry: Codable, Equatable, Sendable {
         self.lastSeen = lastSeen
     }
 
-    public var key: String { "\(provider.rawValue)-\(sessionId)" }
+    public var key: String { SessionKey.make(provider, sessionId) }
 
     public var label: String {
         if let displayName, !displayName.isEmpty { return displayName }

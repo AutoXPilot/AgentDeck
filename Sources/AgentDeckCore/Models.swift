@@ -4,11 +4,28 @@ public enum Provider: String, Codable, CaseIterable, Sendable {
     case claude
     case codex
 
-    public var displayName: String {
-        switch self {
-        case .claude: return "Claude"
-        case .codex: return "Codex"
+    public var displayName: String { spec.displayName }
+}
+
+/// The one place a session key is spelled: `<provider>-<session id>`.
+/// Keys name snapshot files, acknowledgements, workspace entries and
+/// restore reservations, so every component must build them the same way.
+public enum SessionKey {
+    public static func make(_ provider: Provider, _ sessionId: String) -> String {
+        "\(provider.rawValue)-\(sessionId)"
+    }
+
+    /// The provider and session id, or nil for a key whose provider this
+    /// build doesn't know. Session ids contain dashes, so this matches a
+    /// known provider prefix rather than splitting on the first dash.
+    public static func split(_ key: String) -> (provider: Provider, sessionId: String)? {
+        for provider in Provider.allCases {
+            let prefix = provider.spec.keyPrefix
+            if key.hasPrefix(prefix), key.count > prefix.count {
+                return (provider, String(key.dropFirst(prefix.count)))
+            }
         }
+        return nil
     }
 }
 
@@ -99,7 +116,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.hostBundlePath = hostBundlePath
     }
 
-    public var key: String { "\(provider.rawValue)-\(sessionId)" }
+    public var key: String { SessionKey.make(provider, sessionId) }
 
     public var projectName: String {
         let name = (projectPath as NSString).lastPathComponent

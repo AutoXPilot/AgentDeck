@@ -13,12 +13,11 @@ final class SessionsModel: ObservableObject {
     /// Finished-but-unacknowledged; shown muted, never in the badge.
     @Published private(set) var doneCount = 0
     @Published private(set) var mostUrgent: SessionState?
-    @Published private(set) var claudeHooksInstalled = false
-    @Published private(set) var codexHooksInstalled = false
-    /// Hook health as the footer shows it: installed, missing, blocked by
-    /// the organization's Claude policy, or not applicable (no Codex).
-    @Published private(set) var claudeStatus: HookStatus = .missing
-    @Published private(set) var codexStatus: HookStatus = .missing
+    /// Hook health per provider as the footer shows it: installed, missing,
+    /// blocked by the organization's Claude policy, or not applicable (the
+    /// tool isn't on this Mac).
+    @Published private(set) var hookStatus: [Provider: HookStatus] =
+        Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, .missing) })
     @Published private(set) var claudePolicy = ClaudePolicy.none
     /// iTerm2 is installed, not merely running. Restore opens tabs in it;
     /// without it there's nowhere to open them.
@@ -26,7 +25,7 @@ final class SessionsModel: ObservableObject {
 
     /// Anything the Install button would actually fix.
     var hooksNeedInstalling: Bool {
-        !helperInstalled || claudeStatus == .missing || codexStatus == .missing
+        !helperInstalled || hookStatus.values.contains(.missing)
     }
     @Published private(set) var helperInstalled = false
     /// A message counts as seen only at an open that happens after it was
@@ -337,7 +336,7 @@ final class SessionsModel: ObservableObject {
         // to its terminal. Loading this first lets the sweep skip them.
         claudeRegistry = ClaudeSessionRegistry.load()
         claudeLiveSessions = ClaudeSessionRegistry.liveSessions()
-        let confirmedLive = Set(claudeLiveSessions.keys)
+        let confirmedLive = Set(claudeLiveSessions.keys.map { SessionKey.make(.claude, $0) })
         let liveByPid = Dictionary(claudeLiveSessions.values.map { ($0.pid, $0) },
                                    uniquingKeysWith: { a, b in
                                        (a.observedAt ?? .distantPast) >= (b.observedAt ?? .distantPast) ? a : b
@@ -571,14 +570,9 @@ final class SessionsModel: ObservableObject {
     /// you go to tell two dated snapshots apart or to check what the
     /// formatter was handed.
     func metaSummary(for snapshot: SessionSnapshot) -> String? {
-        var parts: [String] = []
-        if let model = rawModel(for: snapshot) { parts.append(model) }
-        if let effort = snapshot.effort { parts.append("effort \(effort)") }
-        else if let e = codexThreads[snapshot.sessionId]?.effort { parts.append("effort \(e)") }
-        if let tokens = codexThreads[snapshot.sessionId]?.tokensUsed {
-            parts.append("\(tokens / 1000)k tokens")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        RowMeta.summary(
+            provider: snapshot.provider, model: rawModel(for: snapshot),
+            effort: snapshot.effort, codexThread: codexThreads[snapshot.sessionId])
     }
 
     func isUnsupervised(_ snapshot: SessionSnapshot) -> Bool {
@@ -762,7 +756,8 @@ final class SessionsModel: ObservableObject {
             "AgentDeck \(AgentDeckVersion.current)",
             "macOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "sessions: \(sessions.count) (alerts \(alertCount), done \(doneCount))",
-            "hooks: helper=\(helperInstalled) claude=\(claudeStatus) codex=\(codexStatus)",
+            "hooks: helper=\(helperInstalled) " + Provider.allCases
+                .map { "\($0.rawValue)=\(hookStatus[$0] ?? .missing)" }.joined(separator: " "),
             "claude config dir: \(ClaudeConfig.current.path)",
             "claude policy: hooksBlocked=\(claudePolicy.hooksBlocked) "
                 + "refusedModes=\(claudePolicy.refusedPermissionModes.sorted()) "
@@ -997,24 +992,22 @@ final class SessionsModel: ObservableObject {
         }
         helperInstalled = helperOK
         let installer = HookInstaller(helperPath: Self.helperURL.path)
-        claudeHooksInstalled = cachedIsInstalled(
-            installer, provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
-        )
-        codexHooksInstalled = cachedIsInstalled(
-            installer, provider: .codex, in: HookInstaller.defaultCodexHooksURL
-        )
         iTermRunning = NSWorkspace.shared.runningApplications
             .contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
         // Policy is a handful of small files; re-read on each health check
         // so an admin change shows without a relaunch.
         let policy = ClaudePolicy.load()
         if policy != claudePolicy { claudePolicy = policy }
-        claudeStatus = HookStatus.claude(installed: claudeHooksInstalled, policy: policy)
-        let codexHome = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex", isDirectory: true)
-        codexStatus = HookStatus.codex(
-            installed: codexHooksInstalled,
-            codexPresent: FileManager.default.fileExists(atPath: codexHome.path))
+        var statuses: [Provider: HookStatus] = [:]
+        for provider in Provider.allCases {
+            guard let url = HookInstaller.configURL(for: provider) else { continue }
+            statuses[provider] = HookStatus.status(
+                for: provider,
+                installed: cachedIsInstalled(installer, provider: provider, in: url),
+                policy: policy,
+                applicable: provider.spec.applicability.isApplicable())
+        }
+        if statuses != hookStatus { hookStatus = statuses }
         iTermInstalled = NSWorkspace.shared
             .urlForApplication(withBundleIdentifier: "com.googlecode.iterm2") != nil
     }
@@ -1168,28 +1161,23 @@ extension SessionsModel {
     /// isn't among them.
     private func terminalLocation(of s: SessionSnapshot) -> WorkspaceCapture.Terminal {
         if s.terminalSessionId != nil { return .iTerm }
+        // the registry pid only for a Claude row: it describes Claude
+        // sessions, and a Codex id can collide with one
+        let registryPid = s.provider == .claude ? claudeLiveSessions[s.sessionId]?.pid : nil
         guard !paneByTTY.isEmpty,
-              let pid = claudeLiveSessions[s.sessionId]?.pid ?? s.agentPid,
+              let pid = registryPid ?? s.agentPid,
               let tty = ProcessTree.controllingTTY(of: pid) else { return .unknown }
         return paneByTTY[tty] != nil ? .iTerm : .elsewhere
     }
 
-    /// Sessions running by the agents' own evidence: for Claude, its
-    /// registry naming a live process for the session; for Codex, which has
-    /// no registry, a row whose pid is alive. The one definition used for
-    /// capture, offers, open counts and restore preflight. Rows alone
-    /// aren't evidence — a pid-less snapshot is kept for a day after its
-    /// process is gone — and using them in some places and the registry in
-    /// others let a dead session be reported "already open" and skipped.
+    /// Sessions running by the agents' own evidence (see
+    /// `RunningEvidence`), from the registry view this reload read.
+    var runningEvidence: RunningEvidence {
+        RunningEvidence(claudeRegistryLive: Set(claudeLiveSessions.keys))
+    }
+
     func runningKeys(_ rows: [SessionSnapshot]) -> Set<String> {
-        var keys = Set(claudeLiveSessions.keys.map { "claude-\($0)" })
-        for row in rows where row.provider == .codex {
-            if let pid = row.agentPid,
-               Liveness.pidIsTrustworthy(pid, forUpdatedAt: row.updatedAt, provider: .codex) {
-                keys.insert(row.key)
-            }
-        }
-        return keys
+        runningEvidence.runningKeys(rows: rows)
     }
 
     var liveWorkspaceEntries: [WorkspaceEntry] {
@@ -1274,22 +1262,14 @@ extension SessionsModel {
         return entries.filter { live.contains($0.key) }.count
     }
 
-    /// Running by the agent's own evidence, not by whether a row exists —
-    /// a row can outlive its process (a pid-less snapshot is kept a day).
-    /// Claude: its registry names a live process for the session. Codex,
-    /// which has no registry: a snapshot whose pid is alive.
+    /// One entry, read fresh from disk — for use off the main thread, right
+    /// before a launch and in the confirmation after it.
     nonisolated static func isRunning(_ entry: WorkspaceEntry) -> Bool {
-        switch entry.provider {
-        case .claude:
-            return ClaudeSessionRegistry.liveSessions()[entry.sessionId] != nil
-        case .codex:
-            if let snapshot = SnapshotStore().load(key: entry.key), let pid = snapshot.agentPid,
-               Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt, provider: .codex) {
-                return true
-            }
-            // resumed but silent: no hook has fired yet
-            return !ProcessTree.codexThreadsRunning([entry.sessionId]).isEmpty
-        }
+        // the registry is read only for a provider whose evidence it is
+        let live = entry.provider.spec.running == .claudeRegistry
+            ? Set(ClaudeSessionRegistry.liveSessions().keys) : []
+        return RunningEvidence(claudeRegistryLive: live)
+            .isRunning(entry, snapshot: SnapshotStore().load(key: entry.key))
     }
 
     /// A reservation ends when its session is seen running. Nothing expires
@@ -1300,15 +1280,10 @@ extension SessionsModel {
         guard !readOnly else { return }
         let reserved = workspaceStore.reservations()
         guard !reserved.isEmpty || !pendingRestores.isEmpty else { return }
-        var running = runningKeys(rows)
         // a Codex session resumed by a restore runs no hook until its first
         // message; its process is the evidence. Scanned only while one is
         // reserved, not on every reload.
-        let codexReserved = reserved.keys.filter { $0.hasPrefix("codex-") && !running.contains($0) }
-        if !codexReserved.isEmpty {
-            let ids = Set(codexReserved.map { String($0.dropFirst("codex-".count)) })
-            for id in ProcessTree.codexThreadsRunning(ids) { running.insert("codex-\(id)") }
-        }
+        let running = runningEvidence.runningKeys(rows: rows, scanning: Set(reserved.keys))
         let confirmed = Set(reserved.keys).intersection(running)
         do {
             try workspaceStore.releaseReservations(confirmed)
@@ -1355,16 +1330,10 @@ extension SessionsModel {
             live: runningKeys(sessions),
             inFlight: Set(workspaceStore.reservations().keys),
             conversationExists: { entry in
-                switch entry.provider {
-                case .claude:
-                    return ClaudeTranscript.url(
-                        sessionId: entry.sessionId, projectPath: entry.cwd) != nil
-                case .codex:
-                    // the display cache can be stale, so a miss in it is
-                    // checked against the database itself
-                    if threads[entry.sessionId] != nil { return true }
-                    return CodexThreads.exists(id: entry.sessionId)
-                }
+                // Codex's display cache answers a hit for free; it can be
+                // stale, so a miss is checked against the database itself
+                if entry.provider == .codex, threads[entry.sessionId] != nil { return true }
+                return entry.provider.spec.conversationExists(entry)
             },
             refusedPermissionModes: claudePolicy.refusedPermissionModes
         )

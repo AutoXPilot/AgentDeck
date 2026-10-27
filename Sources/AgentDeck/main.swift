@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         logStatusItemPlacement()
         // A brand-new install has no hooks and would otherwise look like an
         // app that simply does nothing — show it once, with instructions.
-        if model.hooksNeedInstalling, model.claudeStatus != .blockedByPolicy {
+        if model.hooksNeedInstalling, model.hookStatus[.claude] != .blockedByPolicy {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 guard let self, !self.popover.isShown else { return }
                 self.togglePopover()

@@ -8,7 +8,8 @@ signal(SIGPIPE, SIG_IGN)
 
 // agentdeck-hook — invoked by Claude Code / Codex lifecycle hooks.
 //
-//   agentdeck-hook claude|codex     read hook JSON on stdin, update snapshot
+//   agentdeck-hook <provider>      read hook JSON on stdin, update snapshot
+//                                  (claude, codex — see Provider)
 //   agentdeck-hook install          copy self to stable path, register hooks
 //   agentdeck-hook status           print install/health report
 //   agentdeck-hook debug-ancestry   print the process walk (diagnostics)
@@ -95,24 +96,26 @@ func runInstall() {
         }
 
         let installer = HookInstaller(helperPath: stableHelperURL.path)
-        do {
-            let claudeChanged = try installer.installClaude()
-            print("claude hooks: \(claudeChanged ? "installed/updated" : "already current") "
-                + "(\(HookInstaller.defaultClaudeSettingsURL.path))")
-        } catch InstallerError.blockedByPolicy {
-            // not a failure: sessions still come from Claude's session list
-            print("claude hooks: skipped — \(InstallerError.blockedByPolicy)")
-        }
-        let codexHome = HookInstaller.defaultCodexHooksURL.deletingLastPathComponent()
-        if fm.fileExists(atPath: codexHome.path) {
-            let codexChanged = try installer.installCodex()
-            print("codex hooks: \(codexChanged ? "installed/updated" : "already current") "
-                + "(\(HookInstaller.defaultCodexHooksURL.path))")
-            if codexChanged {
-                print("note: codex will ask to trust the changed hooks on next launch")
+        let plan = HookInstaller.installPlan(
+            applicable: { $0.spec.applicability.isApplicable() }, policy: ClaudePolicy.load())
+        for (provider, step) in plan {
+            let name = provider.rawValue
+            let url = HookInstaller.configURL(for: provider)!
+            switch step {
+            case .skipNotApplicable:
+                print("\(name) hooks: skipped — \(provider.displayName) isn't set up on this Mac "
+                    + "(no \(url.deletingLastPathComponent().path))")
+            case .skipBlockedByPolicy:
+                // not a failure: sessions still come from Claude's session list
+                print("\(name) hooks: skipped — \(InstallerError.blockedByPolicy)")
+            case .install:
+                let changed = try installer.install(provider)
+                print("\(name) hooks: \(changed ? "installed/updated" : "already current") "
+                    + "(\(url.path))")
+                if changed, let note = provider.spec.hooks?.installNote {
+                    print("note: \(note)")
+                }
             }
-        } else {
-            print("codex hooks: skipped — Codex isn't set up on this Mac (no \(codexHome.path))")
         }
     } catch {
         FileHandle.standardError.write(Data("install failed: \(error)\n".utf8))
@@ -124,18 +127,21 @@ func runStatus() {
     let installer = HookInstaller(helperPath: stableHelperURL.path)
     let helperPresent = FileManager.default.isExecutableFile(atPath: stableHelperURL.path)
     let store = SnapshotStore(directory: SnapshotStore.productionDirectory)
+    var installed: [String: Bool] = [:]
+    for provider in Provider.allCases {
+        guard let url = HookInstaller.configURL(for: provider) else { continue }
+        installed[provider.rawValue] = installer.isInstalled(provider: provider, in: url)
+    }
     let report: [String: Any] = [
         "version": AgentDeckVersion.current,
         // "present" (on disk + executable), distinct from the app's stricter
         // "matches the running build's SHA" — don't imply the latter here.
         "helperPresent": helperPresent,
         "helperPath": stableHelperURL.path,
-        "claudeHooks": installer.isInstalled(
-            provider: .claude, in: HookInstaller.defaultClaudeSettingsURL
-        ),
-        "codexHooks": installer.isInstalled(
-            provider: .codex, in: HookInstaller.defaultCodexHooksURL
-        ),
+        // kept for one release beside `hooks`, for scripts that read them
+        "claudeHooks": installed[Provider.claude.rawValue] ?? false,
+        "codexHooks": installed[Provider.codex.rawValue] ?? false,
+        "hooks": installed,
         "sessionsDirectory": store.directory.path,
         "claudeConfigDirectory": ClaudeConfig.current.path,
         "claudeHooksBlockedByPolicy": ClaudePolicy.load().hooksBlocked,
@@ -171,15 +177,18 @@ func runDebugAncestry() {
     }
 }
 
-switch CommandLine.arguments.dropFirst().first {
-case "claude": runHookMode(provider: .claude)
-case "codex": runHookMode(provider: .codex)
+let providerNames = Provider.allCases.map(\.rawValue).joined(separator: "|")
+let command = CommandLine.arguments.dropFirst().first
+if let command, let provider = Provider(rawValue: command) {
+    runHookMode(provider: provider)
+}
+switch command {
 case "install": runInstall()
 case "status": runStatus()
 case "debug-ancestry": runDebugAncestry()
 case "--version", "-v", "version": print(AgentDeckVersion.current)
 default:
     print("agentdeck-hook \(AgentDeckVersion.current)")
-    print("usage: agentdeck-hook claude|codex|install|status|debug-ancestry|--version")
+    print("usage: agentdeck-hook \(providerNames)|install|status|debug-ancestry|--version")
     exit(64)
 }

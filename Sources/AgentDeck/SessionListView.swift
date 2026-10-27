@@ -141,8 +141,7 @@ struct SessionListView: View {
     private var emptyState: some View {
         let reason = EmptyState.determine(
             helperInstalled: model.helperInstalled,
-            claude: model.claudeStatus,
-            codex: model.codexStatus,
+            statuses: model.hookStatus,
             filter: model.filterText
         )
         return VStack(spacing: 6) {
@@ -165,10 +164,11 @@ struct SessionListView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            case .codexHooksMissing:
+            case .secondaryHooksMissing(let providers):
+                let names = ListFormatter.localizedString(byJoining: providers.map(\.displayName))
                 Text("No active agent sessions").font(.callout)
                 Text(
-                    "Codex hooks aren't installed — Codex sessions won't "
+                    "\(names) hooks aren't installed — \(names) sessions won't "
                     + "appear. Click “Install hooks” to add them."
                 )
                 .font(.caption).foregroundStyle(.secondary)
@@ -196,8 +196,9 @@ struct SessionListView: View {
             if !rows.isEmpty {
                 // count what's actually shown, so the CL·CX summary matches
                 // the list while a filter is applied
-                let claude = rows.filter { $0.provider == .claude }.count
-                Text("\(claude) CL · \(rows.count - claude) CX")
+                Text(Provider.allCases.map { provider in
+                    "\(rows.filter { $0.provider == provider }.count) \(provider.spec.badge)"
+                }.joined(separator: " · "))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -251,8 +252,9 @@ struct SessionListView: View {
                     .foregroundStyle(.secondary)
                     .help("Setup health — are the lifecycle hooks installed? (Not session activity.)")
                 healthDot(ok: model.helperInstalled, label: "helper")
-                healthDot(model.claudeStatus, label: "claude")
-                healthDot(model.codexStatus, label: "codex")
+                ForEach(Provider.allCases, id: \.self) { provider in
+                    healthDot(model.hookStatus[provider] ?? .missing, label: provider.rawValue)
+                }
                 Spacer()
                 if model.hooksNeedInstalling {
                     Button(model.isInstalling ? "Installing…" : "Install hooks") {
@@ -521,14 +523,12 @@ struct SessionRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Text(session.provider == .claude ? "CL" : "CX")
+                Text(session.provider.spec.badge)
                     .font(.system(.caption2, design: .monospaced).bold())
                     .padding(4)
                     .background(
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(session.provider == .claude
-                                  ? Color.orange.opacity(0.25)
-                                  : Color.teal.opacity(0.25))
+                            .fill(session.provider.spec.tint.color.opacity(0.25))
                     )
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 4) {
@@ -633,5 +633,14 @@ struct SessionRow: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(Capsule().fill(stateColor.opacity(needsAttention ? 0.35 : 0.15)))
+    }
+}
+
+extension ProviderTint {
+    var color: Color {
+        switch self {
+        case .orange: return .orange
+        case .teal: return .teal
+        }
     }
 }

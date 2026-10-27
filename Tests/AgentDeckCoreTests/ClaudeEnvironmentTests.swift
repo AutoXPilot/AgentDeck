@@ -113,16 +113,16 @@ struct HookStatusTests {
     @Test func policyBlockWinsOverWhateverIsInSettings() {
         var blocked = ClaudePolicy()
         blocked.hooksBlocked = true
-        #expect(HookStatus.claude(installed: true, policy: blocked) == .blockedByPolicy,
+        #expect(HookStatus.status(for: .claude, installed: true, policy: blocked, applicable: true) == .blockedByPolicy,
                 "hooks left in settings.json still won't run")
-        #expect(HookStatus.claude(installed: false, policy: .none) == .missing)
-        #expect(HookStatus.claude(installed: true, policy: .none) == .installed)
+        #expect(HookStatus.status(for: .claude, installed: false, policy: .none, applicable: true) == .missing)
+        #expect(HookStatus.status(for: .claude, installed: true, policy: .none, applicable: true) == .installed)
     }
 
     @Test func noCodexMeansNothingToInstall() {
-        #expect(HookStatus.codex(installed: false, codexPresent: false) == .notApplicable)
-        #expect(HookStatus.codex(installed: false, codexPresent: true) == .missing)
-        #expect(HookStatus.codex(installed: true, codexPresent: false) == .installed)
+        #expect(HookStatus.status(for: .codex, installed: false, policy: .none, applicable: false) == .notApplicable)
+        #expect(HookStatus.status(for: .codex, installed: false, policy: .none, applicable: true) == .missing)
+        #expect(HookStatus.status(for: .codex, installed: true, policy: .none, applicable: false) == .installed)
     }
 
     @Test func theInstallerLeavesSettingsUntouchedWhenPolicyBlocksHooks() throws {
@@ -136,7 +136,7 @@ struct HookStatusTests {
         blocked.hooksBlocked = true
         #expect(throws: InstallerError.self) {
             try HookInstaller(helperPath: "/x/agentdeck-hook")
-                .installClaude(settingsURL: settings, policy: blocked)
+                .install(.claude, fileURL: settings, policy: blocked)
         }
         #expect(try Data(contentsOf: settings) == original, "not a byte changed")
         let siblings = try FileManager.default.contentsOfDirectory(atPath: dir.path)

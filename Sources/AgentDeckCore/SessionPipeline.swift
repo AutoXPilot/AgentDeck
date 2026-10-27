@@ -36,9 +36,14 @@ public enum SessionPipeline {
             // first. A pid lookup is consulted only when it names this same
             // session: pids are reused, so the file at a stale pid can belong
             // to another session, and preferring it hid the right one.
-            let byPid = snapshot.agentPid.flatMap { registry[$0] }
+            // The registry is Claude's. A Codex session whose id matched a
+            // Claude entry would otherwise adopt that process's pid and
+            // lose its own pane.
+            let isClaude = snapshot.provider == .claude
+            let live = isClaude ? liveSessions[snapshot.sessionId] : nil
+            let byPid = snapshot.agentPid.flatMap { isClaude ? registry[$0] : nil }
                 .flatMap { $0.sessionId == snapshot.sessionId ? $0 : nil }
-            let entry = liveSessions[snapshot.sessionId] ?? byPid
+            let entry = live ?? byPid
             var outcome = StateReconciler.normalize(snapshot: snapshot, entry: entry)
             if let reason = outcome.waitingFor {
                 reasons[snapshot.key] = ITermFocus.humanizeReason(reason)
@@ -49,7 +54,7 @@ public enum SessionPipeline {
             // pane is the old process's: clicking it would focus a stale tab
             // and acknowledge a session it never reached. Adopt the live pid
             // and drop the pane, so focus resolves through the live process.
-            if let live = liveSessions[snapshot.sessionId], live.pid != snapshot.agentPid {
+            if let live, live.pid != snapshot.agentPid {
                 outcome.snapshot.agentPid = live.pid
                 outcome.snapshot.terminalSessionId = nil
             }

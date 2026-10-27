@@ -12,24 +12,30 @@ public enum EmptyState: Equatable, Sendable {
     case coreHooksMissing
     /// Policy runs only the organization's hooks. Claude sessions still
     /// appear, from Claude's own session files; there just aren't any.
+    /// Checked before the helper: on such a Mac nothing ever runs the
+    /// helper, so asking for it to be installed would be wrong.
     case hooksBlockedByPolicy
-    /// Everything Claude works, but Codex hooks aren't installed — Codex
+    /// Claude works, but these providers' hooks aren't installed — their
     /// sessions won't appear. Informational, not an error.
-    case codexHooksMissing
+    case secondaryHooksMissing([Provider])
     /// Fully set up, just nothing running (or sessions predate install).
     case idle
 
+    /// The provider whose hooks the core pipeline depends on.
+    static let core: Provider = .claude
+
     public static func determine(
         helperInstalled: Bool,
-        claude: HookStatus,
-        codex: HookStatus,
+        statuses: [Provider: HookStatus],
         filter: String
     ) -> EmptyState {
         let trimmed = filter.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty { return .noFilterMatch(query: trimmed) }
-        if claude == .blockedByPolicy { return .hooksBlockedByPolicy }
-        if !helperInstalled || claude == .missing { return .coreHooksMissing }
-        if codex == .missing { return .codexHooksMissing }
+        let coreStatus = statuses[core] ?? .missing
+        if coreStatus == .blockedByPolicy { return .hooksBlockedByPolicy }
+        if !helperInstalled || coreStatus == .missing { return .coreHooksMissing }
+        let missing = Provider.allCases.filter { $0 != core && statuses[$0] == .missing }
+        if !missing.isEmpty { return .secondaryHooksMissing(missing) }
         return .idle
     }
 }
