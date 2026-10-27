@@ -234,6 +234,28 @@ struct ClaudeTranscriptTests {
         #expect(bg?.sessionKind == "bg")
     }
 
+    @Test func entrypointComesFromTheSelectedRecordAndAbsenceIsUnknown() throws {
+        func line(_ model: String, entrypoint: String?) -> String {
+            var object: [String: Any] = [
+                "type": "assistant", "isSidechain": false,
+                "message": ["model": model, "role": "assistant"],
+            ]
+            if let entrypoint { object["entrypoint"] = entrypoint }
+            return String(decoding: try! JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        }
+        let root = try makeProjects([
+            (dir: "-p", session: "desk", lines: [line("claude-opus-5", entrypoint: "cli"),
+                                                 line("claude-opus-5", entrypoint: "claude-desktop")]),
+            (dir: "-p", session: "old", lines: [line("claude-opus-5", entrypoint: "claude-desktop"),
+                                                line("claude-opus-5", entrypoint: nil)]),
+        ])
+        let desk = ClaudeTranscript.url(sessionId: "desk", projectPath: "", projectsDirectory: root)!
+        #expect(ClaudeTranscript.latest(at: desk)?.entrypoint == "claude-desktop")
+        let old = ClaudeTranscript.url(sessionId: "old", projectPath: "", projectsDirectory: root)!
+        #expect(ClaudeTranscript.latest(at: old)?.entrypoint == nil,
+                "absent on the chosen record means unknown, not inherited and not cli")
+    }
+
     @Test func onlyAnAssistantTurnReportsTheModel() throws {
         // A non-assistant record carrying a `model` key was accepted, which
         // mislabelled the model and — via sessionKind on the same record —

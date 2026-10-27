@@ -270,4 +270,18 @@ struct SessionPipelineTests {
         // the Claude session is still listed, as its own row
         #expect(out.rows.contains { $0.key == "claude-same" })
     }
+
+    @Test func aSessionThatMovedProcessesForgetsItsOldHost() {
+        var moved = snap("m", .working, pid: 1)
+        moved.terminalSessionId = "w0t0p0:OLD"
+        moved.hostKind = "terminal"
+        moved.hostBundlePath = "/Applications/iTerm.app"
+        let out = SessionPipeline.run(
+            snapshots: [moved], registry: [:], liveSessions: ["m": entry(pid: 2, id: "m", "busy")],
+            acks: [:], frozenOrder: nil, popoverVisible: false, now: now)
+        let row = out.rows.first
+        #expect(row?.agentPid == 2)
+        #expect(row?.terminalSessionId == nil)
+        #expect(row?.hostKind == nil && row?.hostBundlePath == nil)
+    }
 }

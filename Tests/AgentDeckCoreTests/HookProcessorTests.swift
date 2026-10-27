@@ -232,4 +232,79 @@ final class HookProcessorTests {
         _ = process(.codex, end)
         #expect(store.load(key: "codex-019fa95a-2ebf-7a83-b3ef-418972a171aa") == nil)
     }
+
+    // MARK: host
+
+    let iTermHost = SessionHost(kind: .terminal, bundlePath: "/Applications/iTerm.app")
+    let desktopHost = SessionHost(kind: .app, bundlePath: "/Applications/Claude.app")
+
+    func hosted(_ event: String, host: SessionHost?, env: [String: String] = [:]) {
+        HookProcessor.process(
+            provider: .claude,
+            payloadData: payload(["session_id": "h1", "hook_event_name": event, "cwd": "/p"]),
+            environment: env, parentPid: nil, store: store, host: host)
+    }
+
+    @Test func theHostIsRecorded() {
+        hosted("SessionStart", host: iTermHost, env: ["ITERM_SESSION_ID": "w0t0p0:PANE"])
+        let snap = store.load(key: "claude-h1")
+        #expect(snap?.hostKind == "terminal")
+        #expect(snap?.hostBundlePath == "/Applications/iTerm.app")
+    }
+
+    @Test func anAppHostWithoutAPaneDropsTheOldPane() {
+        // the conversation was resumed inside an app: the iTerm tab it
+        // came from is no longer where it is
+        hosted("SessionStart", host: iTermHost, env: ["ITERM_SESSION_ID": "w0t0p0:PANE"])
+        hosted("UserPromptSubmit", host: desktopHost)
+        let snap = store.load(key: "claude-h1")
+        #expect(snap?.terminalSessionId == nil)
+        #expect(snap?.hostKind == "app")
+        #expect(snap?.hostBundlePath == "/Applications/Claude.app")
+    }
+
+    @Test func aChangedTerminalHostWithoutAPaneDropsTheOldPane() {
+        hosted("SessionStart", host: iTermHost, env: ["ITERM_SESSION_ID": "w0t0p0:PANE"])
+        hosted("UserPromptSubmit",
+               host: SessionHost(kind: .terminal, bundlePath: "/Applications/Ghostty.app"))
+        #expect(store.load(key: "claude-h1")?.terminalSessionId == nil)
+    }
+
+    @Test func anUnknownOrSameHostKeepsCarryingThePane() {
+        hosted("SessionStart", host: iTermHost, env: ["ITERM_SESSION_ID": "w0t0p0:PANE"])
+        hosted("UserPromptSubmit", host: iTermHost)
+        #expect(store.load(key: "claude-h1")?.terminalSessionId == "w0t0p0:PANE")
+        hosted("Stop", host: .unknown)
+        let snap = store.load(key: "claude-h1")
+        #expect(snap?.terminalSessionId == "w0t0p0:PANE")
+        #expect(snap?.hostKind == "terminal", "an unknown reading keeps the recorded host")
+    }
+
+    @Test func aSnapshotFromBeforeHostsKeepsItsPane() {
+        // written by an older helper: no host fields
+        try? store.write(SessionSnapshot(
+            provider: .claude, sessionId: "h1", projectPath: "/p", state: .ready,
+            event: "SessionStart", terminalSessionId: "w0t0p0:PANE"))
+        hosted("UserPromptSubmit", host: iTermHost)
+        #expect(store.load(key: "claude-h1")?.terminalSessionId == "w0t0p0:PANE")
+    }
+
+    @Test func anAppHostWithAPaneInTheEnvironmentRecordsBoth() {
+        // inherited ITERM_SESSION_ID: recorded, but focus ignores it for an
+        // app host (FocusResolver)
+        hosted("SessionStart", host: desktopHost, env: ["ITERM_SESSION_ID": "w0t0p0:INHERITED"])
+        let snap = store.load(key: "claude-h1")
+        #expect(snap?.terminalSessionId == "w0t0p0:INHERITED")
+        #expect(snap?.host.kind == .app)
+    }
+
+    @Test func anAppHostDropsAPaneCarriedFromBeforeHostsWereRecorded() {
+        // no recorded host to compare against: the app reading alone is
+        // enough, because an app has no pane
+        try? store.write(SessionSnapshot(
+            provider: .claude, sessionId: "h1", projectPath: "/p", state: .ready,
+            event: "SessionStart", terminalSessionId: "w0t0p0:PANE"))
+        hosted("UserPromptSubmit", host: desktopHost)
+        #expect(store.load(key: "claude-h1")?.terminalSessionId == nil)
+    }
 }

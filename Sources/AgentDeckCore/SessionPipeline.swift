@@ -54,9 +54,12 @@ public enum SessionPipeline {
             // pane is the old process's: clicking it would focus a stale tab
             // and acknowledge a session it never reached. Adopt the live pid
             // and drop the pane, so focus resolves through the live process.
+            // The recorded host is the old process's too.
             if let live, live.pid != snapshot.agentPid {
                 outcome.snapshot.agentPid = live.pid
                 outcome.snapshot.terminalSessionId = nil
+                outcome.snapshot.hostKind = nil
+                outcome.snapshot.hostBundlePath = nil
             }
             return outcome.snapshot
         }

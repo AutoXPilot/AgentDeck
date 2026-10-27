@@ -590,7 +590,8 @@ final class SessionsModel: ObservableObject {
     func focusTarget(for snapshot: SessionSnapshot) -> FocusTarget {
         FocusResolver.resolve(
             terminalSessionId: snapshot.terminalSessionId ?? paneByControllingTTY(snapshot),
-            owningAppBundlePath: owningAppBundle(for: snapshot)
+            owningAppBundlePath: owningAppBundle(for: snapshot),
+            host: snapshot.host
         )
     }
 

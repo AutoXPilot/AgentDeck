@@ -21,10 +21,18 @@ public enum FocusResolver {
     }
 
     /// A terminal pane wins when we have one — it's the most precise
-    /// destination. Otherwise fall back to the owning GUI app.
+    /// destination — unless the session is known to run in an app: then a
+    /// pane id can only be inherited (a GUI launched from an iTerm shell
+    /// passes ITERM_SESSION_ID to everything it starts), and the app itself,
+    /// its outermost bundle, is where the session is. Otherwise fall back
+    /// to the owning GUI app.
     public static func resolve(
-        terminalSessionId: String?, owningAppBundlePath: String?
+        terminalSessionId: String?, owningAppBundlePath: String?, host: SessionHost = .unknown
     ) -> FocusTarget {
+        if host.kind == .app,
+           let path = host.bundlePath ?? owningAppBundlePath, let name = appName(fromBundlePath: path) {
+            return .application(bundlePath: path, name: name)
+        }
         if let guid = ITermFocus.sessionGUID(from: terminalSessionId) {
             return .itermPane(guid: guid)
         }

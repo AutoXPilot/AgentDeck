@@ -79,6 +79,25 @@ public enum ProcessTree {
         return nil
     }
 
+    /// Every application bundle on the ancestor chain from `pid`, innermost
+    /// first, for `HostClassifier`. Consecutive processes of the same
+    /// bundle are listed once.
+    public static func ancestorBundlePaths(startingAt pid: pid_t) -> [String] {
+        var bundles: [String] = []
+        var current = pid
+        for _ in 0..<16 {
+            if let path = executablePath(of: current),
+               let bundle = bundlePath(fromExecutablePath: path), bundles.last != bundle {
+                bundles.append(bundle)
+            }
+            guard let (_, ppid) = nameAndParent(of: current), ppid > 1, ppid != current else {
+                break
+            }
+            current = ppid
+        }
+        return bundles
+    }
+
     /// When the process at `pid` started. Combined with the pid, this is a
     /// stable process IDENTITY: a recycled pid belongs to a process that
     /// started later than the snapshot that recorded it, so comparing start

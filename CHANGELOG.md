@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **A click brings the right app forward for a session running inside
+  one.** The helper now records where each session runs (a terminal or an
+  app, from its process ancestry). A session hosted by an app — Claude
+  Code inside Claude Desktop, or a CLI in an editor's terminal — focuses
+  the outermost app, even when the environment carries an iTerm pane id
+  inherited from the shell that launched that app; a pane carried over
+  from before is dropped once the session is seen in an app. Sessions in
+  iTerm behave as before.
+
 ## 0.5.1
 
 ### Compatibility

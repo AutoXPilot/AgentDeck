@@ -60,10 +60,15 @@ public enum ClaudeTranscript {
         /// has no terminal and no window, so there is nothing to focus.
         /// Absent on ordinary interactive sessions.
         public let sessionKind: String?
+        /// What launched the session, from the same record: "cli",
+        /// "claude-desktop", … Absent means unknown, not CLI — older
+        /// builds don't write it.
+        public let entrypoint: String?
 
-        public init(model: String, sessionKind: String?) {
+        public init(model: String, sessionKind: String?, entrypoint: String? = nil) {
             self.model = model
             self.sessionKind = sessionKind
+            self.entrypoint = entrypoint
         }
     }
 
@@ -126,10 +131,13 @@ public enum ClaudeTranscript {
             let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
             // "<synthetic>" marks a locally generated turn, not an inference
             guard !trimmed.isEmpty, !trimmed.hasPrefix("<") else { continue }
-            let kind = (object["sessionKind"] as? String)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .flatMap { $0.isEmpty ? nil : $0 }
-            return Reading(model: trimmed, sessionKind: kind)
+            func field(_ key: String) -> String? {
+                (object[key] as? String)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+            }
+            return Reading(model: trimmed, sessionKind: field("sessionKind"),
+                           entrypoint: field("entrypoint"))
         }
         return nil
     }
