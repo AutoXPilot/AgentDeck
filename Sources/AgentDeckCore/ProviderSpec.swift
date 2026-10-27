@@ -29,6 +29,12 @@ public struct ProviderSpec: Sendable {
     /// tell, in which case restore goes ahead rather than refusing.
     public let conversationExists: @Sendable (WorkspaceEntry) -> Bool?
     public let running: RunningStrategy
+    /// A `Stop` for a session with no snapshot is dropped rather than
+    /// creating one. Right for a provider whose SessionEnd can race its
+    /// Stop (the Stop would resurrect the session SessionEnd just removed);
+    /// wrong for one with no SessionEnd, where a missed start would leave
+    /// the session invisible.
+    public let stopUpdatesOnly: Bool
 
     /// `<provider>-` — the prefix of every session key.
     public var keyPrefix: String { provider.rawValue + "-" }
@@ -53,7 +59,8 @@ public struct ProviderSpec: Sendable {
             conversationExists: { entry in
                 ClaudeTranscript.url(sessionId: entry.sessionId, projectPath: entry.cwd) != nil
             },
-            running: .claudeRegistry),
+            running: .claudeRegistry,
+            stopUpdatesOnly: true),
         .codex: ProviderSpec(
             provider: .codex, displayName: "Codex", badge: "CX", tint: .teal,
             hooks: HookConfigSpec(
@@ -77,7 +84,8 @@ public struct ProviderSpec: Sendable {
             sessionIdIsUUID: true,
             resume: .shell(WorkspaceRestore.codexCommandLine),
             conversationExists: { entry in CodexThreads.exists(id: entry.sessionId) },
-            running: .trustworthyPid(processScan: true)),
+            running: .trustworthyPid(processScan: true),
+            stopUpdatesOnly: true),
     ]
 
     public static func of(_ provider: Provider) -> ProviderSpec {

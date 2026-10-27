@@ -55,6 +55,9 @@ func runHookMode(provider: Provider) {
     HookProcessor.process(
         provider: provider,
         payloadData: data,
+        // `<helper> <provider> <Event>`, for a provider whose payload
+        // doesn't name the event
+        argvEvent: CommandLine.arguments.dropFirst(2).first,
         environment: ProcessInfo.processInfo.environment,
         parentPid: getppid(),
         // productionDirectory, NOT the env-honoring default: the helper

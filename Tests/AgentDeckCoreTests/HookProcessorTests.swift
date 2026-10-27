@@ -307,4 +307,44 @@ final class HookProcessorTests {
         hosted("UserPromptSubmit", host: desktopHost)
         #expect(store.load(key: "claude-h1")?.terminalSessionId == nil)
     }
+
+    // MARK: parsing
+
+    @Test func parsingKeepsMetadataAndNothingElse() throws {
+        let e = try #require(HookPayload.parse(provider: .claude, data: payload([
+            "session_id": "a/b", "hook_event_name": "StopFailure", "cwd": "/p",
+            "permission_mode": "plan", "model": "claude-opus-5",
+            "effort": ["level": "high"], "error": "rate_limit", "reason": "other",
+            "prompt": "secret prompt", "last_assistant_message": "secret reply",
+            "tool_input": ["command": "secret"], "notification_type": "permission_prompt",
+        ])))
+        #expect(e.event == "StopFailure")
+        #expect(e.sessionId == SnapshotStore.sanitizeKeyComponent("a/b"))
+        #expect(e.cwd == "/p" && e.permissionMode == "plan" && e.model == "claude-opus-5")
+        #expect(e.effort == "high" && e.errorKind == "rate_limit" && e.endReason == "other")
+        #expect(e.notificationType == "permission_prompt")
+        // content can't be carried: no field holds it
+        #expect(!String(describing: e).contains("secret"))
+    }
+
+    @Test func parsingRejectsWhatCannotBeKeyed() {
+        #expect(HookPayload.parse(provider: .codex, data: Data("{".utf8)) == nil)
+        #expect(HookPayload.parse(provider: .codex, data: payload(["session_id": "x"])) == nil)
+        #expect(HookPayload.parse(provider: .codex,
+                                  data: payload(["hook_event_name": "Stop"])) == nil)
+        // the snake_case providers take the event from the payload, not argv
+        #expect(HookPayload.parse(provider: .claude,
+                                  data: payload(["session_id": "x"]), argvEvent: "Stop") == nil)
+        #expect(HookPayload.parse(provider: .claude, data: payload(
+            ["session_id": "x", "hook_event_name": "Stop"]), argvEvent: "SessionStart")?.event
+            == "Stop")
+    }
+
+    @Test func stopNeverCreatesForEitherCurrentProvider() {
+        for provider in Provider.allCases {
+            #expect(provider.spec.stopUpdatesOnly, "both have a SessionEnd that can race Stop")
+            #expect(process(provider, ["hook_event_name": "Stop", "session_id": "nobody"]) == .ignore)
+        }
+        #expect(store.loadAll().isEmpty)
+    }
 }

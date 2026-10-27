@@ -4,29 +4,6 @@ import Foundation
 /// payload-parsing path — the one component that must never fail loudly in
 /// production — is unit-testable with recorded fixtures.
 public enum HookProcessor {
-    /// Fields carried on every hook payload that describe the session rather
-    /// than its content. Conversation content (`prompt`,
-    /// `last_assistant_message`, `tool_input`, …) is never read.
-    static func metadata(from payload: [String: Any]) -> (
-        notificationType: String?, permissionMode: String?,
-        model: String?, effort: String?, errorKind: String?
-    ) {
-        let effort: String?
-        if let dict = payload["effort"] as? [String: Any] {
-            effort = dict["level"] as? String
-        } else {
-            effort = payload["effort"] as? String
-        }
-        return (
-            notificationType: payload["notification_type"] as? String
-                ?? payload["type"] as? String,
-            permissionMode: payload["permission_mode"] as? String,
-            model: payload["model"] as? String,
-            effort: effort,
-            errorKind: payload["error"] as? String
-        )
-    }
-
     /// The pane to record. A hook that reports none carries the last one
     /// forward — except where that pane can't be this session's any more:
     /// the session now runs in an app (a GUI has no pane; a conversation
@@ -47,33 +24,43 @@ public enum HookProcessor {
         return carried
     }
 
+    /// Parse, then store. The helper's entry point.
     @discardableResult
     public static func process(
         provider: Provider,
         payloadData: Data,
+        argvEvent: String? = nil,
         environment: [String: String],
         parentPid: pid_t?,
         store: SnapshotStore,
         host: SessionHost? = nil,
         now: Date = Date()
     ) -> HookAction {
-        guard let payload = (try? JSONSerialization.jsonObject(with: payloadData)) as? [String: Any],
-              let event = payload["hook_event_name"] as? String,
-              let rawId = payload["session_id"] as? String,
-              !rawId.isEmpty
-        else { return .ignore }
+        guard let event = HookPayload.parse(
+            provider: provider, data: payloadData, argvEvent: argvEvent) else { return .ignore }
+        return apply(event, provider: provider, environment: environment,
+                     parentPid: parentPid, store: store, host: host, now: now)
+    }
 
-        // session_id becomes a filename: sanitize or a crafted id could
-        // write/delete JSON outside the sessions directory
-        let sessionId = SnapshotStore.sanitizeKeyComponent(rawId)
-        guard !sessionId.isEmpty else { return .ignore }
-
-        let meta = metadata(from: payload)
+    /// The store step: map the event to an action and apply it to the
+    /// session's snapshot under its lock.
+    @discardableResult
+    public static func apply(
+        _ e: NormalizedHookEvent,
+        provider: Provider,
+        environment: [String: String],
+        parentPid: pid_t?,
+        store: SnapshotStore,
+        host: SessionHost? = nil,
+        now: Date = Date()
+    ) -> HookAction {
+        let event = e.event
+        let sessionId = e.sessionId
         let action = EventMapping.action(
             provider: provider,
             event: event,
-            notificationType: meta.notificationType,
-            endReason: payload["reason"] as? String
+            notificationType: e.notificationType,
+            endReason: e.endReason
         )
         let key = SessionKey.make(provider, sessionId)
 
@@ -90,9 +77,12 @@ public enum HookProcessor {
                 store.remove(key: key)
             case .set(let state):
                 let existing = store.load(key: key)
-                // Stop only ever updates: creating on Stop would resurrect a
-                // session that a concurrent SessionEnd hook just removed
-                if event == "Stop" && existing == nil { return .ignore }
+                // Stop only ever updates where a SessionEnd can race it:
+                // creating on Stop would resurrect a session that a
+                // concurrent SessionEnd hook just removed
+                if event == "Stop" && existing == nil && provider.spec.stopUpdatesOnly {
+                    return .ignore
+                }
                 let envPane = environment["ITERM_SESSION_ID"]
                 // Where the session runs, read from its process ancestry on
                 // every event. Injected by tests.
@@ -110,7 +100,7 @@ public enum HookProcessor {
                     ? observedHost.bundlePath : existing?.hostBundlePath
                 // cwd fallback chain ends at the short session id so a
                 // Notification-before-SessionStart can't render a blank row
-                let cwd = (payload["cwd"] as? String) ?? existing?.projectPath ?? ""
+                let cwd = e.cwd ?? existing?.projectPath ?? ""
                 let pid = parentPid.flatMap {
                     ProcessTree.findAgentAncestor(provider: provider, startingAt: $0)
                 } ?? existing?.agentPid
@@ -125,15 +115,15 @@ public enum HookProcessor {
                     agentPid: pid,
                     // only meaningful while waiting; stale reasons would mislead
                     notificationType: state == .waiting
-                        ? (meta.notificationType ?? existing?.notificationType) : nil,
-                    permissionMode: meta.permissionMode ?? existing?.permissionMode,
-                    model: meta.model ?? existing?.model,
+                        ? (e.notificationType ?? existing?.notificationType) : nil,
+                    permissionMode: e.permissionMode ?? existing?.permissionMode,
+                    model: e.model ?? existing?.model,
                     // only a payload that actually carried a model refreshes
                     // this; carrying the old value forward must not make it
                     // look newly observed
-                    modelObservedAt: meta.model != nil ? now : existing?.modelObservedAt,
-                    effort: meta.effort ?? existing?.effort,
-                    errorKind: state == .error ? meta.errorKind : nil,
+                    modelObservedAt: e.model != nil ? now : existing?.modelObservedAt,
+                    effort: e.effort ?? existing?.effort,
+                    errorKind: state == .error ? e.errorKind : nil,
                     hostKind: hostKind,
                     hostBundlePath: hostBundlePath
                 )
