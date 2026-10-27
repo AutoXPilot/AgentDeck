@@ -155,7 +155,7 @@ final class HookProcessorTests {
         #expect(snap?.isUnsupervised == true)
         #expect(snap?.model == "claude-fable-5")
         #expect(snap?.effort == "high")
-        #expect(snap?.schemaVersion == 2)
+        #expect(snap?.schemaVersion == SessionSnapshot.currentSchemaVersion)
     }
 
     @Test func metadataSurvivesLaterEventsThatOmitIt() {

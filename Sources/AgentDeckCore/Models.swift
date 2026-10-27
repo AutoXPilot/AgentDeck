@@ -21,7 +21,7 @@ public enum SessionState: String, Codable, Sendable, CaseIterable {
 }
 
 public struct SessionSnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public var schemaVersion: Int
     public var provider: Provider
@@ -52,6 +52,15 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     /// StopFailure classification: "rate_limit", "billing_error", …
     public var errorKind: String?
 
+    // --- schema 3: where the session runs ---
+
+    /// "terminal" | "app"; absent means unknown, which is not the same as
+    /// app. A string rather than an enum so a kind added later still
+    /// decodes in this build.
+    public var hostKind: String?
+    /// The outermost application bundle hosting the session, when known.
+    public var hostBundlePath: String?
+
     public init(
         schemaVersion: Int = SessionSnapshot.currentSchemaVersion,
         provider: Provider,
@@ -67,7 +76,9 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         model: String? = nil,
         modelObservedAt: Date? = nil,
         effort: String? = nil,
-        errorKind: String? = nil
+        errorKind: String? = nil,
+        hostKind: String? = nil,
+        hostBundlePath: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.provider = provider
@@ -84,6 +95,8 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.modelObservedAt = modelObservedAt
         self.effort = effort
         self.errorKind = errorKind
+        self.hostKind = hostKind
+        self.hostBundlePath = hostBundlePath
     }
 
     public var key: String { "\(provider.rawValue)-\(sessionId)" }
@@ -112,6 +125,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         case schemaVersion, provider, sessionId, projectPath, state, event
         case updatedAt, terminalSessionId, agentPid, notificationType
         case permissionMode, model, modelObservedAt, effort, errorKind
+        case hostKind, hostBundlePath
     }
 
     public init(from decoder: any Decoder) throws {
@@ -131,5 +145,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         modelObservedAt = try c.decodeIfPresent(Date.self, forKey: .modelObservedAt)
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         errorKind = try c.decodeIfPresent(String.self, forKey: .errorKind)
+        hostKind = try c.decodeIfPresent(String.self, forKey: .hostKind)
+        hostBundlePath = try c.decodeIfPresent(String.self, forKey: .hostBundlePath)
     }
 }

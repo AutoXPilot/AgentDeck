@@ -73,9 +73,16 @@ func runInstall() {
             // Atomic replace (tmp + rename), the same mechanism HelperSync
             // uses — remove-then-copy left a window where hooks execed an
             // absent/half-copied file, and two installs could interleave.
-            let changed = try HelperSync.sync(bundled: me, stable: stableHelperURL)
-            print("helper: \(changed ? "installed" : "already current") "
-                + "at \(stableHelperURL.path)")
+            let decision = HelperSync.decision(
+                bundled: me, bundledVersion: AgentDeckVersion.current, stable: stableHelperURL)
+            if decision == .keepNewer {
+                print("helper: kept the newer helper already at \(stableHelperURL.path) "
+                    + "(this is \(AgentDeckVersion.current))")
+            } else {
+                let changed = try HelperSync.sync(bundled: me, stable: stableHelperURL)
+                print("helper: \(changed ? "installed" : "already current") "
+                    + "at \(stableHelperURL.path)")
+            }
         } else {
             print("helper: already running from \(stableHelperURL.path)")
         }

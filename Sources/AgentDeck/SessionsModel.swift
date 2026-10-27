@@ -78,6 +78,9 @@ final class SessionsModel: ObservableObject {
     /// Bumped per restore, so a slower, older restore's messages can't
     /// overwrite a newer one's.
     private var restoreGeneration = 0
+    /// The last workspace-record failure logged, so a persistent one is
+    /// logged once rather than on every reload.
+    private var lastWorkspaceRecordError: String?
     /// Reservations (see `WorkspaceStore.reserve`) whose sessions aren't
     /// running: launched, or possibly launched, and not yet seen. Shown in
     /// the footer with a Clear, since nothing expires them on its own.
@@ -161,7 +164,13 @@ final class SessionsModel: ObservableObject {
         )
         if let bundled = Self.bundledHelperURL,
            FileManager.default.isExecutableFile(atPath: bundled.path) {
-            if (try? HelperSync.sync(bundled: bundled, stable: Self.helperURL)) == true {
+            let decision = HelperSync.decision(
+                bundled: bundled, bundledVersion: AgentDeckVersion.current,
+                stable: Self.helperURL)
+            if decision == .keepNewer {
+                Self.appLog("helper: kept newer stable helper; this build is "
+                            + AgentDeckVersion.current)
+            } else if (try? HelperSync.sync(bundled: bundled, stable: Self.helperURL)) == true {
                 installMessage = "helper updated to match this build"
             }
         }
@@ -924,6 +933,10 @@ final class SessionsModel: ObservableObject {
         bundledHelperURL.flatMap { HelperSync.sha256(of: $0) }
     }()
     private var stableHashCache: (mtime: Date, size: Int, hash: String)?
+    /// Whether the stable helper is from a newer AgentDeck, for the hash
+    /// cached above; nil until asked. Running the helper is a subprocess,
+    /// so it happens once per helper change, not on every reload.
+    private var stableIsNewerCache: (hash: String, newer: Bool)?
     private var titleFetchGeneration = 0
     private var codexThreadGeneration = 0
     /// When the Codex thread cache was read — see `ModelSource.codex`.
@@ -967,7 +980,20 @@ final class SessionsModel: ObservableObject {
     private func refreshHealth() {
         var helperOK = FileManager.default.isExecutableFile(atPath: Self.helperURL.path)
         if helperOK, let bundledHash = Self.bundledHelperHash {
-            helperOK = stableHelperHash() == bundledHash
+            let stableHash = stableHelperHash()
+            helperOK = stableHash == bundledHash
+            // A newer AgentDeck's helper is healthy, not stale: this build
+            // deliberately leaves it in place (see HelperSync.Decision).
+            if !helperOK, let stableHash {
+                if stableIsNewerCache?.hash != stableHash {
+                    let decision = HelperSync.decide(
+                        bundledHash: bundledHash, stableHash: stableHash,
+                        bundledVersion: AgentDeckVersion.current,
+                        stableVersion: { HelperSync.reportedVersion(of: Self.helperURL) })
+                    stableIsNewerCache = (stableHash, decision == .keepNewer)
+                }
+                helperOK = stableIsNewerCache?.newer == true
+            }
         }
         helperInstalled = helperOK
         let installer = HookInstaller(helperPath: Self.helperURL.path)
@@ -1185,8 +1211,15 @@ extension SessionsModel {
             if try workspaceStore.record(live: live, bootID: bootID, now: now) {
                 refreshWorkspaces()
             }
+            lastWorkspaceRecordError = nil
         } catch {
-            Self.appLog("workspace: record FAILED: \(error)")
+            // Logged when it changes, not per reload: an unreadable file
+            // fails every call until someone deals with it.
+            let message = "\(error)"
+            if message != lastWorkspaceRecordError {
+                Self.appLog("workspace: record FAILED: \(message)")
+                lastWorkspaceRecordError = message
+            }
         }
     }
 

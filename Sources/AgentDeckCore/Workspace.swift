@@ -87,6 +87,9 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
     public var bootID: String
     public var updatedAt: Date
     public var entries: [WorkspaceEntry]
+    /// Entries this build can't decode (a newer build's provider), written
+    /// back unchanged. Never offered for restore.
+    public var unknownEntries: [OpaqueWorkspaceEntry] = []
     /// Oldest first, bounded.
     public var closedSets: [ClosedSet] = []
 
@@ -109,9 +112,20 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         bootID = try c.decode(String.self, forKey: .bootID)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
-        entries = try c.decode([WorkspaceEntry].self, forKey: .entries)
+        (entries, unknownEntries) = WorkspaceEntrySlot.split(
+            try c.decode([WorkspaceEntrySlot].self, forKey: .entries))
         // files written before closed sets existed
         closedSets = try c.decodeIfPresent([ClosedSet].self, forKey: .closedSets) ?? []
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(bootID, forKey: .bootID)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encode(WorkspaceEntriesForEncoding(known: entries, opaque: unknownEntries),
+                     forKey: .entries)
+        try c.encode(closedSets, forKey: .closedSets)
     }
 
     /// Notes sessions that just stopped running. Closures within `gap` of
@@ -218,6 +232,7 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
                 result.entries.append(entry)
             }
         }
+        result.unknownEntries = Self.mergedOpaque(unknownEntries, other.unknownEntries)
         for set in other.closedSets {
             if let i = result.closedSets.firstIndex(where: { $0.id == set.id }) {
                 // Union, not last-writer-wins: two instances can each have
@@ -238,6 +253,26 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         result.updatedAt = max(updatedAt, other.updatedAt)
         return result
     }
+
+    /// Same rule as known entries — the newer sighting of a key wins — so
+    /// two copies of an older build can't drop or regress what a newer one
+    /// recorded. An entry with no readable key is kept unless an identical
+    /// one is already there.
+    static func mergedOpaque(
+        _ mine: [OpaqueWorkspaceEntry], _ theirs: [OpaqueWorkspaceEntry]
+    ) -> [OpaqueWorkspaceEntry] {
+        var result = mine
+        for entry in theirs {
+            if let key = entry.key, let i = result.firstIndex(where: { $0.key == key }) {
+                if (entry.lastSeen ?? .distantPast) > (result[i].lastSeen ?? .distantPast) {
+                    result[i] = entry
+                }
+            } else if !result.contains(entry) {
+                result.append(entry)
+            }
+        }
+        return result
+    }
 }
 
 /// A set of sessions saved under a name, restorable on demand. Never
@@ -250,6 +285,8 @@ public struct NamedWorkspace: Codable, Equatable, Sendable, Identifiable {
     public var name: String
     public var savedAt: Date
     public var entries: [WorkspaceEntry]
+    /// See `WorkspaceGeneration.unknownEntries`.
+    public var unknownEntries: [OpaqueWorkspaceEntry] = []
 
     public init(id: String = UUID().uuidString, name: String, savedAt: Date,
                 entries: [WorkspaceEntry]) {
@@ -257,6 +294,30 @@ public struct NamedWorkspace: Codable, Equatable, Sendable, Identifiable {
         self.name = name
         self.savedAt = savedAt
         self.entries = entries
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, name, savedAt, entries
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        savedAt = try c.decode(Date.self, forKey: .savedAt)
+        (entries, unknownEntries) = WorkspaceEntrySlot.split(
+            try c.decode([WorkspaceEntrySlot].self, forKey: .entries))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(savedAt, forKey: .savedAt)
+        try c.encode(WorkspaceEntriesForEncoding(known: entries, opaque: unknownEntries),
+                     forKey: .entries)
     }
 }
 
@@ -322,9 +383,13 @@ public final class WorkspaceStore {
     /// sessions can't push the previous boot's set out of the ring.
     @discardableResult
     public func record(live: [WorkspaceEntry], bootID: String, now: Date = Date()) throws -> Bool {
-        var generation = current?.bootID == bootID
+        // A file that exists but can't be read is not a missing one: a
+        // fresh generation written over it would erase whatever a newer
+        // build (or a damaged write worth recovering) left there.
+        var generation = try current?.bootID == bootID
             ? current!
-            : loadGeneration(bootID: bootID) ?? WorkspaceGeneration(bootID: bootID, updatedAt: now)
+            : readExisting(WorkspaceGeneration.self, from: generationURL(bootID))
+                ?? WorkspaceGeneration(bootID: bootID, updatedAt: now)
         var changed = false
         // Closures are seen as sessions dropping out of the live set, but
         // only once they've been missing from two calls in a row, dated to
@@ -388,7 +453,7 @@ public final class WorkspaceStore {
         // the other had added.
         let url = generationURL(bootID)
         generation = try withLock {
-            if let onDisk = read(WorkspaceGeneration.self, from: url) {
+            if let onDisk = try readExisting(WorkspaceGeneration.self, from: url) {
                 generation = generation.merged(with: onDisk)
             }
             try write(generation, to: url)
@@ -549,6 +614,25 @@ public final class WorkspaceStore {
         ((try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil
         )) ?? []).filter { $0.pathExtension == "json" }
+    }
+
+    /// A file that exists but couldn't be read or decoded. Thrown instead
+    /// of treating it as absent wherever the caller is about to write.
+    public struct UnreadableFile: Error, CustomStringConvertible {
+        public var path: String
+        public var description: String {
+            "\(path) exists but can't be read by this version; left untouched"
+        }
+    }
+
+    /// nil only when there is no file.
+    private func readExisting<T: Decodable>(_ type: T.Type, from url: URL) throws -> T? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let data = try? Data(contentsOf: url),
+              let value = try? SnapshotStore.decoder().decode(type, from: data) else {
+            throw UnreadableFile(path: url.path)
+        }
+        return value
     }
 
     private func read<T: Decodable>(_ type: T.Type, from url: URL) -> T? {

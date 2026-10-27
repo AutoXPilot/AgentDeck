@@ -64,7 +64,9 @@ final class SnapshotStoreTests {
             model: "gpt-6-astra",
             modelObservedAt: observed,
             effort: "high",
-            errorKind: "rate_limit"
+            errorKind: "rate_limit",
+            hostKind: "app",
+            hostBundlePath: "/Applications/Claude.app"
         )
         try store.write(snap)
         let loaded = try #require(store.load(key: snap.key))
@@ -92,6 +94,36 @@ final class SnapshotStoreTests {
         ) as? [String: Any]
         #expect(raw?["modelObservedAt"] != nil)
         #expect(raw?["errorKind"] as? String == "rate_limit")
+        #expect(loaded.hostKind == "app")
+        #expect(loaded.hostBundlePath == "/Applications/Claude.app")
+        #expect(raw?["hostKind"] as? String == "app")
+        #expect(loaded.schemaVersion == 3)
+    }
+
+    @Test func aSnapshotFromANewerBuildSurvivesTheSweep() throws {
+        // a provider and a state this build has no case for: undecodable
+        // here, but plainly a snapshot, and the newer build's to manage
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let future = dir.appendingPathComponent("zzz-3f1c.json")
+        try Data("""
+        {"provider":"zzz","sessionId":"3f1c","state":"thinking","event":"X",
+         "projectPath":"/tmp","updatedAt":"2026-10-26T10:00:00.000Z","schemaVersion":9}
+        """.utf8).write(to: future)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-7200)], ofItemAtPath: future.path)
+        store.sweepOrphans()
+        #expect(FileManager.default.fileExists(atPath: future.path))
+        #expect(store.loadAll().isEmpty, "still skipped by this build's reader")
+    }
+
+    @Test func snapshotIdentityNeedsAllThreeStrings() {
+        #expect(SnapshotStore.looksLikeSnapshot(Data(
+            #"{"provider":"zzz","sessionId":"a","updatedAt":"x"}"#.utf8)))
+        #expect(!SnapshotStore.looksLikeSnapshot(Data(#"{"provider":"zzz","sessionId":"a"}"#.utf8)))
+        #expect(!SnapshotStore.looksLikeSnapshot(Data(
+            #"{"provider":1,"sessionId":"a","updatedAt":"x"}"#.utf8)))
+        #expect(!SnapshotStore.looksLikeSnapshot(Data("{broken".utf8)))
+        #expect(!SnapshotStore.looksLikeSnapshot(Data("[1]".utf8)))
     }
 
     @Test func removeDeletesFile() throws {

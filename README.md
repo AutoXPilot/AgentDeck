@@ -342,7 +342,17 @@ your machine" section above are what such a request usually needs.
   copy hooks invoke and atomically updates it on drift — upgrading can never
   leave hooks running an old helper. A stale helper shows as unhealthy in
   the footer (`hooks: ● helper ● claude ● codex` = setup health, not
-  session activity).
+  session activity). It never downgrades: if the stable helper reports a
+  newer version than this build (`agentdeck-hook --version`), an older
+  copy of the app leaves it in place and counts it as healthy.
+- **Running two versions side by side** (a source build beside the
+  installed app, or an older copy after an upgrade) is supported from
+  0.5.1. Snapshot and workspace entries for a provider an older build
+  doesn't know are kept as written, never deleted or overwritten, and a
+  workspace file it can't read at all is left untouched rather than
+  replaced. 0.5.0 lacks this: it deletes such snapshots after an hour and
+  can overwrite such a workspace file, so don't run 0.5.0 beside a newer
+  build.
 - A snapshot's pid is trusted only if a live process started at or before the
   snapshot's last update *and* looks like the agent (its executable path or
   name says claude or codex). A recycled pid fails one or the other. A
@@ -397,7 +407,7 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 303 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # 315 tests; works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a

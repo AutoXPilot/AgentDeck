@@ -204,6 +204,18 @@ public struct SnapshotStore: Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// Whether `data` has a snapshot's identity — string `provider`,
+    /// `sessionId` and `updatedAt` — whether or not this build can decode
+    /// the rest. A newer build can write a provider or a state this one has
+    /// no case for; that file is the newer build's to manage, and deleting
+    /// it would silently drop a live session from the newer app's list.
+    static func looksLikeSnapshot(_ data: Data) -> Bool {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return false }
+        return object["provider"] is String && object["sessionId"] is String
+            && object["updatedAt"] is String
+    }
+
     public func sweepOrphans(olderThan interval: TimeInterval = 3600, now: Date = Date()) {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
@@ -220,9 +232,9 @@ public struct SnapshotStore: Sendable {
             } else if url.lastPathComponent.hasSuffix(".tmp") {
                 try? FileManager.default.removeItem(at: url)
             } else if url.pathExtension == "json" {
-                let decodable = (try? Data(contentsOf: url))
-                    .flatMap { try? decoder.decode(SessionSnapshot.self, from: $0) } != nil
-                if !decodable {
+                guard let data = try? Data(contentsOf: url) else { continue }
+                let decodable = (try? decoder.decode(SessionSnapshot.self, from: data)) != nil
+                if !decodable && !Self.looksLikeSnapshot(data) {
                     try? FileManager.default.removeItem(at: url)
                 }
             }
