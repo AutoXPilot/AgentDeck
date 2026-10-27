@@ -12,6 +12,19 @@
   inherited from the shell that launched that app; a pane carried over
   from before is dropped once the session is seen in an app. Sessions in
   iTerm behave as before.
+- **Claude Desktop sessions are recognised and never restored.** A Claude
+  Code session started from Claude Desktop's Code tab — known by its
+  transcript's `claude-desktop` entrypoint, a Desktop scratch-workspace
+  folder, or its process ancestry — is shown as "Claude Desktop ·
+  <folder>" (a scratch folder reads "scratch YYYY-MM-DD"; a name you set
+  yourself wins, with a small "Desktop" tag), and a click brings
+  Claude.app forward rather than Desktop's inner bundle or an inherited
+  iTerm pane. Workspaces no longer record these sessions, and restore
+  skips any already recorded by an earlier build ("runs inside an app")
+  instead of resuming them in iTerm; scratch-folder ones are no longer
+  offered at all. Sessions Desktop only lists through Remote Control are
+  ordinary terminal sessions and are unchanged. Desktop's own session
+  files and titles are never read.
 
 ## 0.5.1
 

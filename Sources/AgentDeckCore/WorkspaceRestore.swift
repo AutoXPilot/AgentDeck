@@ -19,6 +19,10 @@ public enum WorkspaceRestore {
         /// interactive picker or searches by name, which is the failure
         /// restore exists to prevent.
         case invalidSessionId
+        /// Runs inside an app (a Claude Desktop session). It has no
+        /// terminal to come back to, and resuming it in iTerm would fork
+        /// the conversation away from the app showing it.
+        case appHosted
 
         public var phrase: String {
             switch self {
@@ -28,6 +32,7 @@ public enum WorkspaceRestore {
             case .unusableDirectory: return "unusable folder path"
             case .missingConversation: return "conversation not found"
             case .invalidSessionId: return "no session id"
+            case .appHosted: return "runs inside an app"
             }
         }
     }
@@ -60,13 +65,23 @@ public enum WorkspaceRestore {
         public var conversationExists: (WorkspaceEntry) -> Bool?
         /// Permission modes the organization's policy refuses.
         public var refusedPermissionModes: Set<String>
+        /// The entry's current evidence says it runs inside an app. Asked
+        /// at plan time, not only at capture: records are append-only and
+        /// already hold Desktop sessions captured by older builds, and a
+        /// session can be captured while its host is still unknown. The
+        /// default uses the evidence an entry carries itself (its folder).
+        public var appHosted: (WorkspaceEntry) -> Bool
 
         public init(
             live: Set<String>, inFlight: Set<String> = [],
             directoryExists: @escaping (String) -> Bool = WorkspaceRestore.isEnterableDirectory,
             conversationExists: @escaping (WorkspaceEntry) -> Bool?,
-            refusedPermissionModes: Set<String> = []
+            refusedPermissionModes: Set<String> = [],
+            appHosted: @escaping (WorkspaceEntry) -> Bool = {
+                ClaudeDesktop.isAppHosted($0, liveHost: nil, transcriptEntrypoint: nil)
+            }
         ) {
+            self.appHosted = appHosted
             self.refusedPermissionModes = refusedPermissionModes
             self.live = live
             self.inFlight = inFlight
@@ -87,6 +102,8 @@ public enum WorkspaceRestore {
                 reason = .invalidSessionId
             } else if !isTypeableDirectory(entry.cwd) {
                 reason = .unusableDirectory
+            } else if facts.appHosted(entry) {
+                reason = .appHosted
             } else if facts.live.contains(entry.key) {
                 reason = .alreadyOpen
             } else if facts.inFlight.contains(entry.key) {

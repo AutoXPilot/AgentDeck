@@ -181,8 +181,11 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
     /// A set wholly inside a larger one is dropped as redundant.
     ///
     /// `finished`: a previous boot, whose final set is included too.
+    /// `excluding`: entries never to offer (an app-hosted session, which
+    /// restore would refuse anyway — see `WorkspaceRestore.Facts.appHosted`).
     public func restoreSets(
-        live: Set<String>, finished: Bool, limit: Int = 3
+        live: Set<String>, finished: Bool, limit: Int = 3,
+        excluding: (WorkspaceEntry) -> Bool = { _ in false }
     ) -> [RestoreSet] {
         var candidates: [(closedAt: Date, keys: Set<String>)] = closedSets.map {
             ($0.closedAt, Set($0.keys))
@@ -206,7 +209,9 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         let all = distinct
             .sorted { $0.closedAt > $1.closedAt }
             .compactMap { c -> RestoreSet? in
-                let remaining = entries.filter { c.keys.contains($0.key) && !live.contains($0.key) }
+                let remaining = entries.filter {
+                    c.keys.contains($0.key) && !live.contains($0.key) && !excluding($0)
+                }
                 return remaining.isEmpty ? nil : RestoreSet(closedAt: c.closedAt, entries: remaining)
             }
         guard all.count > limit, limit > 0 else { return all }

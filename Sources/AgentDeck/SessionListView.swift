@@ -65,6 +65,7 @@ struct SessionListView: View {
                     SessionRow(
                         session: session,
                         title: model.title(for: session),
+                        hostTag: model.hostTag(for: session),
                         subtitle: model.subtitle(for: session),
                         detail: model.detail(for: session),
                         modelName: model.modelLabel(for: session),
@@ -92,6 +93,7 @@ struct SessionListView: View {
                         SessionRow(
                             session: session,
                             title: model.title(for: session),
+                            hostTag: model.hostTag(for: session),
                             subtitle: model.subtitle(for: session),
                             detail: model.detail(for: session),
                             modelName: model.modelLabel(for: session),
@@ -506,6 +508,9 @@ struct SessionListView: View {
 struct SessionRow: View {
     let session: SessionSnapshot
     let title: String
+    /// "Desktop" for a session running inside Claude Desktop whose title
+    /// doesn't already say so.
+    let hostTag: String?
     let subtitle: String
     let detail: String?
     /// Readable model name ("Opus 5.5", "Astra 6"); nil when unknown.
@@ -533,6 +538,14 @@ struct SessionRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 4) {
                         Text(title).font(.callout).lineLimit(1)
+                        if let hostTag {
+                            Text(hostTag)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+                                .background(Capsule().strokeBorder(.tertiary))
+                                .fixedSize()
+                        }
                         if unsupervised {
                             Image(systemName: "lock.open.fill")
                                 .font(.system(size: 9))
@@ -597,6 +610,7 @@ struct SessionRow: View {
 
     private var accessibilityLabel: String {
         var parts = [session.provider.displayName, title, session.state.rawValue]
+        if let hostTag { parts.append("in Claude \(hostTag)") }
         if let modelName { parts.append(modelName) }
         if let detail { parts.append(detail) }
         if unsupervised { parts.append("unsupervised") }

@@ -19,8 +19,9 @@ public enum WorkspaceCapture {
 
     /// The remembered form of a row, or nil for one that can't be brought
     /// back into an iTerm tab: a background session (no window to return
-    /// to), a Codex session hosted by an app, a session known to run
-    /// outside iTerm, or a Claude session with no sign it was interactive.
+    /// to), a session hosted by an app (Claude Desktop, Codex in ChatGPT),
+    /// a session known to run outside iTerm, or a Claude session with no
+    /// sign it was interactive.
     ///
     /// `displayName` is only a name someone chose — a user-set Claude name
     /// or a Codex `/rename` — never a generated name or a terminal title,
@@ -29,9 +30,11 @@ public enum WorkspaceCapture {
         for s: SessionSnapshot,
         registry: ClaudeSessionRegistry.Entry?,
         transcriptSessionKind: String?,
+        transcriptEntrypoint: String? = nil,
         codexName: String?,
         terminal: Terminal,
-        now: Date
+        now: Date,
+        home: String = NSHomeDirectory()
     ) -> WorkspaceEntry? {
         if terminal == .elsewhere { return nil }
         switch s.provider {
@@ -41,6 +44,11 @@ public enum WorkspaceCapture {
             guard registry?.kind == "interactive" || s.terminalSessionId != nil else { return nil }
             let cwd = registry?.cwd ?? s.projectPath
             guard !cwd.isEmpty else { return nil }
+            if ClaudeDesktop.effectiveHost(
+                recorded: s.host, transcriptEntrypoint: transcriptEntrypoint, cwd: cwd, home: home
+            ).kind == .app {
+                return nil
+            }
             return WorkspaceEntry(
                 provider: .claude, sessionId: s.sessionId, cwd: cwd,
                 // Explicitly user-set only. Claude builds before about
@@ -50,6 +58,7 @@ public enum WorkspaceCapture {
                 permissionMode: s.permissionMode, lastSeen: now
             )
         case .codex:
+            if s.host.kind == .app { return nil }
             guard s.terminalSessionId != nil, !s.projectPath.isEmpty else { return nil }
             return WorkspaceEntry(
                 provider: .codex, sessionId: s.sessionId, cwd: s.projectPath,

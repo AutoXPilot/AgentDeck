@@ -50,6 +50,9 @@ final class SessionsModel: ObservableObject {
     /// Claude session id → how it was launched ("bg" = daemonized
     /// background session, which has no window to focus).
     @Published private(set) var claudeSessionKinds: [String: String] = [:]
+    /// Claude session id → what launched it ("cli", "claude-desktop"),
+    /// from the same transcript record. Absent means unknown.
+    @Published private(set) var claudeEntrypoints: [String: String] = [:]
     /// Why a session is blocked, once we know: "permission prompt", …
     @Published private(set) var waitingReasons: [String: String] = [:]
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
@@ -256,6 +259,7 @@ final class SessionsModel: ObservableObject {
             // outlive the sessions they describe
             claudeModels = [:]
             claudeSessionKinds = [:]
+            claudeEntrypoints = [:]
             claudeModelFingerprints = [:]
             claudeModelsAttempted = []
             return
@@ -264,9 +268,11 @@ final class SessionsModel: ObservableObject {
         let knownFingerprints = claudeModelFingerprints
         let knownModels = claudeModels
         let knownKinds = claudeSessionKinds
+        let knownEntrypoints = claudeEntrypoints
         Task.detached {
             var models: [String: String] = [:]
             var kinds: [String: String] = [:]
+            var entrypoints: [String: String] = [:]
             var fingerprints: [String: String] = [:]
             for session in wanted {
                 guard let url = ClaudeTranscript.url(
@@ -281,18 +287,25 @@ final class SessionsModel: ObservableObject {
                    let cached = knownModels[session.id] {
                     models[session.id] = cached
                     kinds[session.id] = knownKinds[session.id]
+                    entrypoints[session.id] = knownEntrypoints[session.id]
                     fingerprints[session.id] = fingerprint
                     continue
                 }
                 guard let reading = ClaudeTranscript.latest(at: url) else { continue }
                 models[session.id] = reading.model
                 kinds[session.id] = reading.sessionKind
+                entrypoints[session.id] = reading.entrypoint
                 fingerprints[session.id] = fingerprint
             }
             Task { @MainActor [weak self] in
                 guard let self, gen == self.claudeModelGeneration else { return }
                 self.claudeModels = models
                 self.claudeSessionKinds = kinds
+                let entrypointsChanged = entrypoints != self.claudeEntrypoints
+                self.claudeEntrypoints = entrypoints
+                // a Desktop session read for the first time stops being
+                // offered for restore now, not at the next record
+                if entrypointsChanged { self.refreshWorkspaces() }
                 self.claudeModelFingerprints = fingerprints
                 self.claudeModelsAttempted = attempted
                 self.onChange?()
@@ -472,6 +485,7 @@ final class SessionsModel: ObservableObject {
     /// registry (cleaner than the tab title and available outside iTerm);
     /// Codex publishes one in its session index.
     func title(for snapshot: SessionSnapshot) -> String {
+        if let desktop = desktopLabel(for: snapshot) { return desktop.title }
         if snapshot.provider == .claude, let pid = snapshot.agentPid,
            let entry = claudeRegistry[pid], entry.sessionId == snapshot.sessionId,
            entry.isUserNamed, let name = entry.name {
@@ -499,6 +513,47 @@ final class SessionsModel: ObservableObject {
         // cwd-less snapshot (a Notification arriving before SessionStart): a
         // short session id beats a blank, unidentifiable row.
         return "session " + snapshot.sessionId.prefix(8)
+    }
+
+    /// The registry entry describing this row's own session, if any.
+    private func registryEntry(for snapshot: SessionSnapshot) -> ClaudeSessionRegistry.Entry? {
+        guard snapshot.provider == .claude else { return nil }
+        if let live = claudeLiveSessions[snapshot.sessionId] { return live }
+        // registry files outlive their processes; without the sessionId
+        // check a recycled pid shows another session's name
+        guard let pid = snapshot.agentPid, let entry = claudeRegistry[pid],
+              entry.sessionId == snapshot.sessionId else { return nil }
+        return entry
+    }
+
+    /// Where the row's session runs, all evidence considered (see
+    /// `ClaudeDesktop.effectiveHost`). A Desktop-started session with no
+    /// hook snapshot becomes app-hosted once its transcript is read.
+    func effectiveHost(for snapshot: SessionSnapshot) -> SessionHost {
+        guard snapshot.provider == .claude else { return snapshot.host }
+        return ClaudeDesktop.effectiveHost(
+            recorded: snapshot.host,
+            transcriptEntrypoint: claudeEntrypoints[snapshot.sessionId],
+            cwd: registryEntry(for: snapshot)?.cwd ?? snapshot.projectPath)
+    }
+
+    func isDesktopHosted(_ snapshot: SessionSnapshot) -> Bool {
+        snapshot.provider == .claude && ClaudeDesktop.isDesktopHost(effectiveHost(for: snapshot))
+    }
+
+    /// Title and tag for a Claude Desktop row; nil for any other row.
+    func desktopLabel(for snapshot: SessionSnapshot) -> (title: String, showsTag: Bool)? {
+        guard isDesktopHosted(snapshot) else { return nil }
+        let entry = registryEntry(for: snapshot)
+        return ClaudeDesktop.rowLabel(
+            registryName: entry?.name, nameSource: entry?.nameSource,
+            cwd: entry?.cwd ?? snapshot.projectPath)
+    }
+
+    /// The small marker shown beside the title, when the title doesn't
+    /// already say where the session runs.
+    func hostTag(for snapshot: SessionSnapshot) -> String? {
+        desktopLabel(for: snapshot)?.showsTag == true ? "Desktop" : nil
     }
 
     func subtitle(for snapshot: SessionSnapshot) -> String {
@@ -591,7 +646,7 @@ final class SessionsModel: ObservableObject {
         FocusResolver.resolve(
             terminalSessionId: snapshot.terminalSessionId ?? paneByControllingTTY(snapshot),
             owningAppBundlePath: owningAppBundle(for: snapshot),
-            host: snapshot.host
+            host: effectiveHost(for: snapshot)
         )
     }
 
@@ -1152,6 +1207,7 @@ extension SessionsModel {
             for: s,
             registry: s.provider == .claude ? claudeLiveSessions[s.sessionId] : nil,
             transcriptSessionKind: claudeSessionKinds[s.sessionId],
+            transcriptEntrypoint: claudeEntrypoints[s.sessionId],
             codexName: codexNames[s.sessionId],
             terminal: terminalLocation(of: s),
             now: now)
@@ -1217,6 +1273,7 @@ extension SessionsModel {
     /// that restoring part of a set and rebooting again hid the rest.
     func refreshWorkspaces() {
         let live = runningKeys(sessions)
+        let appHosted = appHostedCheck(readingTranscripts: false)
         var offers: [RestoreOffer] = []
         var banner: RestoreOffer?
         let generations = workspaceStore.generations()
@@ -1228,11 +1285,13 @@ extension SessionsModel {
                 .init(bootID: generation.bootID, isBeforeRestart: finished,
                       closedAt: set.closedAt, entries: set.entries)
             }
-            offers += generation.restoreSets(live: live, finished: finished).map(offer)
+            offers += generation.restoreSets(
+                live: live, finished: finished, excluding: appHosted).map(offer)
             // The banner picks from every set of the latest earlier boot,
             // not just the few the menu shows.
             if finished, banner == nil {
-                banner = generation.restoreSets(live: live, finished: true, limit: .max)
+                banner = generation.restoreSets(
+                    live: live, finished: true, limit: .max, excluding: appHosted)
                     .max { $0.entries.count < $1.entries.count }
                     .map(offer)
             }
@@ -1251,6 +1310,32 @@ extension SessionsModel {
         guard UserDefaults.standard.string(forKey: Self.dismissedRestoreOfferKey) != bootID
         else { return nil }
         return bannerOffer
+    }
+
+    /// Whether a remembered session runs inside an app, from the evidence
+    /// at hand: the live row's host, a transcript entrypoint already read,
+    /// the folder. `readingTranscripts` also reads the entry's transcript
+    /// when nothing cached says — done at restore time only, not for every
+    /// offer refresh; an offer can still list a non-scratch Desktop session
+    /// captured by an older build, which the restore then skips.
+    func appHostedCheck(readingTranscripts: Bool) -> (WorkspaceEntry) -> Bool {
+        let hosts = Dictionary(
+            sessions.map { ($0.key, effectiveHost(for: $0)) }, uniquingKeysWith: { a, _ in a })
+        let entrypoints = claudeEntrypoints
+        return { entry in
+            let entrypoint = entrypoints[entry.sessionId]
+            if ClaudeDesktop.isAppHosted(
+                entry, liveHost: hosts[entry.key], transcriptEntrypoint: entrypoint) {
+                return true
+            }
+            guard readingTranscripts, entry.provider == .claude, entrypoint == nil,
+                  hosts[entry.key] == nil,
+                  let url = ClaudeTranscript.url(sessionId: entry.sessionId, projectPath: entry.cwd)
+            else { return false }
+            // a short tail: any recent assistant turn carries the entrypoint
+            let read = ClaudeTranscript.latest(at: url, tailBytes: 64 * 1024)?.entrypoint
+            return ClaudeDesktop.isAppHosted(entry, liveHost: nil, transcriptEntrypoint: read)
+        }
     }
 
     func dismissLaunchRestoreOffer() {
@@ -1336,7 +1421,8 @@ extension SessionsModel {
                 if entry.provider == .codex, threads[entry.sessionId] != nil { return true }
                 return entry.provider.spec.conversationExists(entry)
             },
-            refusedPermissionModes: claudePolicy.refusedPermissionModes
+            refusedPermissionModes: claudePolicy.refusedPermissionModes,
+            appHosted: appHostedCheck(readingTranscripts: true)
         )
         let plan = WorkspaceRestore.plan(entries, facts: facts)
         // each missing folder remembers which named workspace it came from,
