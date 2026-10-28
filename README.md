@@ -80,7 +80,7 @@ kept; the row shows a category taken from `terminationReason`
 (`~/.gemini/antigravity-cli/`) AgentDeck reads only the names of
 `presence/*.lock` and whether a process holds each one, the workspace →
 conversation map in `cache/last_conversations.json`, and whether
-`conversations/<id>.db` exists (never opened). It never reads
+`conversations/<id>.db` exists and when it last changed (never opened). It never reads
 `history.jsonl` (your prompts), the conversation databases,
 `conversation_summaries.db`, `brain/` or agy's logs.
 
@@ -404,7 +404,7 @@ your machine" section above are what such a request usually needs.
 - On launch the app compares the bundled helper's SHA-256 against the stable
   copy hooks invoke and atomically updates it on drift — upgrading can never
   leave hooks running an old helper. A stale helper shows as unhealthy in
-  the footer (`hooks: ● helper ● claude ● codex ● antigravity` = setup
+  the footer (`hooks: ● helper ● claude ● codex ● agy` = setup
   health, not session activity). It never downgrades: if the stable helper reports a
   newer version than this build (`agentdeck-hook --version`), an older
   copy of the app leaves it in place and counts it as healthy.

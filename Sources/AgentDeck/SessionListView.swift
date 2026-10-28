@@ -248,14 +248,18 @@ struct SessionListView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 10) {
+            HStack(spacing: 7) {
                 Text("hooks:")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                     .help("Setup health — are the lifecycle hooks installed? (Not session activity.)")
                 healthDot(ok: model.helperInstalled, label: "helper")
                 ForEach(Provider.allCases, id: \.self) { provider in
-                    healthDot(model.hookStatus[provider] ?? .missing, label: provider.rawValue)
+                    // the command name: short enough that four dots and the
+                    // install button fit on one line
+                    healthDot(model.hookStatus[provider] ?? .missing,
+                              label: provider == .antigravity ? "agy" : provider.rawValue)
                 }
                 Spacer()
                 if model.hooksNeedInstalling {
@@ -263,6 +267,8 @@ struct SessionListView: View {
                         model.installHooks()
                     }
                     .font(.caption)
+                    .controlSize(.small)
+                    .fixedSize()
                     .disabled(model.isInstalling)
                 }
                 Menu {
@@ -451,6 +457,7 @@ struct SessionListView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(color)
             Text(label).font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label) hooks \(words)")
@@ -463,6 +470,7 @@ struct SessionListView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(ok ? Color.green : Color.red)
             Text(label).font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label) hooks \(ok ? "installed" : "not installed")")

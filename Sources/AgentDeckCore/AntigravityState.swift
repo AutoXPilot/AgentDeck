@@ -34,8 +34,10 @@ public enum AntigravityState {
         return errno == EWOULDBLOCK
     }
 
-    /// A held presence lock: a running conversation, and when its lock
-    /// file was created (stable, so a row's age doesn't advance per scan).
+    /// A held presence lock: a running conversation, and when it was last
+    /// active as far as file metadata says — its database's modification
+    /// time, else the lock file's creation (the lock file is reused across
+    /// runs, so its own date can be weeks old). Never the scan time.
     public struct Presence: Equatable, Sendable {
         public var conversationId: String
         public var since: Date?
@@ -56,9 +58,14 @@ public enum AntigravityState {
             else { return nil }
             let url = presence.appendingPathComponent(name)
             guard isHeld(url) else { return nil }
-            let created = (try? FileManager.default.attributesOfItem(atPath: url.path))?[
-                .creationDate] as? Date
-            return Presence(conversationId: uuid.uuidString.lowercased(), since: created)
+            let id = uuid.uuidString.lowercased()
+            let fm = FileManager.default
+            // stat only: the database is never opened
+            let database = directory.appendingPathComponent("conversations/\(id).db")
+            let active = (try? fm.attributesOfItem(atPath: database.path))?[
+                .modificationDate] as? Date
+            let created = (try? fm.attributesOfItem(atPath: url.path))?[.creationDate] as? Date
+            return Presence(conversationId: id, since: active ?? created)
         }
     }
 

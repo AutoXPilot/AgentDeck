@@ -424,6 +424,27 @@ final class AntigravityPresenceTests {
         #expect(AntigravityState.runningConversations(directory: dir).isEmpty)
     }
 
+    /// The lock file is reused across runs, so its creation date can be
+    /// weeks old; the conversation database's mtime says when it was last
+    /// active.
+    @Test func aDiscoveredRowsAgeComesFromTheConversationNotTheLockFile() throws {
+        let id = "c3f378f8-90e1-43ea-875a-a49794f32b55"
+        let lock = lockFile(id)
+        let old = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.creationDate: old], ofItemAtPath: lock.path)
+        let fd = hold(lock)
+        defer { close(fd) }
+        #expect(AntigravityState.runningConversations(directory: dir).first?.since == old,
+                "no database: the lock's creation is all there is")
+        let conversations = dir.appendingPathComponent("conversations")
+        try FileManager.default.createDirectory(at: conversations, withIntermediateDirectories: true)
+        let db = conversations.appendingPathComponent("\(id).db")
+        FileManager.default.createFile(atPath: db.path, contents: nil)
+        let active = Date(timeIntervalSince1970: 1_790_000_000)
+        try FileManager.default.setAttributes([.modificationDate: active], ofItemAtPath: db.path)
+        #expect(AntigravityState.runningConversations(directory: dir).first?.since == active)
+    }
+
     @Test func probingNeverCreatesOrChangesALockFile() throws {
         let missing = presence.appendingPathComponent("7e0c2b8a-1111-4222-8333-944455556666.lock")
         #expect(!AntigravityState.isLockHeld(missing))
