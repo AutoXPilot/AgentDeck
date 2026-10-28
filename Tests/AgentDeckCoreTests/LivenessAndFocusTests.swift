@@ -246,6 +246,13 @@ struct LivenessAndFocusTests {
         #expect(ITermFocus.humanizeReason("something_new") == "something new")
     }
 
+    @Test func agysTabSuffixIsStrippedLikeTheOthers() {
+        // agy titles its tab with its command name, not the provider's
+        #expect(ITermFocus.sanitizeTitle("agy (agy)") == "agy")
+        #expect(ITermFocus.sanitizeTitle("version2 (agy)") == "version2")
+        #expect(ITermFocus.sanitizeTitle("✳ infra (claude)") == "infra")
+    }
+
     @Test func parseSessionNamesSanitizesTitles() {
         let names = ITermFocus.parseSessionNames("GUID-1\t/dev/ttys001\tCode (codex\")")
         #expect(names["GUID-1"] == "Code")

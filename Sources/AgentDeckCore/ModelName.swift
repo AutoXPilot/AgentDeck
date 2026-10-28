@@ -11,7 +11,9 @@ import Foundation
 /// `claude-opus-5-5[1m` first came out as "Opus 5[1m 5".
 public enum ModelName {
     /// Vendor prefixes that carry no information once the family is known.
-    static let droppedTokens: Set<String> = ["claude", "gpt", "openai", "anthropic"]
+    /// `gemini-4-argon-medium` reads "Argon medium 4" by the same rule as
+    /// `gpt-6-astra` → "Astra 6": the family name leads.
+    static let droppedTokens: Set<String> = ["claude", "gpt", "openai", "anthropic", "gemini", "google"]
 
     /// Longest label the row can show before it starts eating the path.
     static let maxLength = 28

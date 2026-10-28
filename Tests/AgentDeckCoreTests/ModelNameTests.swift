@@ -82,4 +82,10 @@ struct ModelNameTests {
         #expect(shown.count <= ModelName.maxLength)
         #expect(shown.hasSuffix("…"))
     }
+
+    @Test func geminiIdsLeadWithTheFamilyLikeTheOthers() {
+        // seen live from agy 1.4.7; it used to read "Gemini argon medium 4"
+        #expect(ModelName.display("gemini-4-argon-medium") == "Argon medium 4")
+        #expect(ModelName.display("gemini-3.5-flash-lite") == "Flash lite 3.5")
+    }
 }

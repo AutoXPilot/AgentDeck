@@ -117,7 +117,17 @@ public enum ITermFocus {
     static let statusGlyphs = CharacterSet(charactersIn: "✳✽✻✢·*⠂⠄⠆⠇⠋⠙⠸⠰⠠⠐⢀⡀⣀⠈⠉⠊⠞⠟⠻⠽⠾⠷⠯⠟")
 
     /// Trailing `(claude)` / `(codex)` — the provider badge already shows it.
-    static let providerSuffixes = Provider.allCases.map { "(\($0.rawValue))" }
+    /// Agents paint their own name into the tab title: the provider's name,
+    /// or the command it runs as when that differs — agy titles its tab
+    /// "<folder> (agy)", not "(antigravity)".
+    static let providerSuffixes: [String] = Provider.allCases.flatMap { provider -> [String] in
+        var names = ["(\(provider.rawValue))"]
+        if case .exactBasename(let command, _) = provider.spec.executableMatch,
+           command != provider.rawValue {
+            names.append("(\(command))")
+        }
+        return names
+    }
 
     /// Titles are whatever the shell or agent emitted. codex-cli emits an
     /// unbalanced quote — `Code (codex")` — so drop stray quotes, while
