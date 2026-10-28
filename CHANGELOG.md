@@ -2,8 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **Antigravity CLI (`agy`) sessions**, as a third provider with an AG
+  badge. Install hooks adds one hook set, `agentdeck`, to
+  `~/.gemini/config/hooks.json` (only when `~/.gemini/antigravity-cli`
+  exists); your other sets are carried over unchanged, and a set of that
+  name that AgentDeck didn't write stops the install rather than being
+  replaced. Rows go working → waiting (when agy asks you a question) →
+  done, or error with a category from agy's termination reason. Running
+  conversations no hook has reported yet — agy reads hooks only at
+  startup — are listed from agy's presence locks, without a state, and
+  with a folder only when agy's own cache names one unambiguously.
+  Restore resumes them with `command agy --conversation <id>`, without
+  any alias's flags (no `--dangerously-skip-permissions` sneaking in).
+  Permission prompts are not detected. The user's message, tool
+  arguments and error text that agy sends with each hook are never
+  stored or logged, and agy's prompt history and conversation databases
+  are never read.
+
 ### Changed
 
+- **Restore types `command claude …` / `command codex …`**, so a shell
+  alias or function with the agent's name can't change what a restored
+  tab runs.
 - **A click brings the right app forward for a session running inside
   one.** The helper now records where each session runs (a terminal or an
   app, from its process ancestry). A session hosted by an app — Claude

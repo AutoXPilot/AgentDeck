@@ -1,8 +1,8 @@
 # Contributing
 
-Scope (v1): macOS, iTerm2, Claude Code + Codex. Issues and PRs inside that
-scope are most likely to land; terminal/provider ports are welcome as
-discussions first.
+Scope (v1): macOS, iTerm2, Claude Code + Codex + Antigravity CLI. Issues
+and PRs inside that scope are most likely to land; terminal/provider ports
+are welcome as discussions first.
 
 ## Development
 

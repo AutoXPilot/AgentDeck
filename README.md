@@ -1,9 +1,9 @@
 # AgentDeck
 
-macOS menu-bar monitor for every **Claude Code** and **Codex** terminal
-session you have running. See at a glance which agents are working, which
-finished, and which are **blocked waiting on you** — then click a row to jump
-to that exact iTerm2 tab/pane.
+macOS menu-bar monitor for every **Claude Code**, **Codex** and
+**Antigravity CLI** (`agy`) terminal session you have running. See at a
+glance which agents are working, which finished, and which are **blocked
+waiting on you** — then click a row to jump to that exact iTerm2 tab/pane.
 
 - Live states per session: `ready · working · waiting · done · error`
 - The menu-bar badge counts only what's **blocking you** (waiting/error), and
@@ -20,14 +20,26 @@ to that exact iTerm2 tab/pane.
 
 <img src="Resources/screenshot.png" width="440" alt="AgentDeck popover showing Claude and Codex sessions with waiting, done, working and ready states">
 
-**Scope (v1):** macOS 14+, iTerm2, Claude Code + Codex.
+**Scope (v1):** macOS 14+, iTerm2, Claude Code + Codex + Antigravity CLI.
+
+| Provider | Badge | Hooks file | How a session is found | Waiting detected | Restore |
+|---|---|---|---|---|---|
+| Claude Code | CL | `~/.claude/settings.json` | hooks + Claude's session registry | permission and input prompts | `command claude --resume <id>` |
+| Codex CLI | CX | `~/.codex/hooks.json` | hooks | permission requests (when Codex fires them) | `command codex resume <id>` |
+| Antigravity CLI | AG | `~/.gemini/config/hooks.json` (set `agentdeck`) | hooks + agy's presence locks | questions (`ask_question`) only — **not** permission prompts | `command agy --conversation <id>` |
 
 ## What it writes on your machine (read this first)
 
-AgentDeck's installer edits two files you own:
+AgentDeck's installer edits up to three files you own:
 
 - `~/.claude/settings.json` — adds hook entries for 7 lifecycle events
-- `~/.codex/hooks.json` — adds hook entries for 5 lifecycle events
+- `~/.codex/hooks.json` — adds hook entries for 5 lifecycle events (only if
+  `~/.codex` exists)
+- `~/.gemini/config/hooks.json` — adds one hook set named `agentdeck`
+  covering 6 events (only if `~/.gemini/antigravity-cli` exists). Your
+  other hook sets are carried over unchanged. If a set named `agentdeck`
+  already exists and wasn't written by AgentDeck, the install stops and
+  writes nothing rather than replace it.
 
 Every edit preserves your existing settings and hooks, is idempotent, and
 creates a timestamped `.bak` backup next to the file (last 5 kept). Known
@@ -58,6 +70,20 @@ selected: Codex fills it with the user's first message unless the thread
 was renamed, so the column is treated as conversation content and never
 enters the process. A Codex row is named only by an explicit `/rename`.
 
+For Antigravity, every hook payload carries the user's last message
+(`lastUserInput`), and tool events carry the tool's arguments
+(`toolCall.args`); both are dropped while parsing and never stored or
+logged. Only the tool's *name* is read, and only `ask_question` matters.
+A failed turn's `error` is free text, so only whether it is non-empty is
+kept; the row shows a category taken from `terminationReason`
+(`no_tool_call`, …), never the error itself. From agy's state folder
+(`~/.gemini/antigravity-cli/`) AgentDeck reads only the names of
+`presence/*.lock` and whether a process holds each one, the workspace →
+conversation map in `cache/last_conversations.json`, and whether
+`conversations/<id>.db` exists (never opened). It never reads
+`history.jsonl` (your prompts), the conversation databases,
+`conversation_summaries.db`, `brain/` or agy's logs.
+
 Conversation content is parsed past but never retained, logged, or
 displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
 thread's title — i.e. a prompt — could appear as a row title and in a
@@ -77,10 +103,11 @@ only if you set it yourself.
 1. Quit AgentDeck and remove it from System Settings → General → Login
    Items if you added it there.
 2. Edit `~/.claude/settings.json` and `~/.codex/hooks.json` and delete the
-   hook entries whose `command` mentions `agentdeck-hook`.
+   hook entries whose `command` mentions `agentdeck-hook`; in
+   `~/.gemini/config/hooks.json` delete the `"agentdeck"` hook set.
 3. `rm -rf ~/Library/Application\ Support/AgentDeck/` and delete the app.
 4. Optional: `defaults delete com.tonyhoang.agentdeck` (acknowledgments,
-   `waitAlertMinutes`); remove the `*.agentdeck-*.bak` files beside the two
+   `waitAlertMinutes`); remove the `*.agentdeck-*.bak` files beside the
    configs; `brew uninstall agentdeck && brew untap AutoXPilot/tap`.
 
 **Don't uninstall by restoring a `.bak`.** Those are whole-file snapshots
@@ -119,12 +146,16 @@ git clone https://github.com/AutoXPilot/AgentDeck && cd AgentDeck
 - Codex sessions started **before** the hooks were installed won't report
   until restarted. Claude sessions appear either way — see discovery
   below.
+- agy reads its hooks only at startup: restart running `agy` sessions
+  after installing. Until then they still appear (from agy's presence
+  locks), shown as ready and never changing state.
 
 ## How it works
 
 ```
-claude / codex lifecycle hooks
-      └─ "…/agentdeck-hook" claude|codex     (JSON on stdin, exit 0 always)
+claude / codex / agy lifecycle hooks
+      └─ '…/agentdeck-hook' claude|codex     (JSON on stdin, exit 0 always)
+      └─ '…/agentdeck-hook' antigravity <Event>   (agy's payload names no event)
             └─ ~/Library/Application Support/AgentDeck/sessions/<provider>-<id>.json
                   └─ AgentDeck.app: directory watcher + 15s liveness sweep
 ```
@@ -140,6 +171,20 @@ Codex registers SessionStart/UserPromptSubmit/PermissionRequest/Stop/
 SessionEnd (same `hooks.json` schema as Claude's settings). All verified
 firing live against codex-cli 0.147.0. No StopFailure → no error state for
 Codex; the liveness sweep backstops removal for crashes.
+
+Antigravity (agy 1.4.7, observed live): a session's first event is
+PreInvocation (SessionStart did not fire, even with `--continue`), and one
+turn runs several PreInvocation/PostInvocation pairs before exactly one
+Stop. Mapping: PreInvocation→working; PreToolUse(`ask_question`)→waiting
+and PostToolUse(`ask_question`)→working (the hook set's matcher is exactly
+`ask_question`, so no other tool call runs the helper); Stop with a
+non-empty `error`→error, else Stop with `fullyIdle: true`→done, otherwise
+ignored; PostInvocation is ignored; SessionStart→ready if a newer agy ever
+fires it. A Stop may create a row, since a missed start would otherwise
+leave the session invisible. **Permission prompts are not detected**: no
+probe exercised one, so no tool name is matched for them. agy has no
+SessionEnd; a row goes when its `agy` process does (the sweep), and the
+`agy --bg-updater` child process is never mistaken for a session.
 
 Sessions are removed when their agent exits (SessionEnd, or the sweep for
 crashed/closed terminals) — except on `/clear` and resume, where the process
@@ -162,6 +207,19 @@ is possible. Where a snapshot exists it supplies the row, since it
 carries the pane id and the hook-derived state. `done` and `error` are
 never inferred this way; they are facts only a hook can supply. Codex has
 no equivalent registry, so it remains hook-only.
+
+agy holds `~/.gemini/antigravity-cli/presence/<conversation>.lock` locked
+for as long as a session runs (the file stays behind afterwards and its
+modification time never changes, so only the lock counts). AgentDeck
+probes each lock without creating or changing it and lists a held one as
+a running session if no hook has reported it. Such a row knows only that
+the conversation is running: its folder comes from agy's
+`last_conversations.json` when exactly one workspace names that
+conversation, and is otherwise blank; it has no pid or pane, so it can't
+be focused, and without a folder it isn't remembered for restore. A held
+lock also keeps a hook snapshot from aging out; once the lock is released
+the snapshot follows the normal rules (its pid, or the 24-hour cap for a
+pid-less one).
 
 A discovered row has no recorded pane id, since no hook ran to capture
 one. AgentDeck finds the pane by the agent process's controlling
@@ -235,9 +293,14 @@ AgentDeck remembers them and can resume each conversation in its folder.
 - **Save open sessions as workspace…** keeps a named set you can restore
   any time. Named workspaces are never changed or pruned automatically.
 
-Each session is restored by typing `cd <folder> && claude --resume <id>`
-(or `codex resume <id>`) into a new tab. The tab uses your default iTerm
-profile, so that profile has to start a POSIX-style shell (zsh, bash);
+Each session is restored by typing `cd -- '<folder>' && command claude
+--resume <id>` (or `command codex resume <id>`, or `command agy
+--conversation <id>`) into a new tab. `command` runs the real executable,
+so a shell alias or function of the same name can't rewrite the line — an
+`agy` alias that adds `--dangerously-skip-permissions`, for instance, is
+not applied to a restored session. agy has no recorded mode to carry
+over. The tab uses your default iTerm profile, so that profile has to
+start a POSIX-style shell (zsh, bash);
 one that runs ssh or tmux instead won't work, and neither will a shell
 startup that stops to ask something, which swallows the typed line.
 Sessions start five at a time, each group given up to ten seconds to come
@@ -324,7 +387,7 @@ AgentDeck adapts to what the policy allows. It reads the policy
   your own `settings.json`. A menu-bar app doesn't see variables exported
   only in a shell profile; Copy diagnostics shows which directory it used.
 - **No Codex installed**: the Codex dot is neutral, not red, and nothing is
-  written to `~/.codex`.
+  written to `~/.codex`. The same goes for Antigravity and `~/.gemini`.
 - **No iTerm2 installed**: monitoring works; restore says it needs iTerm2.
 
 Discovery reads Claude's session files, which aren't a documented
@@ -341,8 +404,8 @@ your machine" section above are what such a request usually needs.
 - On launch the app compares the bundled helper's SHA-256 against the stable
   copy hooks invoke and atomically updates it on drift — upgrading can never
   leave hooks running an old helper. A stale helper shows as unhealthy in
-  the footer (`hooks: ● helper ● claude ● codex` = setup health, not
-  session activity). It never downgrades: if the stable helper reports a
+  the footer (`hooks: ● helper ● claude ● codex ● antigravity` = setup
+  health, not session activity). It never downgrades: if the stable helper reports a
   newer version than this build (`agentdeck-hook --version`), an older
   copy of the app leaves it in place and counts it as healthy.
 - **Running two versions side by side** (a source build beside the
@@ -355,8 +418,10 @@ your machine" section above are what such a request usually needs.
   build.
 - A snapshot's pid is trusted only if a live process started at or before the
   snapshot's last update *and* looks like the agent (its executable path or
-  name says claude or codex). A recycled pid fails one or the other. A
-  session that passes both is kept however long it sits quiet — a Codex
+  name says claude or codex; for agy, the executable is named exactly
+  `agy` and isn't the `--bg-updater` child). A recycled pid fails one or
+  the other. A session that passes both is kept however long it sits
+  quiet — a Codex
   session waiting for input over a weekend used to lose its row at seven
   days; pid-less snapshots still go after 24 hours.
 - `session_id` is sanitized before becoming a filename; hook payloads can
@@ -399,6 +464,7 @@ defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disa
 | macOS | 14+ (developed on 26.x) |
 | Claude Code | 2.1.306 |
 | Codex CLI | 0.159.3 |
+| Antigravity CLI | 1.4.7 |
 | iTerm2 | 3.7.0 |
 
 Other terminals: rows still appear and states are correct, but there's no
