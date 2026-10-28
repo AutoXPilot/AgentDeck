@@ -141,7 +141,10 @@ public enum ProcessTree {
         var current = pid
         for depth in 0..<12 {
             guard let (name, ppid) = nameAndParent(of: current) else { return nil }
-            if match.matchesAncestor(name: name, path: executablePath(of: current), depth: depth) {
+            let pid = current
+            if match.matchesAncestor(
+                name: name, path: executablePath(of: current), depth: depth,
+                argvMentions: { argumentsMention($0, pid: pid) }) {
                 return current
             }
             guard ppid > 1, ppid != current else { return nil }

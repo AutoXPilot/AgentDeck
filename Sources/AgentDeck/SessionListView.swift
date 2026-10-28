@@ -179,7 +179,7 @@ struct SessionListView: View {
             case .idle:
                 Text("No active agent sessions").font(.callout)
                 Text(
-                    "Start `claude` or `codex` in iTerm2. Sessions started "
+                    "Start `claude`, `codex` or `agy` in iTerm2. Sessions started "
                     + "before hooks were installed appear after a restart."
                 )
                 .font(.caption).foregroundStyle(.secondary)
@@ -655,6 +655,7 @@ extension ProviderTint {
         switch self {
         case .orange: return .orange
         case .teal: return .teal
+        case .purple: return .purple
         }
     }
 }

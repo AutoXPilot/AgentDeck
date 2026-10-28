@@ -447,6 +447,8 @@ struct WorkspaceRestoreTests {
                 == "cd -- '/tmp' && command claude --resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
         #expect(WorkspaceRestore.commandLine(for: entry(provider: .codex))
                 == "cd -- '/tmp' && command codex resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
+        #expect(WorkspaceRestore.commandLine(for: entry(provider: .antigravity))
+                == "cd -- '/tmp' && command agy --conversation 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
     }
 
     @Test func aNonUUIDIdIsRefusedNotSearched() {

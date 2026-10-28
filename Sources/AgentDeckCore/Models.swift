@@ -3,6 +3,8 @@ import Foundation
 public enum Provider: String, Codable, CaseIterable, Sendable {
     case claude
     case codex
+    /// Google's Antigravity CLI (`agy`).
+    case antigravity
 
     public var displayName: String { spec.displayName }
 }

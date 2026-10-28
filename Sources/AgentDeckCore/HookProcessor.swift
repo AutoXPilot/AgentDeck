@@ -56,12 +56,7 @@ public enum HookProcessor {
     ) -> HookAction {
         let event = e.event
         let sessionId = e.sessionId
-        let action = EventMapping.action(
-            provider: provider,
-            event: event,
-            notificationType: e.notificationType,
-            endReason: e.endReason
-        )
+        let action = EventMapping.action(for: e, provider: provider)
         let key = SessionKey.make(provider, sessionId)
 
         // Serialize the whole load-merge-write/remove for this key so a `Stop`

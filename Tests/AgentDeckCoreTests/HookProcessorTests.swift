@@ -340,8 +340,8 @@ final class HookProcessorTests {
             == "Stop")
     }
 
-    @Test func stopNeverCreatesForEitherCurrentProvider() {
-        for provider in Provider.allCases {
+    @Test func stopNeverCreatesForClaudeOrCodex() {
+        for provider in [Provider.claude, .codex] {
             #expect(provider.spec.stopUpdatesOnly, "both have a SessionEnd that can race Stop")
             #expect(process(provider, ["hook_event_name": "Stop", "session_id": "nobody"]) == .ignore)
         }

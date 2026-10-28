@@ -216,6 +216,17 @@ public enum WorkspaceRestore {
         return "\(cd) && command codex resume \(id)"
     }
 
+    /// No mode flags: agy's hooks report no permission mode, so there is
+    /// none to carry back. `command` matters most here — a common alias
+    /// adds `--dangerously-skip-permissions`, which a restore must not
+    /// silently apply.
+    @Sendable static func antigravityCommandLine(
+        _ entry: WorkspaceEntry, refusedPermissionModes: Set<String>
+    ) -> String? {
+        guard let (cd, id) = resumePrefix(entry) else { return nil }
+        return "\(cd) && command agy --conversation \(id)"
+    }
+
     /// POSIX single-quoting: everything literal, `'` written as `'\''`.
     public static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"

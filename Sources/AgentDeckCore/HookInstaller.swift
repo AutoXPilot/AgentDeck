@@ -7,6 +7,8 @@ public enum InstallerError: Error, CustomStringConvertible {
     case writeFailed(String)
     /// The organization's Claude Code policy runs only its own hooks.
     case blockedByPolicy
+    /// A hook set with AgentDeck's name exists and isn't AgentDeck's.
+    case foreignHookSet(name: String, path: String)
 
     public var description: String {
         switch self {
@@ -21,6 +23,10 @@ public enum InstallerError: Error, CustomStringConvertible {
                 + "Close anything editing it and try again."
         case .writeFailed(let path):
             return "couldn't create \(path) — nothing was written"
+        case .foreignHookSet(let name, let path):
+            return "\(path) already has a hook set named \"\(name)\" that AgentDeck "
+                + "didn't write; it was left alone and nothing was written. Rename "
+                + "or remove that set, then install again."
         }
     }
 }
@@ -61,6 +67,15 @@ public struct HookInstaller: Sendable {
     public func command(for provider: Provider) -> String {
         "\(WorkspaceRestore.shellQuote(helperPath)) \(provider.rawValue)"
     }
+
+    /// For a provider whose payload doesn't name the event: the event goes
+    /// on argv (`'<helper>' antigravity PreInvocation`).
+    public func command(for provider: Provider, event: String) -> String {
+        provider.spec.eventNameOnArgv ? "\(command(for: provider)) \(event)" : command(for: provider)
+    }
+
+    /// The hook set AgentDeck owns in Antigravity's hooks.json.
+    public static let antigravitySetName = "agentdeck"
 
     /// The double-quoted form earlier versions wrote. For a path with no
     /// character the shell treats specially inside double quotes, it is
@@ -110,11 +125,70 @@ public struct HookInstaller: Sendable {
     /// canonical command. A single surviving entry (or a mention of the path
     /// elsewhere in the file) must not paint the integration green.
     public func isInstalled(provider: Provider, in fileURL: URL) -> Bool {
+        if provider.spec.hooks?.format == .antigravityHookSets {
+            return isHookSetInstalled(provider: provider, in: fileURL)
+        }
         guard let root = try? Self.readJSONObject(at: fileURL),
               let hooks = root["hooks"] as? [String: Any] else { return false }
         let accepted = [command(for: provider), legacyCommand(for: provider)].compactMap { $0 }
         return Self.events(for: provider).allSatisfy { event in
             !Set(Self.commandStrings(in: hooks[event] ?? [])).isDisjoint(with: accepted)
+        }
+    }
+
+    /// Structural, not a search: the set is present and not disabled, and
+    /// every event holds a command handler running exactly this helper for
+    /// exactly that event — tool events inside a group with the expected
+    /// matcher. A handler for the wrong event would record every event as
+    /// that one.
+    func isHookSetInstalled(provider: Provider, in fileURL: URL) -> Bool {
+        guard let spec = provider.spec.hooks,
+              let root = try? Self.readJSONObject(at: fileURL),
+              let set = root[Self.antigravitySetName] as? [String: Any] else { return false }
+        if let enabled = set["enabled"], (enabled as? Bool) != true { return false }
+        func runsOurs(_ handlers: Any?, _ event: String) -> Bool {
+            (handlers as? [Any] ?? []).contains { item in
+                guard let h = item as? [String: Any] else { return false }
+                return h["type"] as? String == "command"
+                    && h["command"] as? String == command(for: provider, event: event)
+            }
+        }
+        return spec.events.allSatisfy { event in
+            let entries = set[event]
+            guard let matcher = spec.matchers[event] else { return runsOurs(entries, event) }
+            return (entries as? [Any] ?? []).contains { item in
+                guard let group = item as? [String: Any] else { return false }
+                return group["matcher"] as? String == matcher && runsOurs(group["hooks"], event)
+            }
+        }
+    }
+
+    /// AgentDeck's hook set, as written.
+    func canonicalHookSet(for provider: Provider) -> [String: Any] {
+        guard let spec = provider.spec.hooks else { return [:] }
+        var set: [String: Any] = [:]
+        for event in spec.events {
+            let handler: [String: Any] = [
+                "type": "command", "command": command(for: provider, event: event), "timeout": 10,
+            ]
+            if let matcher = spec.matchers[event] {
+                set[event] = [["matcher": matcher, "hooks": [handler]]]
+            } else {
+                set[event] = [handler]
+            }
+        }
+        return set
+    }
+
+    /// Whether a set named like ours was written by AgentDeck: an object
+    /// whose every command runs this helper (raw or quoted path). Anything
+    /// else is someone's own set and is never replaced.
+    func isOurHookSet(_ value: Any) -> Bool {
+        guard let set = value as? [String: Any] else { return false }
+        let quoted = WorkspaceRestore.shellQuote(helperPath)
+        return Self.commandStrings(in: set).allSatisfy {
+            $0.hasPrefix(quoted + " ") || $0.hasPrefix(helperPath + " ")
+                || $0.hasPrefix("\"\(helperPath)\" ")
         }
     }
 
@@ -138,6 +212,19 @@ public struct HookInstaller: Sendable {
         // between here and the write is detected instead of overwritten
         let basis = try? Data(contentsOf: fileURL)
         var root = try Self.readJSONObject(at: fileURL)
+        if provider.spec.hooks?.format == .antigravityHookSets {
+            // Only the set named "agentdeck" is touched; every other set is
+            // carried over as parsed (re-serialized, not edited).
+            let name = Self.antigravitySetName
+            if let existing = root[name], !isOurHookSet(existing) {
+                throw InstallerError.foreignHookSet(name: name, path: fileURL.path)
+            }
+            let canonical = canonicalHookSet(for: provider)
+            if let existing = root[name], Self.jsonEqual(existing, canonical) { return false }
+            root[name] = canonical
+            try Self.backupAndWrite(root, to: fileURL, basis: basis)
+            return true
+        }
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         let canonical = command(for: provider)
         var changed = false

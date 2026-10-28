@@ -65,6 +65,16 @@ public enum WorkspaceCapture {
                 displayName: (codexName?.isEmpty == false) ? codexName : nil,
                 permissionMode: s.permissionMode, lastSeen: now
             )
+        case .antigravity:
+            // A row found only by its presence lock has a folder only when
+            // agy's cache names it unambiguously; without one it can't be
+            // restored. agy has no session names, and no mode to keep.
+            if s.host.kind == .app { return nil }
+            guard !s.projectPath.isEmpty else { return nil }
+            return WorkspaceEntry(
+                provider: .antigravity, sessionId: s.sessionId, cwd: s.projectPath,
+                displayName: nil, permissionMode: nil, lastSeen: now
+            )
         }
     }
 }

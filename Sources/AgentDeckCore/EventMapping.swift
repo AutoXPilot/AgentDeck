@@ -24,8 +24,10 @@ public enum EventMapping {
     /// - `agent_completed`: a background task finishing must not flip the
     ///   main session's state — Stop owns "done".
     /// - `elicitation_complete`/`_response`: those mean the wait resolved.
+    /// `ask_question`: Antigravity asked the user something (recorded from
+    /// its PreToolUse, kept as the snapshot's notification type).
     static let waitingNotificationPrefixes = [
-        "permission", "elicitation_dialog", "agent_needs",
+        "permission", "elicitation_dialog", "agent_needs", HookPayload.askQuestionTool,
     ]
 
     /// SessionEnd reasons where the process keeps running, so the row must
@@ -39,6 +41,40 @@ public enum EventMapping {
     public static func isBlockingNotification(_ type: String) -> Bool {
         let lowered = type.lowercased()
         return waitingNotificationPrefixes.contains { lowered.hasPrefix($0) }
+    }
+
+    /// The action for a parsed hook event.
+    public static func action(for e: NormalizedHookEvent, provider: Provider) -> HookAction {
+        if provider == .antigravity { return antigravityAction(e) }
+        return action(provider: provider, event: e.event,
+                      notificationType: e.notificationType, endReason: e.endReason)
+    }
+
+    /// Antigravity (agy 1.4.7, observed live): a turn is PreInvocation →
+    /// [tool events] → PostInvocation, repeated per invocation, then one
+    /// Stop. There is no SessionEnd and no permission event; the PID sweep
+    /// and the presence lock decide when a session is gone.
+    static func antigravityAction(_ e: NormalizedHookEvent) -> HookAction {
+        let asksUser = e.toolName == HookPayload.askQuestionTool
+        switch e.event {
+        case "SessionStart":
+            return .set(.ready)
+        case "PreInvocation":
+            return .set(.working)
+        case "PreToolUse":
+            return asksUser ? .set(.waiting) : .ignore
+        case "PostToolUse":
+            // answered
+            return asksUser ? .set(.working) : .ignore
+        case "Stop":
+            // an error outranks idleness: a failed turn also ends idle
+            if e.reportedError { return .set(.error) }
+            return e.fullyIdle == true ? .set(.done) : .ignore
+        default:
+            // PostInvocation: a turn may run several invocations; only Stop
+            // ends it
+            return .ignore
+        }
     }
 
     public static func action(

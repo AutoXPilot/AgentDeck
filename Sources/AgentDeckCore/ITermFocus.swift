@@ -149,6 +149,7 @@ public enum ITermFocus {
         case let s where s.contains("agent needs"): return "subagent needs input"
         case let s where s.contains("sandbox"): return "sandbox request"
         case let s where s.contains("dialog"): return "dialog open"
+        case "ask question": return "asked you a question"
         case let s: return s
         }
     }

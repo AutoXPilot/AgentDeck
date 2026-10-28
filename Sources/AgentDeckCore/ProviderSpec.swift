@@ -86,6 +86,41 @@ public struct ProviderSpec: Sendable {
             conversationExists: { entry in CodexThreads.exists(id: entry.sessionId) },
             running: .trustworthyPid(processScan: true),
             stopUpdatesOnly: true),
+        .antigravity: ProviderSpec(
+            provider: .antigravity, displayName: "Antigravity", badge: "AG", tint: .purple,
+            hooks: HookConfigSpec(
+                fileURL: {
+                    FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent(".gemini/config/hooks.json")
+                },
+                format: .antigravityHookSets,
+                // Observed with agy 1.4.7: a session's first event is
+                // PreInvocation (SessionStart did not fire, even on
+                // `--continue`); a turn runs several Pre/PostInvocation
+                // pairs and ends in exactly one Stop. SessionStart is
+                // registered anyway in case a newer agy fires it.
+                events: [
+                    "SessionStart", "PreInvocation", "PostInvocation", "Stop",
+                    "PreToolUse", "PostToolUse",
+                ],
+                // Only the question tool: every other tool call would run
+                // the helper for nothing. Permission prompts were not
+                // observed, so they have no matcher and aren't detected.
+                matchers: ["PreToolUse": "ask_question", "PostToolUse": "ask_question"],
+                policyGated: false,
+                installNote: "agy reads hooks only at startup — restart running agy sessions"),
+            applicability: .requiresHomeDirectory(".gemini/antigravity-cli"),
+            eventNameOnArgv: true,
+            // `agy --bg-updater` is a child process with the same name;
+            // it is never a session.
+            executableMatch: .exactBasename("agy", excludingArgument: "--bg-updater"),
+            sessionIdIsUUID: true,
+            resume: .shell(WorkspaceRestore.antigravityCommandLine),
+            conversationExists: { entry in AntigravityState.conversationExists(id: entry.sessionId) },
+            running: .trustworthyPid(processScan: false),
+            // no SessionEnd to race, and no SessionStart either: a Stop may
+            // be the first event seen for a session
+            stopUpdatesOnly: false),
     ]
 
     public static func of(_ provider: Provider) -> ProviderSpec {
@@ -100,7 +135,7 @@ extension Provider {
 
 /// A colour token; the app maps it to a real colour, so the core stays free
 /// of UI frameworks.
-public enum ProviderTint: Sendable { case orange, teal }
+public enum ProviderTint: Sendable { case orange, teal, purple }
 
 public struct HookConfigSpec: Sendable {
     public enum Format: Sendable {
@@ -109,16 +144,35 @@ public struct HookConfigSpec: Sendable {
         case claudeSettings
         /// The same shape in Codex's hooks.json.
         case codexHooks
+        /// Antigravity's hooks.json: the top level is named hook sets.
+        /// AgentDeck owns the set `"agentdeck"`; each event names itself on
+        /// argv. Tool events hold `[{matcher, hooks: [handler]}]`, the
+        /// others hold handlers directly.
+        case antigravityHookSets
     }
 
     /// Read when needed: Claude's follows CLAUDE_CONFIG_DIR.
     public let fileURL: @Sendable () -> URL
     public let format: Format
     public let events: [String]
+    /// Event → tool matcher, for events registered as matcher groups.
+    public let matchers: [String: String]
     /// The organization's Claude Code policy can refuse user hooks.
     public let policyGated: Bool
     /// Printed after an install that changed the file.
     public let installNote: String?
+
+    public init(
+        fileURL: @escaping @Sendable () -> URL, format: Format, events: [String],
+        matchers: [String: String] = [:], policyGated: Bool, installNote: String?
+    ) {
+        self.fileURL = fileURL
+        self.format = format
+        self.events = events
+        self.matchers = matchers
+        self.policyGated = policyGated
+        self.installNote = installNote
+    }
 }
 
 public enum Applicability: Sendable, Equatable {
@@ -166,7 +220,9 @@ public enum ExecutableMatch: Sendable, Equatable {
     case codex
     /// The executable's file name is exactly this. For a short name, a
     /// substring rule would match unrelated binaries (`strategy`, `agyx`).
-    case exactBasename(String)
+    /// A process whose arguments contain `excludingArgument` is never the
+    /// agent (a helper child of the same binary).
+    case exactBasename(String, excludingArgument: String? = nil)
 
     static func isJSRuntime(_ lowerName: String) -> Bool {
         lowerName == "node" || lowerName == "bun"
@@ -177,7 +233,10 @@ public enum ExecutableMatch: Sendable, Equatable {
     /// above the start: the start pid is the hook's own short-lived shell,
     /// and matching it as "node" would record a pid the liveness sweep
     /// deletes at once.
-    public func matchesAncestor(name: String, path: String?, depth: Int) -> Bool {
+    public func matchesAncestor(
+        name: String, path: String?, depth: Int,
+        argvMentions: (String) -> Bool = { _ in false }
+    ) -> Bool {
         let lowerName = name.lowercased()
         let lowerPath = path?.lowercased() ?? ""
         switch self {
@@ -186,8 +245,8 @@ public enum ExecutableMatch: Sendable, Equatable {
             return pathMatch || (depth > 0 && Self.isJSRuntime(lowerName))
         case .codex:
             return lowerName.contains("codex") || lowerPath.contains("codex")
-        case .exactBasename(let base):
-            return Self.basename(path) == base || (path == nil && name == base)
+        case .exactBasename(let base, let excluded):
+            return Self.exactMatch(base, excluded, name: name, path: path, argvMentions)
         }
     }
 
@@ -209,9 +268,18 @@ public enum ExecutableMatch: Sendable, Equatable {
             return argvMentions("claude")
         case .codex:
             return lowerName.contains("codex") || lowerPath.contains("codex")
-        case .exactBasename(let base):
-            return Self.basename(path) == base || (path == nil && name == base)
+        case .exactBasename(let base, let excluded):
+            return Self.exactMatch(base, excluded, name: name, path: path, argvMentions)
         }
+    }
+
+    static func exactMatch(
+        _ base: String, _ excluded: String?, name: String, path: String?,
+        _ argvMentions: (String) -> Bool
+    ) -> Bool {
+        guard basename(path) == base || (path == nil && name == base) else { return false }
+        if let excluded, argvMentions(excluded) { return false }
+        return true
     }
 
     static func basename(_ path: String?) -> String? {

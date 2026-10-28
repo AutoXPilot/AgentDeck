@@ -6,10 +6,13 @@ import Foundation
 // helper with SIGPIPE — treat a broken pipe as a normal error.
 signal(SIGPIPE, SIG_IGN)
 
-// agentdeck-hook — invoked by Claude Code / Codex lifecycle hooks.
+// agentdeck-hook — invoked by Claude Code / Codex / Antigravity hooks.
 //
 //   agentdeck-hook <provider>      read hook JSON on stdin, update snapshot
 //                                  (claude, codex — see Provider)
+//   agentdeck-hook antigravity <Event>
+//                                  the same, with the event on argv (agy's
+//                                  payload doesn't name it)
 //   agentdeck-hook install          copy self to stable path, register hooks
 //   agentdeck-hook status           print install/health report
 //   agentdeck-hook debug-ancestry   print the process walk (diagnostics)

@@ -79,6 +79,37 @@ struct ProviderSpecTests {
                                   argvMentions: { _ in true }))
     }
 
+    @Test func antigravityIsMatchedByExactNameAndNeverAsItsUpdater() {
+        let m = Provider.antigravity.spec.executableMatch
+        let path = "/Users/x/.local/bin/agy"
+        #expect(m.matchesAncestor(name: "agy", path: path, depth: 0,
+                                  argvMentions: { _ in false }))
+        #expect(m.looksLikeAgent(name: "agy", path: path, argvMentions: { _ in false }))
+        // `agy --bg-updater …` is a child with the same name and path
+        let updater: (String) -> Bool = { $0 == "--bg-updater" }
+        #expect(!m.matchesAncestor(name: "agy", path: path, depth: 0, argvMentions: updater))
+        #expect(!m.looksLikeAgent(name: "agy", path: path, argvMentions: updater))
+        for path in ["/usr/bin/strategy", "/Users/x/bin/agyx", "/opt/agy-tools/foo"] {
+            let name = (path as NSString).lastPathComponent
+            #expect(!m.looksLikeAgent(name: name, path: path, argvMentions: { _ in false }))
+            #expect(!m.matchesAncestor(name: name, path: path, depth: 1))
+        }
+    }
+
+    @Test func antigravitysRow() {
+        let spec = Provider.antigravity.spec
+        #expect(spec.badge == "AG" && spec.displayName == "Antigravity")
+        #expect(spec.eventNameOnArgv && spec.sessionIdIsUUID && !spec.stopUpdatesOnly)
+        #expect(spec.running == .trustworthyPid(processScan: false))
+        #expect(spec.applicability == .requiresHomeDirectory(".gemini/antigravity-cli"))
+        #expect(spec.hooks?.format == .antigravityHookSets)
+        #expect(spec.hooks?.fileURL().path.hasSuffix("/.gemini/config/hooks.json") == true)
+        #expect(HookInstaller.events(for: .antigravity) == [
+            "SessionStart", "PreInvocation", "PostInvocation", "Stop", "PreToolUse", "PostToolUse",
+        ])
+        #expect(spec.hooks?.matchers == ["PreToolUse": "ask_question", "PostToolUse": "ask_question"])
+    }
+
     @Test func anExactBasenameRuleRejectsLookalikes() {
         let m = ExecutableMatch.exactBasename("agy")
         #expect(m.looksLikeAgent(name: "agy", path: "/Users/x/.local/bin/agy",
@@ -104,11 +135,13 @@ struct ProviderSpecTests {
     }
 
     /// `command` makes the shell run the real executable: an alias or
-    /// function named like the agent can't rewrite a restore.
+    /// function named `claude`/`codex`/`agy` can't rewrite a restore (agy is
+    /// commonly aliased to add --dangerously-skip-permissions).
     @Test func everyRestoreLineRunsTheRealExecutable() throws {
         let id = "D047F956-A5ED-4248-8938-92685F0DA7F7"
         let expected: [Provider: String] = [
             .claude: "command claude --resume ", .codex: "command codex resume ",
+            .antigravity: "command agy --conversation ",
         ]
         for provider in Provider.allCases {
             let entry = WorkspaceEntry(provider: provider, sessionId: id, cwd: "/tmp",
@@ -117,16 +150,27 @@ struct ProviderSpecTests {
             let want = try #require(expected[provider], "every provider has a pinned line")
             #expect(line?.hasPrefix("cd -- '/tmp' && " + want) == true, "\(line ?? "nil")")
         }
+        // agy: no mode flags at all — hooks record none
+        let agy = WorkspaceEntry(provider: .antigravity, sessionId: id, cwd: "/tmp",
+                                 permissionMode: "bypassPermissions", lastSeen: .distantPast)
+        #expect(WorkspaceRestore.commandLine(for: agy)
+                == "cd -- '/tmp' && command agy --conversation d047f956-a5ed-4248-8938-92685f0da7f7")
+        let named = WorkspaceEntry(provider: .antigravity, sessionId: "my-chat", cwd: "/tmp",
+                                   lastSeen: .distantPast)
+        #expect(WorkspaceRestore.commandLine(for: named) == nil, "a non-UUID id is refused")
     }
 
     @Test func theInstallPlanSkipsWhatDoesNotApplyAndContinuesPastPolicy() {
         var blocked = ClaudePolicy()
         blocked.hooksBlocked = true
         let plan = HookInstaller.installPlan(applicable: { $0 == .claude }, policy: blocked)
-        #expect(plan.map(\.provider) == [.claude, .codex])
-        #expect(plan.map(\.step) == [.skipBlockedByPolicy, .skipNotApplicable])
+        #expect(plan.map(\.provider) == [.claude, .codex, .antigravity])
+        #expect(plan.map(\.step) == [.skipBlockedByPolicy, .skipNotApplicable, .skipNotApplicable])
         let open = HookInstaller.installPlan(applicable: { _ in true }, policy: .none)
-        #expect(open.map(\.step) == [.install, .install])
+        #expect(open.map(\.step) == [.install, .install, .install])
+        // a managed Mac with agy set up still gets agy's hooks
+        let agyOnly = HookInstaller.installPlan(applicable: { _ in true }, policy: blocked)
+        #expect(agyOnly.map(\.step) == [.skipBlockedByPolicy, .install, .install])
     }
 
     @Test func statusTableMatchesTheOldPerProviderRules() {

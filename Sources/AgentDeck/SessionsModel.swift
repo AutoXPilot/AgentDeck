@@ -610,6 +610,8 @@ final class SessionsModel: ObservableObject {
                 cacheReadAt: codexThreadsLoadedAt,
                 snapshotUpdatedAt: snapshot.updatedAt
             )
+        case .antigravity:
+            return snapshot.model
         }
     }
 
@@ -660,6 +662,13 @@ final class SessionsModel: ObservableObject {
     /// same pid. Otherwise a recycled pid would lead to whatever pane its
     /// new owner happens to run in.
     private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
+        // agy: the hook recorded its own pid; trusted only while it passes
+        // the identity check (start time, `agy` executable)
+        if snapshot.provider == .antigravity, let pid = snapshot.agentPid,
+           Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt, provider: .antigravity),
+           let tty = ProcessTree.controllingTTY(of: pid) {
+            return paneByTTY[tty]
+        }
         guard snapshot.provider == .claude, let pid = snapshot.agentPid,
               claudeLiveSessions[snapshot.sessionId]?.pid == pid,
               // re-checked now, not at the last reload: the click is the
