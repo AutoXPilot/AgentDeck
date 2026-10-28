@@ -19,6 +19,7 @@ public enum SessionPipeline {
         snapshots: [SessionSnapshot],
         registry: [Int32: ClaudeSessionRegistry.Entry],
         liveSessions: [String: ClaudeSessionRegistry.Entry] = [:],
+        discovered extra: [SessionSnapshot] = [],
         acks: [String: Date],
         frozenOrder: [String]?,
         popoverVisible: Bool,
@@ -83,7 +84,11 @@ public enum SessionPipeline {
         // be computed from a list that could still contain duplicates while
         // only `rows` was deduplicated, so a doubled session counted twice
         // in the badge.
-        let all = RowOrdering.deduplicated(normalized + discovered)
+        // Other providers' running sessions found without a hook
+        // (Antigravity's presence locks); the same rule — a snapshot wins.
+        let seen = known.union(discovered.map(\.key))
+        let others = extra.filter { !seen.contains($0.key) }
+        let all = RowOrdering.deduplicated(normalized + discovered + others)
         let sorted = Attention.sorted(all, acks: acks)
         var rows = sorted
         var order: [String]?

@@ -100,7 +100,7 @@ struct ProviderSpecTests {
         let spec = Provider.antigravity.spec
         #expect(spec.badge == "AG" && spec.displayName == "Antigravity")
         #expect(spec.eventNameOnArgv && spec.sessionIdIsUUID && !spec.stopUpdatesOnly)
-        #expect(spec.running == .trustworthyPid(processScan: false))
+        #expect(spec.running == .trustworthyPidOrPresence)
         #expect(spec.applicability == .requiresHomeDirectory(".gemini/antigravity-cli"))
         #expect(spec.hooks?.format == .antigravityHookSets)
         #expect(spec.hooks?.fileURL().path.hasSuffix("/.gemini/config/hooks.json") == true)

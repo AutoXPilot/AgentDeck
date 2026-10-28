@@ -384,11 +384,101 @@ final class AntigravityInstallerTests {
     }
 }
 
-final class AntigravityConversationTests {
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("agentdeck-agy-state-\(UUID().uuidString)")
+final class AntigravityPresenceTests {
+    let dir: URL
+    var presence: URL { dir.appendingPathComponent("presence") }
+
+    init() throws {
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentdeck-agy-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("presence"), withIntermediateDirectories: true)
+    }
 
     deinit { try? FileManager.default.removeItem(at: dir) }
+
+    func lockFile(_ id: String) -> URL {
+        let url = presence.appendingPathComponent("\(id).lock")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return url
+    }
+
+    /// Holds an exclusive flock as agy does; a separate open file, so the
+    /// probe's lock conflicts with it even in this process.
+    func hold(_ url: URL) -> Int32 {
+        let fd = open(url.path, O_RDONLY)
+        precondition(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0)
+        return fd
+    }
+
+    @Test func onlyAHeldLockIsARunningConversation() {
+        let liveId = "C3F378F8-90E1-43EA-875A-A49794F32B55"
+        let live = lockFile(liveId)
+        _ = lockFile("5b9afd2c-1029-42c8-971d-db7e6213cac0")   // left behind by a closed session
+        _ = lockFile("not-a-uuid")
+        let fd = hold(live)
+        let running = AntigravityState.runningConversations(directory: dir)
+        #expect(running.map(\.conversationId) == [liveId.lowercased()])
+        // released: no longer running
+        close(fd)
+        #expect(AntigravityState.runningConversations(directory: dir).isEmpty)
+    }
+
+    @Test func probingNeverCreatesOrChangesALockFile() throws {
+        let missing = presence.appendingPathComponent("7e0c2b8a-1111-4222-8333-944455556666.lock")
+        #expect(!AntigravityState.isLockHeld(missing))
+        #expect(!FileManager.default.fileExists(atPath: missing.path))
+        let url = lockFile("7e0c2b8a-1111-4222-8333-944455556667")
+        let before = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect(!AntigravityState.isLockHeld(url))
+        let after = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect(before[.modificationDate] as? Date == after[.modificationDate] as? Date)
+        #expect(after[.size] as? Int == 0)
+        // the probe released its own lock: agy can still take it exclusively
+        let fd = hold(url)
+        close(fd)
+    }
+
+    @Test func aFolderIsUsedOnlyWhenOneWorkspaceNamesTheConversation() {
+        let a = "c3f378f8-90e1-43ea-875a-a49794f32b55"
+        let b = "5b9afd2c-1029-42c8-971d-db7e6213cac0"
+        let cache = try! JSONSerialization.data(withJSONObject: [
+            "/Users/x": a.uppercased(),
+            "/Users/x/one": b, "/Users/x/two": b,
+            "relative/path": "7e0c2b8a-1111-4222-8333-944455556666",
+            "/Users/x/bad": "not-a-uuid",
+        ])
+        #expect(AntigravityState.unambiguousWorkspaces(fromCache: cache) == [a: "/Users/x"])
+        #expect(AntigravityState.unambiguousWorkspaces(fromCache: Data("[]".utf8)).isEmpty)
+    }
+
+    @Test func discoveredRowsCarryOnlyWhatIsKnown() {
+        let since = Date(timeIntervalSince1970: 1_790_000_000)
+        let rows = AntigravityState.discoveredSnapshots(
+            [.init(conversationId: "a", since: since), .init(conversationId: "b", since: nil)],
+            workspaces: ["a": "/Users/x/code"])
+        #expect(rows.map(\.key) == ["antigravity-a", "antigravity-b"])
+        #expect(rows[0].projectPath == "/Users/x/code" && rows[1].projectPath == "")
+        #expect(rows.allSatisfy { $0.agentPid == nil && $0.terminalSessionId == nil })
+        #expect(rows.allSatisfy { $0.state == .ready && $0.model == nil })
+        #expect(rows[0].updatedAt == since, "never the scan time")
+        // no folder, no restore entry
+        #expect(WorkspaceCapture.entry(for: rows[1], registry: nil, transcriptSessionKind: nil,
+                                       codexName: nil, terminal: .unknown, now: since) == nil)
+    }
+
+    @Test func aHookSnapshotBeatsDiscoveryInThePipeline() {
+        let hook = SessionSnapshot(provider: .antigravity, sessionId: "a", projectPath: "/p",
+                                   state: .working, event: "PreInvocation")
+        let found = AntigravityState.discoveredSnapshots(
+            [.init(conversationId: "a", since: nil), .init(conversationId: "b", since: nil)],
+            workspaces: [:])
+        let out = SessionPipeline.run(snapshots: [hook], registry: [:], discovered: found,
+                                      acks: [:], frozenOrder: nil, popoverVisible: false)
+        #expect(out.rows.count == 2)
+        #expect(out.rows.first { $0.sessionId == "a" }?.state == .working)
+        #expect(out.rows.contains { $0.key == "antigravity-b" })
+    }
 
     @Test func conversationExistenceIsTheDatabaseFileOnly() throws {
         let id = "c3f378f8-90e1-43ea-875a-a49794f32b55"
@@ -404,12 +494,41 @@ final class AntigravityConversationTests {
     }
 }
 
-struct AntigravityCaptureTests {
+struct AntigravityLivenessTests {
     let now = Date(timeIntervalSince1970: 1_790_000_000)
 
     func agy(_ id: String, pid: Int32? = nil, age: TimeInterval) -> SessionSnapshot {
         SessionSnapshot(provider: .antigravity, sessionId: id, projectPath: "/p", state: .done,
                         event: "Stop", updatedAt: now.addingTimeInterval(-age), agentPid: pid)
+    }
+
+    @Test func aHeldLockProtectsTheRowAndReleasingItRestoresNormalExpiry() {
+        let probe = Liveness.ProcessProbe { _ in nil }
+        let stale = agy("a", age: 48 * 3600)
+        #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
+                                      confirmedLive: ["antigravity-a"], probe: probe).isEmpty)
+        #expect(Liveness.keysToRemove([stale], now: now, bootedAt: nil,
+                                      confirmedLive: [], probe: probe) == ["antigravity-a"])
+        // a recent pid-less row stays until the normal idle cap
+        #expect(Liveness.keysToRemove([agy("b", age: 600)], now: now, bootedAt: nil,
+                                      confirmedLive: [], probe: probe).isEmpty)
+    }
+
+    @Test func presenceIsEvidenceForAgyOnly() {
+        let evidence = RunningEvidence(
+            claudeRegistryLive: [],
+            presenceLive: ["antigravity-a", "claude-c", "codex-x"],
+            pidTrusted: { pid, _, _ in pid == 100 },
+            processScan: { _, _ in Issue.record("agy is never scanned"); return [] })
+        let keys = evidence.runningKeys(rows: [agy("p", pid: 100, age: 0), agy("d", pid: 5, age: 0)])
+        #expect(keys == ["antigravity-a", "antigravity-p"])
+        #expect(evidence.runningKeys(rows: [], scanning: ["antigravity-z"]) == ["antigravity-a"])
+        func entry(_ id: String) -> WorkspaceEntry {
+            WorkspaceEntry(provider: .antigravity, sessionId: id, cwd: "/p", lastSeen: now)
+        }
+        #expect(evidence.isRunning(entry("a"), snapshot: nil))
+        #expect(evidence.isRunning(entry("p"), snapshot: agy("p", pid: 100, age: 0)))
+        #expect(!evidence.isRunning(entry("d"), snapshot: agy("d", pid: 5, age: 0)))
     }
 
     @Test func captureKeepsATerminalAgySessionWithAFolderAndNoName() {

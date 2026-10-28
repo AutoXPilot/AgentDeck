@@ -117,7 +117,7 @@ public struct ProviderSpec: Sendable {
             sessionIdIsUUID: true,
             resume: .shell(WorkspaceRestore.antigravityCommandLine),
             conversationExists: { entry in AntigravityState.conversationExists(id: entry.sessionId) },
-            running: .trustworthyPid(processScan: false),
+            running: .trustworthyPidOrPresence,
             // no SessionEnd to race, and no SessionStart either: a Stop may
             // be the first event seen for a session
             stopUpdatesOnly: false),
@@ -207,6 +207,17 @@ public enum RunningStrategy: Sendable, Equatable {
     /// also a running agent process whose arguments name the session (a
     /// resumed Codex runs no hook until its first message).
     case trustworthyPid(processScan: Bool)
+    /// A trustworthy snapshot pid, or the provider's presence lock held by
+    /// a running process (Antigravity).
+    case trustworthyPidOrPresence
+
+    /// Whether a snapshot's pid counts as evidence.
+    var trustsPid: Bool {
+        switch self {
+        case .claudeRegistry: return false
+        case .trustworthyPid, .trustworthyPidOrPresence: return true
+        }
+    }
 }
 
 /// Whether a process is plausibly a provider's agent. The predicates are

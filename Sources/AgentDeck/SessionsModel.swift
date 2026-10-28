@@ -99,6 +99,11 @@ final class SessionsModel: ObservableObject {
     /// Live sessions by session id — the discovery source that makes rows
     /// appear for sessions the hooks never saw.
     private(set) var claudeLiveSessions: [String: ClaudeSessionRegistry.Entry] = [:]
+    /// Antigravity conversations whose presence lock a running agy holds.
+    private(set) var antigravityPresence: [AntigravityState.Presence] = []
+    var presenceLiveKeys: Set<String> {
+        Set(antigravityPresence.map { SessionKey.make(.antigravity, $0.conversationId) })
+    }
     private var waitingTracker = WaitingTracker()
     private var didSeedWaitingBacklog = false
     private static let waitingMemoryKey = "waitingTrackerMemory"
@@ -349,7 +354,13 @@ final class SessionsModel: ObservableObject {
         // to its terminal. Loading this first lets the sweep skip them.
         claudeRegistry = ClaudeSessionRegistry.load()
         claudeLiveSessions = ClaudeSessionRegistry.liveSessions()
+        // A held presence lock is agy's own evidence that the conversation
+        // runs. Once released, the row loses this protection and its
+        // snapshot follows the normal pid / idle rules.
+        antigravityPresence = Provider.antigravity.spec.applicability.isApplicable()
+            ? AntigravityState.runningConversations() : []
         let confirmedLive = Set(claudeLiveSessions.keys.map { SessionKey.make(.claude, $0) })
+            .union(presenceLiveKeys)
         let liveByPid = Dictionary(claudeLiveSessions.values.map { ($0.pid, $0) },
                                    uniquingKeysWith: { a, b in
                                        (a.observedAt ?? .distantPast) >= (b.observedAt ?? .distantPast) ? a : b
@@ -392,6 +403,10 @@ final class SessionsModel: ObservableObject {
             snapshots: all,
             registry: claudeRegistry,
             liveSessions: claudeLiveSessions,
+            discovered: AntigravityState.discoveredSnapshots(
+                antigravityPresence,
+                workspaces: antigravityPresence.isEmpty
+                    ? [:] : AntigravityState.unambiguousWorkspaces()),
             acks: acks,
             frozenOrder: frozenOrder,
             popoverVisible: popoverVisible,
@@ -1239,7 +1254,8 @@ extension SessionsModel {
     /// Sessions running by the agents' own evidence (see
     /// `RunningEvidence`), from the registry view this reload read.
     var runningEvidence: RunningEvidence {
-        RunningEvidence(claudeRegistryLive: Set(claudeLiveSessions.keys))
+        RunningEvidence(claudeRegistryLive: Set(claudeLiveSessions.keys),
+                        presenceLive: presenceLiveKeys)
     }
 
     func runningKeys(_ rows: [SessionSnapshot]) -> Set<String> {
@@ -1363,7 +1379,11 @@ extension SessionsModel {
         // the registry is read only for a provider whose evidence it is
         let live = entry.provider.spec.running == .claudeRegistry
             ? Set(ClaudeSessionRegistry.liveSessions().keys) : []
-        return RunningEvidence(claudeRegistryLive: live)
+        let presence = entry.provider.spec.running == .trustworthyPidOrPresence
+            ? Set(AntigravityState.runningConversations().map {
+                SessionKey.make(.antigravity, $0.conversationId)
+            }) : []
+        return RunningEvidence(claudeRegistryLive: live, presenceLive: presence)
             .isRunning(entry, snapshot: SnapshotStore().load(key: entry.key))
     }
 

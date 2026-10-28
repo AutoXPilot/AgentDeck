@@ -12,6 +12,9 @@ import Foundation
 public struct RunningEvidence {
     /// Claude session ids Claude's registry names a live process for.
     public var claudeRegistryLive: Set<String>
+    /// Session keys whose presence lock a running process holds
+    /// (Antigravity's `presence/<id>.lock`).
+    public var presenceLive: Set<String>
     /// Whether a snapshot's pid still belongs to its agent.
     public var pidTrusted: (_ pid: Int32, _ updatedAt: Date, _ provider: Provider) -> Bool
     /// Which of these session ids a running agent process of the provider
@@ -21,6 +24,7 @@ public struct RunningEvidence {
 
     public init(
         claudeRegistryLive: Set<String>,
+        presenceLive: Set<String> = [],
         pidTrusted: @escaping (Int32, Date, Provider) -> Bool = { pid, updatedAt, provider in
             Liveness.pidIsTrustworthy(pid, forUpdatedAt: updatedAt, provider: provider)
         },
@@ -29,6 +33,7 @@ public struct RunningEvidence {
         }
     ) {
         self.claudeRegistryLive = claudeRegistryLive
+        self.presenceLive = presenceLive
         self.pidTrusted = pidTrusted
         self.processScan = processScan
     }
@@ -40,8 +45,12 @@ public struct RunningEvidence {
         for provider in Provider.allCases where provider.spec.running == .claudeRegistry {
             keys.formUnion(claudeRegistryLive.map { SessionKey.make(provider, $0) })
         }
+        // only for a provider whose evidence presence is
+        keys.formUnion(presenceLive.filter {
+            SessionKey.split($0)?.provider.spec.running == .trustworthyPidOrPresence
+        })
         for row in rows {
-            guard case .trustworthyPid = row.provider.spec.running,
+            guard row.provider.spec.running.trustsPid,
                   let pid = row.agentPid, pidTrusted(pid, row.updatedAt, row.provider)
             else { continue }
             keys.insert(row.key)
@@ -84,6 +93,12 @@ public struct RunningEvidence {
             }
             // resumed but silent: no hook has fired yet
             return scan && !processScan(entry.provider, [entry.sessionId]).isEmpty
+        case .trustworthyPidOrPresence:
+            if let snapshot, let pid = snapshot.agentPid,
+               pidTrusted(pid, snapshot.updatedAt, entry.provider) {
+                return true
+            }
+            return presenceLive.contains(entry.key)
         }
     }
 }
