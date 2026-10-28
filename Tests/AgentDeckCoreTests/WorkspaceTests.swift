@@ -444,9 +444,9 @@ struct WorkspaceRestoreTests {
 
     @Test func alwaysConstructsAResumeFromTheId() {
         #expect(WorkspaceRestore.commandLine(for: entry())
-                == "cd -- '/tmp' && claude --resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
+                == "cd -- '/tmp' && command claude --resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
         #expect(WorkspaceRestore.commandLine(for: entry(provider: .codex))
-                == "cd -- '/tmp' && codex resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
+                == "cd -- '/tmp' && command codex resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
     }
 
     @Test func aNonUUIDIdIsRefusedNotSearched() {

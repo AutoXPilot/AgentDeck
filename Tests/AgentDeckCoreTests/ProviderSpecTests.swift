@@ -96,11 +96,27 @@ struct ProviderSpecTests {
         let claude = WorkspaceEntry(provider: .claude, sessionId: id, cwd: "/tmp/a b",
                                     permissionMode: "plan", lastSeen: .distantPast)
         #expect(WorkspaceRestore.commandLine(for: claude)
-                == "cd -- '/tmp/a b' && claude --resume d047f956-a5ed-4248-8938-92685f0da7f7 --permission-mode plan")
+                == "cd -- '/tmp/a b' && command claude --resume d047f956-a5ed-4248-8938-92685f0da7f7 --permission-mode plan")
         let codex = WorkspaceEntry(provider: .codex, sessionId: id, cwd: "/tmp",
                                    permissionMode: "plan", lastSeen: .distantPast)
         #expect(WorkspaceRestore.commandLine(for: codex)
-                == "cd -- '/tmp' && codex resume d047f956-a5ed-4248-8938-92685f0da7f7")
+                == "cd -- '/tmp' && command codex resume d047f956-a5ed-4248-8938-92685f0da7f7")
+    }
+
+    /// `command` makes the shell run the real executable: an alias or
+    /// function named like the agent can't rewrite a restore.
+    @Test func everyRestoreLineRunsTheRealExecutable() throws {
+        let id = "D047F956-A5ED-4248-8938-92685F0DA7F7"
+        let expected: [Provider: String] = [
+            .claude: "command claude --resume ", .codex: "command codex resume ",
+        ]
+        for provider in Provider.allCases {
+            let entry = WorkspaceEntry(provider: provider, sessionId: id, cwd: "/tmp",
+                                       permissionMode: "bypassPermissions", lastSeen: .distantPast)
+            let line = WorkspaceRestore.commandLine(for: entry)
+            let want = try #require(expected[provider], "every provider has a pinned line")
+            #expect(line?.hasPrefix("cd -- '/tmp' && " + want) == true, "\(line ?? "nil")")
+        }
     }
 
     @Test func theInstallPlanSkipsWhatDoesNotApplyAndContinuesPastPolicy() {

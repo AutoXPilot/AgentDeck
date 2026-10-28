@@ -172,7 +172,9 @@ public enum WorkspaceRestore {
     /// manifest, so this is the whole of what it can make a shell do.
     ///
     /// No `exec`: when the agent exits the pane drops back to a shell
-    /// instead of closing.
+    /// instead of closing. `command` runs the real executable: a shell
+    /// alias or function of the same name could otherwise rewrite the
+    /// line (add flags, or run something else entirely).
     /// A recorded mode the policy refuses is left off, so the session
     /// starts in the default mode instead of Claude Code refusing to start.
     public static func commandLine(
@@ -196,7 +198,7 @@ public enum WorkspaceRestore {
         _ entry: WorkspaceEntry, refusedPermissionModes: Set<String>
     ) -> String? {
         guard let (cd, id) = resumePrefix(entry) else { return nil }
-        var line = "\(cd) && claude --resume \(id)"
+        var line = "\(cd) && command claude --resume \(id)"
         if let mode = entry.permissionMode, claudePermissionModes.contains(mode),
            !refusedPermissionModes.contains(mode) {
             line += " --permission-mode \(mode)"
@@ -211,7 +213,7 @@ public enum WorkspaceRestore {
         _ entry: WorkspaceEntry, refusedPermissionModes: Set<String>
     ) -> String? {
         guard let (cd, id) = resumePrefix(entry) else { return nil }
-        return "\(cd) && codex resume \(id)"
+        return "\(cd) && command codex resume \(id)"
     }
 
     /// POSIX single-quoting: everything literal, `'` written as `'\''`.
