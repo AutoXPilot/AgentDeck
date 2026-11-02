@@ -85,4 +85,33 @@ struct OwningBundleTests {
         // the test runner isn't in a .app; the walk must end, not hang or crash
         _ = ProcessTree.owningApplicationBundle(of: getpid())
     }
+
+    @Test func aChatGPTThreadOpensItselfByLink() {
+        // verified live: ChatGPT opens codex://threads/<id> on that thread
+        let chatgpt = SessionHost(kind: .app, bundlePath: "/Applications/ChatGPT.app")
+        let id = "01A163C8-1E31-7321-9683-010EB69E7904"
+        let target = FocusResolver.resolve(terminalSessionId: nil, owningAppBundlePath: nil,
+                                           host: chatgpt, provider: .codex, sessionId: id)
+        #expect(target == .appURL(URL(string: "codex://threads/01a163c8-1e31-7321-9683-010eb69e7904")!,
+                                  name: "ChatGPT"))
+        #expect(FocusResolver.describe(target) == "Click to open this thread in ChatGPT")
+    }
+
+    @Test func onlyAValidCodexThreadInChatGPTGetsALink() {
+        let chatgpt = SessionHost(kind: .app, bundlePath: "/Applications/ChatGPT.app")
+        let uuid = "01a163c8-1e31-7321-9683-010eb69e7904"
+        // not a UUID: nothing but a canonical id may reach the URL
+        #expect(FocusResolver.resolve(terminalSessionId: nil, owningAppBundlePath: nil, host: chatgpt,
+                                      provider: .codex, sessionId: "x/../evil?y")
+                == .application(bundlePath: "/Applications/ChatGPT.app", name: "ChatGPT"))
+        // Claude in Claude Desktop has no verified link: bring the app forward
+        let desktop = SessionHost(kind: .app, bundlePath: "/Applications/Claude.app")
+        #expect(FocusResolver.resolve(terminalSessionId: nil, owningAppBundlePath: nil, host: desktop,
+                                      provider: .claude, sessionId: uuid)
+                == .application(bundlePath: "/Applications/Claude.app", name: "Claude"))
+        // Codex in a terminal keeps its pane
+        #expect(FocusResolver.resolve(terminalSessionId: "w0t0p0:GUID", owningAppBundlePath: nil,
+                                      host: SessionHost(kind: .terminal, bundlePath: "/Applications/iTerm.app"),
+                                      provider: .codex, sessionId: uuid) == .itermPane(guid: "GUID"))
+    }
 }

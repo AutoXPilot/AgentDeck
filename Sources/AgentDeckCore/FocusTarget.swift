@@ -6,6 +6,10 @@ import Foundation
 public enum FocusTarget: Equatable, Sendable {
     case itermPane(guid: String)
     case application(bundlePath: String, name: String)
+    /// A link the hosting app opens to the exact session — ChatGPT's
+    /// `codex://threads/<id>`. Dispatching it doesn't prove it landed, so
+    /// like `.application` it never acknowledges a session that needs you.
+    case appURL(URL, name: String)
     case none
 
     public var isActionable: Bool { self != .none }
@@ -27,10 +31,15 @@ public enum FocusResolver {
     /// its outermost bundle, is where the session is. Otherwise fall back
     /// to the owning GUI app.
     public static func resolve(
-        terminalSessionId: String?, owningAppBundlePath: String?, host: SessionHost = .unknown
+        terminalSessionId: String?, owningAppBundlePath: String?, host: SessionHost = .unknown,
+        provider: Provider? = nil, sessionId: String? = nil
     ) -> FocusTarget {
         if host.kind == .app,
            let path = host.bundlePath ?? owningAppBundlePath, let name = appName(fromBundlePath: path) {
+            if let provider, let sessionId,
+               let url = deepLink(provider: provider, sessionId: sessionId, hostBundlePath: path) {
+                return .appURL(url, name: name)
+            }
             return .application(bundlePath: path, name: name)
         }
         if let guid = ITermFocus.sessionGUID(from: terminalSessionId) {
@@ -40,6 +49,17 @@ public enum FocusResolver {
             return .application(bundlePath: path, name: name)
         }
         return .none
+    }
+
+    /// A link that opens this exact session in its host app, where one is
+    /// known to work. Verified: ChatGPT handles `codex://threads/<thread id>`
+    /// by opening that thread. The id must parse as a UUID, so nothing but
+    /// a canonical id can reach the URL.
+    public static func deepLink(provider: Provider, sessionId: String, hostBundlePath: String) -> URL? {
+        guard provider == .codex,
+              (hostBundlePath as NSString).lastPathComponent == "ChatGPT.app",
+              let uuid = UUID(uuidString: sessionId) else { return nil }
+        return URL(string: "codex://threads/\(uuid.uuidString.lowercased())")
     }
 
     /// Claude's `sessionKind` for a daemonized background session —
@@ -63,6 +83,8 @@ public enum FocusResolver {
             return "Click to focus this iTerm pane"
         case .application(_, let name):
             return "Click to bring \(name) to the front"
+        case .appURL(_, let name):
+            return "Click to open this thread in \(name)"
         case .none where isBackground(sessionKind: sessionKind):
             return "Background session — no window to focus. "
                 + "Answer it in the agents panel of the session that started it."

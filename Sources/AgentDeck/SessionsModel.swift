@@ -663,7 +663,8 @@ final class SessionsModel: ObservableObject {
         FocusResolver.resolve(
             terminalSessionId: snapshot.terminalSessionId ?? paneByControllingTTY(snapshot),
             owningAppBundlePath: owningAppBundle(for: snapshot),
-            host: effectiveHost(for: snapshot)
+            host: effectiveHost(for: snapshot),
+            provider: snapshot.provider, sessionId: snapshot.sessionId
         )
     }
 
@@ -749,6 +750,14 @@ final class SessionsModel: ObservableObject {
                     self?.focusProblem = "Couldn't bring \(name) forward: "
                         + error.localizedDescription
                 }
+            }
+            if popoverVisible { onRequestClose?() }
+            return
+        case .appURL(let url, let name):
+            // the app opens the exact thread; not acknowledged (see FocusTarget)
+            Self.appLog("activate key=\(snapshot.key) url=\(url.scheme ?? "")://… app=\(name)")
+            if !NSWorkspace.shared.open(url) {
+                focusProblem = "Couldn't open the thread in \(name)."
             }
             if popoverVisible { onRequestClose?() }
             return

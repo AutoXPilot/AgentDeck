@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Clicking a ChatGPT-hosted Codex row opens that exact thread**
+  (`codex://threads/<id>`, verified to land on the thread), instead of only
+  bringing ChatGPT forward. As with any app target, the click doesn't mark
+  a session that needs you as handled, since a link can't prove it landed.
+
 ## 0.6.0
 
 More agents in one list: Google's Antigravity CLI (`agy`) joins Claude Code

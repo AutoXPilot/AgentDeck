@@ -192,7 +192,8 @@ the SSH host alias `github-tunghoangt`.
   double-quoted form is still accepted as healthy.
 - Codex: hooks are trusted per file/event/index in `~/.codex/config.toml`
   (`[hooks.state]`); ChatGPT.app accepts changed hooks silently. All ChatGPT
-  threads report one shared server pid.
+  threads report one shared server pid. `codex://threads/<thread id>` opens
+  the exact thread (verified); `FocusResolver.deepLink` builds it.
 - agy: hooks read only at startup; no SessionStart on `--continue`; one turn
   = several invocations and one `Stop{fullyIdle:true}`; `ask_question` is the
   waiting tool; `agy --bg-updater` is also named `agy` and is excluded.
@@ -202,9 +203,6 @@ the SSH host alias `github-tunghoangt`.
 
 ## Open items
 
-- Click-to-thread for ChatGPT rows: `codex://threads/<id>` opens ChatGPT;
-  whether it lands on the exact thread is unconfirmed, so clicks bring the
-  app forward.
 - agy permission prompts aren't detected (tool name never observed); agy
   print mode isn't filtered.
 - Claude Desktop label/tag/click path is tested in core only (no live
