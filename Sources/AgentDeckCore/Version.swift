@@ -2,5 +2,5 @@ import Foundation
 
 /// Kept in sync with the repo's VERSION file by a unit test — bump both.
 public enum AgentDeckVersion {
-    public static let current = "0.5.1"
+    public static let current = "0.6.0"
 }

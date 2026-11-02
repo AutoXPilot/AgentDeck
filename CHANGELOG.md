@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+More agents in one list: Google's Antigravity CLI (`agy`) joins Claude Code
+and Codex, and sessions running inside Claude Desktop and the ChatGPT app
+are recognised as app-hosted — shown live, their app brought forward on click,
+never restored into iTerm. Restores now bypass shell aliases. Adds
+AGENTS.md, a map of the codebase for coding agents.
+
+Not yet verified live, as of this release: whether `codex://threads/<id>`
+lands on the exact thread (clicks bring ChatGPT forward instead); agy
+permission prompts (not detected); the Claude Desktop row label and tag
+(covered by tests; no Desktop-hosted session has run since).
+
 
 ### Fixed
 
