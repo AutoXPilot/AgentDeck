@@ -704,7 +704,8 @@ struct UsageLine: View {
     let now: Date
 
     var body: some View {
-        let groups = Array(UsageFormat.lineGroups(usage).enumerated())
+        // keyed by label (one group per label), never by position
+        let groups = UsageFormat.lineGroups(usage).map { (key: $0.label ?? "", group: $0) }
         HStack(spacing: 6) {
             Text(UsageFormat.name(usage.provider))
                 .foregroundStyle(usage.provider.spec.tint.color)
@@ -712,13 +713,13 @@ struct UsageLine: View {
             // agy's two groups don't fit at the narrowest popover width
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
-                    ForEach(groups, id: \.offset) { _, group in
-                        full(group, aligned: groups.count == 1)
+                    ForEach(groups, id: \.key) { item in
+                        full(item.group, aligned: groups.count == 1)
                     }
                 }
                 .fixedSize()
                 HStack(spacing: 8) {
-                    ForEach(groups, id: \.offset) { _, group in compact(group) }
+                    ForEach(groups, id: \.key) { item in compact(item.group) }
                 }
                 .fixedSize()
             }
