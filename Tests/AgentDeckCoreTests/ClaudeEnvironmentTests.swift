@@ -146,7 +146,7 @@ struct HookStatusTests {
 
 struct OlderClaudeRegistryTests {
     // shapes taken from real session files: 2.1.206 and 2.1.221 on the
-    // development Mac, and the key list a managed Mac's 2.1.219 reported
+    // development Mac, and the key list a second Mac's 2.1.219 reported
     @Test func olderBuildsParseWithEverythingDiscoveryNeeds() throws {
         let v206 = #"{"cwd":"/Users/a/Code","entrypoint":"cli","kind":"interactive","name":"x","nameSource":"derived","peerProtocol":1,"pid":101,"procStart":"Mon","sessionId":"s206","startedAt":1790000000000,"status":"idle","statusUpdatedAt":1790000100000,"updatedAt":1790000100000,"version":"2.1.206"}"#
         let v219 = #"{"cwd":"/Users/a/Code","entrypoint":"cli","kind":"interactive","name":"y","peerProtocol":1,"pid":102,"procStart":"Mon","sessionId":"s219","startedAt":1790000000000,"status":"waiting","statusUpdatedAt":1790000200000,"updatedAt":1790000200000,"version":"2.1.219"}"#

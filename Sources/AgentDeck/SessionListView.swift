@@ -403,7 +403,7 @@ struct SessionListView: View {
         "\(n) session\(n == 1 ? "" : "s")"
     }
 
-    /// "givzey — 5 sessions, 2 open": a restore skips the open ones, so
+    /// "acme — 5 sessions, 2 open": a restore skips the open ones, so
     /// say up front how many it would actually bring back.
     private func workspaceLabel(_ workspace: NamedWorkspace) -> String {
         let open = model.openCount(of: workspace.entries)

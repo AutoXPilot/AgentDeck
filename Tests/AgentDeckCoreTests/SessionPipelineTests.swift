@@ -60,14 +60,14 @@ struct SessionPipelineTests {
     @Test func discoveredRowsCarryTheirDirectoryAndNotTheClock() {
         let observed = now.addingTimeInterval(-9_000)
         var e = entry(pid: 7, id: "s", "idle")
-        e.cwd = "/Users/t/Code/version2"
+        e.cwd = "/Users/t/Code/webapp"
         e.statusUpdatedAt = observed
         let out = SessionPipeline.run(
             snapshots: [], registry: [:], liveSessions: ["s": e],
             acks: [:], frozenOrder: nil, popoverVisible: false, now: now
         )
         let row = try? #require(out.rows.first)
-        #expect(row?.projectPath == "/Users/t/Code/version2",
+        #expect(row?.projectPath == "/Users/t/Code/webapp",
                 "cwd is what makes a discovered row resumable")
         // using `now` here would re-arm acks on every single reload
         #expect(row?.updatedAt == observed)

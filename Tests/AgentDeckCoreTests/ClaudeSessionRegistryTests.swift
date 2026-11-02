@@ -6,9 +6,9 @@ struct ClaudeSessionRegistryTests {
     /// Shape recorded from a real ~/.claude/sessions/<pid>.json (claude 2.1.220).
     let realFile = """
     {"pid":89540,"sessionId":"9c64a083-c8d8-4c00-9008-6d0ea533783d",
-     "cwd":"/Users/x/Code/version2","startedAt":1785417531289,
+     "cwd":"/Users/x/Code/webapp","startedAt":1785417531289,
      "version":"2.1.220","kind":"interactive","entrypoint":"cli",
-     "name":"V2B-1516","status":"busy","updatedAt":1785509271809,
+     "name":"fix-login","status":"busy","updatedAt":1785509271809,
      "statusUpdatedAt":1785509271809}
     """
 
@@ -16,13 +16,13 @@ struct ClaudeSessionRegistryTests {
         let entry = try #require(ClaudeSessionRegistry.parse(Data(realFile.utf8)))
         #expect(entry.pid == 89540)
         #expect(entry.status == "busy")
-        #expect(entry.name == "V2B-1516")
+        #expect(entry.name == "fix-login")
         #expect(entry.kind == "interactive")
         #expect(entry.isUserNamed)
         #expect(entry.statusUpdatedAt?.timeIntervalSince1970 == 1785509271.809)
         // cwd + startedAt are what makes this file a resume handle, not
         // just a status report
-        #expect(entry.cwd == "/Users/x/Code/version2")
+        #expect(entry.cwd == "/Users/x/Code/webapp")
         #expect(entry.startedAt?.timeIntervalSince1970 == 1785417531.289)
     }
 

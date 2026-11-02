@@ -550,8 +550,8 @@ public final class WorkspaceStore {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// Saves under a name not already taken: "givzey" becomes "givzey 2"
-    /// rather than a second, indistinguishable "givzey". Returns the name
+    /// Saves under a name not already taken: "acme" becomes "acme 2"
+    /// rather than a second, indistinguishable "acme". Returns the name
     /// used.
     @discardableResult
     public func save(_ workspace: NamedWorkspace) throws -> String {

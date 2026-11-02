@@ -6,8 +6,8 @@ struct PathFormatTests {
     let home = "/Users/someone"
 
     @Test func abbreviatesHomeAndKeepsTail() {
-        #expect(PathFormat.abbreviate("/Users/someone/Code/version2", home: home)
-            == "~/Code/version2")
+        #expect(PathFormat.abbreviate("/Users/someone/Code/webapp", home: home)
+            == "~/Code/webapp")
         #expect(PathFormat.abbreviate("/Users/someone/Code/knowledge/documentation", home: home)
             == "~/…/knowledge/documentation")
         #expect(PathFormat.abbreviate(home, home: home) == "~")
@@ -27,7 +27,7 @@ struct CodexThreadsTests {
             ["019fb864", "gpt-5.6-sol", "high", "7003838",
              "", "on-request", "{\"type\":\"disabled\"}"].joined(separator: sep),
             ["019faf3a", "gpt-5.6-sol", "high", "15579",
-             "V2B-1488", "never", "{\"type\":\"managed\"}"].joined(separator: sep),
+             "fix-checkout", "never", "{\"type\":\"managed\"}"].joined(separator: sep),
         ].joined(separator: "\n")
         let threads = CodexThreads.parse(output)
         #expect(threads.count == 2)
@@ -36,7 +36,7 @@ struct CodexThreadsTests {
         #expect(first?.tokensUsed == 7_003_838)
         #expect(first?.gitBranch == nil, "empty column is NULL, not an empty branch")
         #expect(first?.isUnsupervised == true, "sandbox disabled means unsupervised")
-        #expect(threads["019faf3a"]?.gitBranch == "V2B-1488")
+        #expect(threads["019faf3a"]?.gitBranch == "fix-checkout")
         #expect(threads["019faf3a"]?.isUnsupervised == true, "approval 'never' is unsupervised")
     }
 

@@ -86,13 +86,13 @@ struct WorkspaceStoreTests {
 
     @Test func namedWorkspacesRoundTrip() throws {
         let store = tempStore()
-        let a = NamedWorkspace(name: "givzey", savedAt: t0, entries: [entry("x")])
+        let a = NamedWorkspace(name: "acme", savedAt: t0, entries: [entry("x")])
         let b = NamedWorkspace(name: "Personal", savedAt: t0, entries: [entry("y")])
         try store.save(a)
         try store.save(b)
         // a second save under the same name gets a name you can tell apart
-        #expect(try store.save(NamedWorkspace(name: "Givzey", savedAt: t0 + 1, entries: [])) == "Givzey 2")
-        #expect(store.named().map(\.name) == ["givzey", "Givzey 2", "Personal"])
+        #expect(try store.save(NamedWorkspace(name: "Acme", savedAt: t0 + 1, entries: [])) == "Acme 2")
+        #expect(store.named().map(\.name) == ["acme", "Acme 2", "Personal"])
         try store.deleteNamed(id: a.id)
         #expect(store.named().contains { $0.id == a.id } == false)
         #expect(store.named().first { $0.id == b.id } == b)

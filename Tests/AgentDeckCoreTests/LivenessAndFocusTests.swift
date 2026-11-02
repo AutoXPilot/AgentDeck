@@ -274,7 +274,7 @@ struct LivenessAndFocusTests {
     @Test func sanitizeTitleStripsDuplicatedDecoration() {
         // the row already shows provider + state; the glyph and "(claude)"
         // suffix just push every title right and waste ~90pt of a 360pt row
-        #expect(ITermFocus.sanitizeTitle("✳ V2B-1488 (claude)") == "V2B-1488")
+        #expect(ITermFocus.sanitizeTitle("✳ fix-checkout (claude)") == "fix-checkout")
         #expect(ITermFocus.sanitizeTitle("⠂ AgentDeck (sourcekit-lsp)")
             == "AgentDeck (sourcekit-lsp)", "only provider suffixes are dropped")
         #expect(ITermFocus.sanitizeTitle("Code (codex\")") == "Code")
@@ -294,7 +294,7 @@ struct LivenessAndFocusTests {
     @Test func agysTabSuffixIsStrippedLikeTheOthers() {
         // agy titles its tab with its command name, not the provider's
         #expect(ITermFocus.sanitizeTitle("agy (agy)") == "agy")
-        #expect(ITermFocus.sanitizeTitle("version2 (agy)") == "version2")
+        #expect(ITermFocus.sanitizeTitle("webapp (agy)") == "webapp")
         #expect(ITermFocus.sanitizeTitle("✳ infra (claude)") == "infra")
     }
 
