@@ -116,4 +116,5 @@ row (date, version, result) when one is done.
 | Work Mac: no Claude usage line, Codex and agy lines shown | pending |
 | Clicking a daemon-run Codex CLI thread focuses its pane (matched by title among panes running `codex`) | done 2026-11-02 (CLI 0.165.0, daemon 0.166.0) |
 | A ChatGPT thread run by the daemon is shown as ChatGPT-hosted (originator `Codex Desktop`) | pending (no ChatGPT thread run since the daemon appeared) |
+| A Codex MCP prompt (browser permission form) shows as "may need you" within about 2¼ minutes | pending (built 2026-11-02 from the travel-planning case; unit-tested on its record shapes) |
 | A notarized build opens from a quarantined download | blocked on [plans/distribution.md](plans/distribution.md) |
