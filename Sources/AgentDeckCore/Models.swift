@@ -118,6 +118,16 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.hostBundlePath = hostBundlePath
     }
 
+    /// Whether a live `agentPid` proves this particular session is alive.
+    /// Not for a Codex thread hosted in an app: ChatGPT runs one Codex
+    /// server for every thread, and its pid stays alive long after a
+    /// thread has gone quiet, so it says the app is open, not that this
+    /// thread is. (Claude Desktop runs a CLI process per session, and
+    /// Claude has a per-session registry besides, so its pid still counts.)
+    public var pidProvesSession: Bool {
+        !(hostKind == HostKind.app.rawValue && provider != .claude)
+    }
+
     public var key: String { SessionKey.make(provider, sessionId) }
 
     public var projectName: String {

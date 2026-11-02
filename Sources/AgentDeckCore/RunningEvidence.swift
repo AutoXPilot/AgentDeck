@@ -50,7 +50,7 @@ public struct RunningEvidence {
             SessionKey.split($0)?.provider.spec.running == .trustworthyPidOrPresence
         })
         for row in rows {
-            guard row.provider.spec.running.trustsPid,
+            guard row.provider.spec.running.trustsPid, row.pidProvesSession,
                   let pid = row.agentPid, pidTrusted(pid, row.updatedAt, row.provider)
             else { continue }
             keys.insert(row.key)
@@ -88,6 +88,7 @@ public struct RunningEvidence {
             return claudeRegistryLive.contains(entry.sessionId)
         case .trustworthyPid(let scan):
             if let snapshot, let pid = snapshot.agentPid,
+               snapshot.pidProvesSession,
                pidTrusted(pid, snapshot.updatedAt, entry.provider) {
                 return true
             }
@@ -95,6 +96,7 @@ public struct RunningEvidence {
             return scan && !processScan(entry.provider, [entry.sessionId]).isEmpty
         case .trustworthyPidOrPresence:
             if let snapshot, let pid = snapshot.agentPid,
+               snapshot.pidProvesSession,
                pidTrusted(pid, snapshot.updatedAt, entry.provider) {
                 return true
             }

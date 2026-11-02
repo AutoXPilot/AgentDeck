@@ -168,6 +168,51 @@ struct LivenessAndFocusTests {
                                       liveByPid: [100: registryA], probe: starts).isEmpty)
     }
 
+    @Test func aChatGPTThreadIsNotKeptAliveByTheSharedCodexServer() {
+        // seen live: three Codex Desktop threads all reported pid 37654,
+        // ChatGPT's Codex server, and one stayed "working" for three days
+        func thread(_ id: String, idleHours: Double) -> SessionSnapshot {
+            var s = snap(id, pid: 100, updated: now.addingTimeInterval(-idleHours * 3600),
+                         state: .working)
+            s.provider = .codex
+            s.hostKind = "app"
+            s.hostBundlePath = "/Applications/ChatGPT.app"
+            return s
+        }
+        let server = probe([100: now.addingTimeInterval(-9 * 24 * 3600)])
+        let removed = Set(Liveness.keysToRemove(
+            [thread("stuck", idleHours: 72), thread("fresh", idleHours: 1)],
+            now: now, bootedAt: nil, probe: server))
+        #expect(removed == ["codex-stuck"], "the shared pid proves the app, not the thread")
+        // the app quitting still removes every thread
+        #expect(Liveness.keysToRemove([thread("fresh", idleHours: 1)], now: now,
+                                      bootedAt: nil, probe: probe([:])) == ["codex-fresh"])
+        // a terminal Codex keeps the verified-live rule
+        var terminal = thread("cli", idleHours: 72)
+        terminal.hostKind = "terminal"
+        #expect(Liveness.keysToRemove([terminal], now: now, bootedAt: nil, probe: server).isEmpty)
+    }
+
+    @Test func aChatGPTThreadDoesNotCountAsRunningBecauseTheServerIs() {
+        var row = SessionSnapshot(provider: .codex, sessionId: "t", projectPath: "/p",
+                                  state: .working, event: "UserPromptSubmit", updatedAt: now,
+                                  agentPid: 100)
+        row.hostKind = "app"
+        let evidence = RunningEvidence(claudeRegistryLive: [], pidTrusted: { _, _, _ in true },
+                                       processScan: { _, _ in [] })
+        #expect(!evidence.runningKeys(rows: [row]).contains("codex-t"))
+        let entry = WorkspaceEntry(provider: .codex, sessionId: "t", cwd: "/p", lastSeen: now)
+        #expect(!evidence.isRunning(entry, snapshot: row))
+        row.hostKind = "terminal"
+        #expect(evidence.runningKeys(rows: [row]).contains("codex-t"))
+        #expect(evidence.isRunning(entry, snapshot: row))
+        // Claude Desktop runs a process per session: its pid still counts
+        var desktop = row
+        desktop.provider = .claude
+        desktop.hostKind = "app"
+        #expect(desktop.pidProvesSession)
+    }
+
     @Test func aLivePidThatIsNotTheAgentIsRemoved() {
         // started in time, so the start-time check alone would accept it
         let reused = snap("reused", pid: 100, updated: now.addingTimeInterval(-60), state: .done)

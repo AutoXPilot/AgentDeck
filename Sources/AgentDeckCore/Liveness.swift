@@ -119,6 +119,13 @@ public enum Liveness {
                     pid, forUpdatedAt: s.updatedAt, slack: startSlack,
                     provider: s.provider, probe: probe
                 ) else { return s.key }
+                // A shared app server's pid says the app is open, not that
+                // this thread is: such a row follows the ordinary idle
+                // limit, or one stuck "working" since an interrupted turn
+                // would stay forever. A dead pid still removes it above.
+                if !s.pidProvesSession {
+                    return now.timeIntervalSince(s.updatedAt) > maxIdle ? s.key : nil
+                }
                 // A verified-live agent is not expired for being quiet. A
                 // Codex session left waiting for input over a long weekend
                 // used to lose its row — and then, gone from every live

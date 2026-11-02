@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Codex threads in the ChatGPT app no longer stay forever.** Every
+  thread reports the same process — ChatGPT's shared Codex server — so a
+  live pid proved the app was open, not that a thread was, and a thread
+  interrupted mid-turn sat at "working" for days. App-hosted Codex rows
+  now follow the ordinary 24-hour idle limit (a quit app still removes
+  them at once) and no longer count as running for restore checks.
+
 ### Added
 
 - **Antigravity CLI (`agy`) sessions**, as a third provider with an AG
