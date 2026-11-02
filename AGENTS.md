@@ -134,6 +134,19 @@ Restore
   launch script that reports typed/untyped, batches of 5, readiness check).
 - `RestoreReport.swift` — what the footer says after a restore.
 
+Usage lines
+- `UsageSnapshot.swift` — `UsageWindow`/`UsageGroup`/`ProviderUsage` (the
+  only fields stored) and `UsageStore` (`…/AgentDeck/usage/<provider>.json`,
+  0600; `changedAt` moves only when a figure does).
+- `CodexUsage.swift` — newest `token_count` record across rollouts (exact
+  envelope, `limit_id` `codex`, windows by minutes, tail grows to 8 MB).
+- `StatusLineCapture.swift` — allow-listed figures from Claude's and agy's
+  status line payloads.
+- `StatusLineTee.swift` — tee install/uninstall/status and chain records
+  (`…/AgentDeck/statusline-chain/`); `ChainRunner.swift` runs the user's
+  original command (own process group, stderr kept out, stdin on a thread).
+- `UsageFormat.swift` — line, tooltip and accessibility text.
+
 Misc: `SnapshotStore.swift` (atomic writes, per-key flock with inode check,
 orphan sweep that keeps files a newer build wrote), `BoundedSubprocess.swift`
 (hard deadline, SIGKILL, non-blocking drain), `LaunchArguments.swift`,
@@ -149,6 +162,10 @@ orphan sweep that keeps files a newer build wrote), `BoundedSubprocess.swift`
   `~/.codex/hooks.json`, `~/.gemini/config/hooks.json`, always with a backup
   and only AgentDeck's own entries/set. Never write a managed policy.
   Respect `allowManagedHooksOnly` (Claude hooks blocked → discovery-only).
+  The one exception is the opt-in status line tee (`StatusLineTee`): it
+  replaces the `command` of a user's `statusLine`, saves the whole original
+  first and restores it only while the entry is still AgentDeck's. Never
+  from **Install hooks**.
 - **Restore safety:** commands are built from a UUID, a validated absolute
   cwd and allow-listed modes, typed as `cd -- '<cwd>' && command <bin> …`
   (`command` defeats aliases). Never restore an app-hosted session. A launch
@@ -168,6 +185,9 @@ swift build                 # all targets
 pkill -x AgentDeck; open ~/Applications/AgentDeck.app
 .build/debug/AgentDeck --render-popover /tmp/x.png   # offscreen render of the real popover; writes only the PNG
 .build/debug/agentdeck-hook debug-ancestry           # process-walk diagnostics
+.build/debug/agentdeck-hook debug-usage              # the usage figures the app would show
+# render with sample usage at a given width (fixture = JSON array of ProviderUsage):
+AGENTDECK_USAGE_FIXTURE=u.json AGENTDECK_RENDER_WIDTH=360 .build/debug/AgentDeck --render-popover /tmp/x.png
 ~/Applications/AgentDeck.app/Contents/MacOS/agentdeck-hook status   # versions, hook health, active count
 tail ~/Library/Application\ Support/AgentDeck/app.log
 ```
@@ -225,6 +245,9 @@ was checked, is [docs/platform-facts.md](docs/platform-facts.md).
 
 ## Open items
 
+- Usage lines: several Claude or Codex accounts aren't told apart (the
+  figures are whichever account reported last). Claude's structured `/usage` (an experimental SDK
+  `get_usage` control request) would give per-model rows; not used.
 - agy permission prompts aren't detected (tool name never observed); agy
   print mode isn't filtered.
 - Live checks still owed (reboot banner, Locate…, the Claude Desktop row,

@@ -43,6 +43,13 @@ AgentDeck's installer edits up to three files you own:
   already exists and wasn't written by AgentDeck, the install stops and
   writes nothing rather than replace it.
 
+Separately, and only if you choose it from the **⋯ → Usage** menu, AgentDeck
+puts a small tee in front of Claude's or agy's status line so it can show
+your subscription usage (see [Subscription usage](#subscription-usage)).
+That changes the `statusLine` entry in `~/.claude/settings.json` or
+`~/.gemini/antigravity-cli/settings.json`; your original entry is saved
+and runs unchanged behind the tee. **Install hooks** never does this.
+
 Every edit preserves your existing settings and hooks, is idempotent, and
 creates a timestamped `.bak` backup next to the file (last 5 kept). Known
 trade-off: files are rewritten via JSON serialization, which normalizes
@@ -86,6 +93,15 @@ conversation map in `cache/last_conversations.json`, and whether
 `history.jsonl` (your prompts), the conversation databases,
 `conversation_summaries.db`, `brain/` or agy's logs.
 
+For the usage lines, AgentDeck keeps only the allow-listed usage fields
+(percent used and reset time per window, Codex's plan name). To find them
+it reads the end of Codex's rollout logs (`~/.codex/sessions/…`, which
+also hold conversation text) and decodes only `token_count` records; and
+the status line tee receives Claude's or agy's full status line payload
+(working folder, conversation title, agy's account email), which it
+forwards unchanged to your own status line command and otherwise
+discards. Your own command does whatever it did before.
+
 Conversation content is parsed past but never retained, logged, or
 displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
 thread's title — i.e. a prompt — could appear as a row title and in a
@@ -107,8 +123,13 @@ only if you set it yourself.
 2. Edit `~/.claude/settings.json` and `~/.codex/hooks.json` and delete the
    hook entries whose `command` mentions `agentdeck-hook`; in
    `~/.gemini/config/hooks.json` delete the `"agentdeck"` hook set.
-3. `rm -rf ~/Library/Application\ Support/AgentDeck/` and delete the app.
-4. Optional: `defaults delete com.tonyhoang.agentdeck` (acknowledgments,
+3. If you turned on usage lines, run
+   `~/Library/Application\ Support/AgentDeck/bin/agentdeck-hook statusline-uninstall all`
+   **before** the next step. It puts your original status line back;
+   deleting the folder first leaves the status line pointing at a missing
+   helper.
+4. `rm -rf ~/Library/Application\ Support/AgentDeck/` and delete the app.
+5. Optional: `defaults delete com.tonyhoang.agentdeck` (acknowledgments,
    `waitAlertMinutes`); remove the `*.agentdeck-*.bak` files beside the
    configs; `brew uninstall agentdeck && brew untap AutoXPilot/tap`.
 
@@ -279,6 +300,42 @@ comparison uses when the model was last actually reported, not when the
 snapshot was last written — events that omit the model still touch the
 snapshot while carrying the old model forward, so the write time says
 nothing about how current the model is.
+
+## Subscription usage
+
+One line per subscription under the header, percent used for the 5-hour
+and weekly windows:
+
+```
+Claude   5h 100% · wk 17%
+Codex    5h  72% · wk 91%                    Plus
+agy      Gemini 5h 2% · wk 1%   Claude/GPT 5h 0% · wk 67%
+```
+
+90% and over is orange; `reset` means the window rolled over since the
+figure was taken; a dimmed line is over 6 hours old. Hover a line for
+reset times and where the figures came from. A subscription with no
+figures has no line.
+
+- **Codex:** read from the newest `token_count` record in Codex's rollout
+  logs; nothing to set up. The record names no account, so with several
+  Codex accounts the line shows whichever one ran last.
+- **Claude and agy:** only their status line is given these figures, and
+  each allows one status line command. **⋯ → Usage → Show Claude usage…**
+  (or agy) puts `agentdeck-hook statusline` in that slot; it saves the
+  figures and runs your previous status line command behind it with the
+  same input, so your status line looks as before. **Stop reading … usage**
+  restores the original entry exactly, unless you've changed it since, in
+  which case it's left alone. The figures update while a session of that
+  agent is open. For agy with no custom status line, the tee keeps agy's
+  built-in one (`stack_with_default`).
+- **Managed Macs:** a Claude policy that sets `allowManagedHooksOnly` or
+  `disableAllHooks` also stops user status lines, so there's no Claude
+  line there. Codex and agy are unaffected.
+
+AgentDeck makes no network calls for this and reads no credentials.
+[CodexBar](https://github.com/steipete/CodexBar) is the fuller alternative
+(per-model limits, credits, cost history) if you want more than a glance.
 
 ## Bringing sessions back after a restart
 

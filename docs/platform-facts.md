@@ -23,6 +23,8 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | Background sessions (`claude --bg-pty-host`, reparented to launchd) write no registry entry; the transcript's `sessionKind` identifies them. | found in 0.4.1 | observed |
 | The hook payload's `model` can name a model the session isn't running; the transcript's last assistant record is right but never carries the `[1m]` qualifier. | found in 0.4.0 | observed |
 | Policy: `allowManagedHooksOnly`, or `disableAllHooks` at the managed level, stops user hooks. `CLAUDE_CONFIG_DIR` moves sessions, transcripts and settings and can be set by policy. `disableBypassPermissionsMode` / `disableAutoMode` refuse those modes. | 2026-10 | docs (code.claude.com managed-settings, settings, env-vars) |
+| The status line command gets `rate_limits.five_hour` / `seven_day`, each `{used_percentage, resets_at}` (epoch seconds), omitted when unknown (API key, cloud providers). No per-model rows there; those are only in the structured `/usage` reply (SDK `get_usage`, experimental). Hook payloads carry no `rate_limits`. | 2.1.316, 2026-11-01 | read from the binary (Codex Astra); fields match what `statusline-usage.py` reads |
+| Managed `disableAllHooks` stops the status line; `allowManagedHooksOnly` makes Claude use only the managed `statusLine`. | 2.1.316, 2026-11-01 | read from the binary (Codex Astra), not observed |
 | Claude asks whether to trust the folder on every launch in `~`, so restored sessions there stop at that question. | 0.5.1 work, 2026-10 | observed |
 
 ## Claude Desktop
@@ -45,6 +47,7 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | After `codex resume`, no hook runs until the first message, so a restored session is confirmed by its process instead. | 2026-10 | observed |
 | `threads.title` in `state_5.sqlite` is the first user message unless renamed; a `/rename` lands in `session_index.jsonl`. | 0.145.0 | observed |
 | The single-quoted hook command fires. | 2026-10-28 | observed |
+| Rollout `event_msg` / `token_count` records carry `rate_limits`: `limit_id`, `primary`/`secondary` `{used_percent, window_minutes 300/10080, resets_at}` (epoch), `plan_type`. A `limit_id: "premium"` record with null windows can follow the `codex` one. No account id. Single lines reach 2.6 MB; active rollouts can sit in older date folders. | cli 0.165.0, 2026-11-01 | observed, fixture |
 
 ## Codex in ChatGPT.app
 
@@ -67,6 +70,8 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | `presence/<conversation>.lock` is `flock`-held while the session runs; the file stays afterwards with an unchanged mtime. | 1.4.7, 2026-10-28 | observed |
 | `agy --bg-updater` is a child process also named `agy`. | 1.4.7 | observed |
 | Resume: `agy --conversation <uuid>`; modes `--mode accept-edits|auto|plan`. | 1.4.9 | `agy --help` |
+| Custom status line: `/statusline <command>` writes `statusLine: {type:"command", command}` to `~/.gemini/antigravity-cli/settings.json` (dropping `enabled`); `/statusline` alone writes `{type:"", command:"", enabled:true}`; `/statusline delete` removes the key. The payload (refreshed every few seconds) has `quota` keyed by bucket id (`gemini-5h`, `gemini-weekly`, `3p-5h`, `3p-weekly`, model-specific ones) → `{remaining_fraction, reset_time, reset_in_seconds}`, plus `cwd`, `conversation_title`, `transcript_path`, `email`, `plan_tier`. `stack_with_default` exists in the settings schema; with it and an empty custom line, the built-in line still shows. | 1.4.9–1.4.12, 2026-11-01 | observed (metadata-only probe) |
+| `agy -p /usage --output-format json` (or `/quota`) prints the same buckets grouped (`Gemini Models`, `Claude and GPT models`) without starting a turn or creating a conversation (~2 s). A `remaining_fraction` of 0 is omitted there. | 1.4.9, 2026-11-01 | observed |
 | Loads `AGENTS.md` / `GEMINI.md` from the working folder up to the repository root. | 1.4.9, 2026-11-01 | docs embedded in the binary, not observed |
 
 ## iTerm2
@@ -103,4 +108,7 @@ row (date, version, result) when one is done.
 | agy print mode (`agy -p`): is there a discriminator to filter on? | not run |
 | A per-session `claude://` link | not run |
 | agy reads this repo's `AGENTS.md` | not observed (documented) |
+| Claude status line tee on a real `statusLine`: the original output unchanged, figures match `/usage`, uninstall restores the entry | done 2026-11-01 (2.1.316): the chained script kept writing its records with the same figures (76% / 18%); uninstall was JSON-equal to the backup |
+| agy status line tee: the built-in line still shows with `stack_with_default`, figures match `agy -p /usage`, agy doesn't disable the status line | done 2026-11-01 (1.4.12, after a self-update from 1.4.9): figures matched, the built-in hint line still showed, uninstall was JSON-equal to the backup |
+| Work Mac: no Claude usage line, Codex and agy lines shown | pending |
 | A notarized build opens from a quarantined download | blocked on [plans/distribution.md](plans/distribution.md) |

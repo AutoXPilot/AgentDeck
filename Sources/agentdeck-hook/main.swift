@@ -16,6 +16,11 @@ signal(SIGPIPE, SIG_IGN)
 //   agentdeck-hook install          copy self to stable path, register hooks
 //   agentdeck-hook status           print install/health report
 //   agentdeck-hook debug-ancestry   print the process walk (diagnostics)
+//   agentdeck-hook debug-usage      print the usage figures AgentDeck sees
+//   agentdeck-hook statusline <claude|antigravity> <record>
+//                                   the status line tee (see StatusLineTee)
+//   agentdeck-hook statusline-install|statusline-uninstall <claude|antigravity|all>
+//   agentdeck-hook statusline-status
 //
 // Hook mode must NEVER fail loudly or block the agent: exit 0 always,
 // no stdout (Claude interprets hook stdout).
@@ -183,6 +188,143 @@ func runDebugAncestry() {
     }
 }
 
+/// Usage figures only (allow-listed fields), as the app would show them.
+func runDebugUsage() {
+    var found: [ProviderUsage] = []
+    if let codex = CodexUsage.Reader().load() { found.append(codex) }
+    let store = UsageStore()
+    for provider in [Provider.claude, .antigravity] {
+        if let usage = store.load(provider) { found.append(usage) }
+    }
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    if let data = try? encoder.encode(found) { print(String(decoding: data, as: UTF8.self)) }
+}
+
+/// The status line tee: record the usage figures, then run the user's own
+/// status line command behind it. Unlike hook mode this prints: whatever
+/// the chained command prints is the status line. A capture failure never
+/// stops the chained command from running.
+func runStatusLineTee(arguments: [String]) -> Never {
+    guard arguments.count >= 2, let provider = Provider(rawValue: arguments[0]),
+          StatusLineTee.providers.contains(provider)
+    else { exit(0) }
+    let recordName = arguments[1]
+    // Claude cancels a superseded run; take the chained command with us
+    for sig in [SIGTERM, SIGINT, SIGHUP] {
+        signal(sig) { received in
+            let group = ChainRunner.activeGroup
+            if group > 0 { kill(-group, SIGKILL) }
+            _exit(128 + received)
+        }
+    }
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    if let usage = StatusLineCapture.extract(provider: provider, data: input, now: Date()) {
+        try? UsageStore(directory: UsageStore.productionDirectory).record(usage)
+    }
+    let tee = StatusLineTee(helperPath: stableHelperURL.path)
+    guard let chained = tee.chainedCommand(recordName: recordName) else { exit(0) }
+    let result = ChainRunner.run(command: chained, input: input)
+    FileHandle.standardOutput.write(result.stdout)
+    exit(result.status)
+}
+
+func teeProviders(_ argument: String?) -> [Provider]? {
+    switch argument {
+    case "all": return StatusLineTee.providers
+    case let name?:
+        guard let provider = Provider(rawValue: name), StatusLineTee.providers.contains(provider)
+        else { return nil }
+        return [provider]
+    case nil: return nil
+    }
+}
+
+/// The stable helper must understand `statusline` before a settings file
+/// points at it, or the status line runs a command that prints usage text.
+func stableHelperSupportsStatusLine() -> Bool {
+    let process = Process()
+    process.executableURL = stableHelperURL
+    process.arguments = ["statusline-supported"]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    guard (try? process.run()) != nil else { return false }
+    process.waitUntilExit()
+    return process.terminationStatus == 0
+}
+
+func runStatusLineInstall(_ argument: String?) -> Never {
+    guard let providers = teeProviders(argument) else {
+        print("usage: agentdeck-hook statusline-install <claude|antigravity|all>")
+        exit(64)
+    }
+    guard stableHelperSupportsStatusLine() else {
+        print("the helper at \(stableHelperURL.path) is missing or too old; "
+            + "run `agentdeck-hook install` first")
+        exit(1)
+    }
+    let tee = StatusLineTee(helperPath: stableHelperURL.path)
+    var failed = false
+    for provider in providers {
+        let name = provider.spec.displayName
+        switch tee.status(for: provider) {
+        case .notApplicable:
+            print("\(name): not set up on this Mac — skipped")
+            continue
+        case .blockedByPolicy:
+            print("\(name): \(StatusLineTee.TeeError.blockedByPolicy)")
+            continue
+        default: break
+        }
+        do {
+            let changed = try tee.install(provider)
+            print("\(name): status line tee \(changed ? "installed" : "already installed")")
+        } catch {
+            print("\(name): \(error)")
+            failed = true
+        }
+    }
+    exit(failed ? 1 : 0)
+}
+
+func runStatusLineUninstall(_ argument: String?) -> Never {
+    guard let providers = teeProviders(argument) else {
+        print("usage: agentdeck-hook statusline-uninstall <claude|antigravity|all>")
+        exit(64)
+    }
+    let tee = StatusLineTee(helperPath: stableHelperURL.path)
+    var failed = false
+    for provider in providers {
+        let name = provider.spec.displayName
+        do {
+            switch try tee.uninstall(provider) {
+            case .restored: print("\(name): original status line restored")
+            case .leftUserChange: print("\(name): status line was changed since; left as it is")
+            }
+        } catch StatusLineTee.TeeError.missingRecord(let path) {
+            if tee.status(for: provider, policy: .none) == .orphaned {
+                print("\(name): \(StatusLineTee.TeeError.missingRecord(path))")
+                failed = true
+            } else {
+                print("\(name): no status line tee installed")
+            }
+        } catch {
+            print("\(name): \(error)")
+            failed = true
+        }
+    }
+    exit(failed ? 1 : 0)
+}
+
+func runStatusLineStatus() -> Never {
+    let tee = StatusLineTee(helperPath: stableHelperURL.path)
+    for provider in StatusLineTee.providers {
+        print("\(provider.rawValue): \(tee.status(for: provider))")
+    }
+    exit(0)
+}
+
 let providerNames = Provider.allCases.map(\.rawValue).joined(separator: "|")
 let command = CommandLine.arguments.dropFirst().first
 if let command, let provider = Provider(rawValue: command) {
@@ -192,9 +334,15 @@ switch command {
 case "install": runInstall()
 case "status": runStatus()
 case "debug-ancestry": runDebugAncestry()
+case "debug-usage": runDebugUsage()
+case "statusline": runStatusLineTee(arguments: Array(CommandLine.arguments.dropFirst(2)))
+case "statusline-supported": exit(0)
+case "statusline-install": runStatusLineInstall(CommandLine.arguments.dropFirst(2).first)
+case "statusline-uninstall": runStatusLineUninstall(CommandLine.arguments.dropFirst(2).first)
+case "statusline-status": runStatusLineStatus()
 case "--version", "-v", "version": print(AgentDeckVersion.current)
 default:
     print("agentdeck-hook \(AgentDeckVersion.current)")
-    print("usage: agentdeck-hook \(providerNames)|install|status|debug-ancestry|--version")
+    print("usage: agentdeck-hook \(providerNames)|install|status|debug-ancestry|debug-usage|statusline-install|statusline-uninstall|statusline-status|--version")
     exit(64)
 }

@@ -12,6 +12,7 @@ swift build            # debug build
 ./install-app.sh       # build + install ~/Applications/AgentDeck.app
 .build/debug/agentdeck-hook status          # hook install health
 .build/debug/agentdeck-hook debug-ancestry  # process-walk diagnostics
+.build/debug/agentdeck-hook debug-usage     # usage figures the app would show
 ```
 
 [AGENTS.md](AGENTS.md) is the map of the code: layout, data flow,

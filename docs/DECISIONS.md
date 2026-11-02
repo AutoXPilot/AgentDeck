@@ -148,6 +148,40 @@ AgentDeck more careful. Only Claude's hooks are gated by Claude's policy;
 Codex and agy are unaffected and the installer continues past a blocked
 Claude.
 
+## Usage lines
+
+**Local only.** (Unreleased)
+No network call and no credential is read: Codex figures come from its
+rollout logs, Claude's and agy's from their status line payloads. Rejected:
+calling the usage endpoints with the agents' stored sign-in tokens (what
+CodexBar does). It gives more (per-model rows, credits) but would make
+AgentDeck the first part of this setup to touch credentials. CodexBar is
+named in the README as the fuller tool.
+
+**A status line tee, not a replacement.** (Unreleased)
+Claude and agy each allow one status line command and only that command
+receives the figures (Claude's hook payloads carry none). The tee saves the
+whole original entry, changes only `command`, and runs the original behind
+it with the same stdin, cwd and environment, stdout and exit code passed
+through, stderr kept out. Opt-in from the menu, never from **Install
+hooks**. Uninstall restores only while the entry is still the tee's; a
+missing record is never read as "there was nothing".
+
+**agy through the tee rather than polling `agy -p /usage`.** (Unreleased)
+Polling works without a session open, but runs agy (and its network call)
+on a timer. The tee costs nothing extra and agy's payload carries the same
+buckets.
+
+**Codex: the newest valid record, account not claimed.** (Unreleased)
+Rollouts name no account, and a `premium` record with null windows can
+follow the subscription one, so the reader selects `limit_id == "codex"`
+(or none, for older records) and looks past files without a record. The
+tooltip says the account isn't verified.
+
+**No pace prediction yet.** (Unreleased)
+"Runs out in…" from one sample is a guess until attribution and
+observation time are trustworthy; percent and reset time only.
+
 ## Distribution
 
 **Developer ID + notarization, then a Homebrew cask.** (planned, see

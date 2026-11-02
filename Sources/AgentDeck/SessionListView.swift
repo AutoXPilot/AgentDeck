@@ -15,6 +15,7 @@ struct SessionListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            usageSection
             Divider()
             if let offer = model.launchRestoreOffer {
                 restoreBanner(offer)
@@ -229,6 +230,21 @@ struct SessionListView: View {
         .padding(.vertical, 8)
     }
 
+    /// One line per subscription that has figures, under the header.
+    @ViewBuilder
+    private var usageSection: some View {
+        let now = Date()
+        let lines = Provider.allCases.compactMap { model.usage[$0] }
+            .filter { !UsageFormat.lineGroups($0).isEmpty }
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(lines, id: \.provider) { UsageLine(usage: $0, now: now) }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 7)
+        }
+    }
+
     @ViewBuilder
     private func contextMenu(for session: SessionSnapshot) -> some View {
         Button("Focus pane") { model.activate(session) }
@@ -273,6 +289,7 @@ struct SessionListView: View {
                 }
                 Menu {
                     workspaceMenuItems
+                    usageMenuItems
                     Divider()
                     Button("Copy diagnostics") { model.copyDiagnostics() }
                     Button("Open Automation settings") { model.openAutomationSettings() }
@@ -325,6 +342,30 @@ struct SessionListView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var usageMenuItems: some View {
+        Section("Usage") {
+            ForEach(StatusLineTee.providers, id: \.self) { provider in
+                let name = UsageFormat.name(provider)
+                switch model.teeStatus[provider] ?? .notApplicable {
+                case .installed:
+                    Button("Stop reading \(name) usage") { model.setUsageTee(provider, on: false) }
+                case .notInstalled:
+                    Button("Show \(name) usage (adds to its status line)…") {
+                        model.setUsageTee(provider, on: true)
+                    }
+                case .blockedByPolicy:
+                    Text("\(name) usage: blocked by your organization's policy")
+                case .orphaned:
+                    Text("\(name) status line points at an old AgentDeck tee")
+                case .notApplicable:
+                    EmptyView()
+                }
+            }
+        }
+        .disabled(model.isInstalling)
     }
 
     @ViewBuilder
@@ -655,6 +696,74 @@ struct SessionRow: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(Capsule().fill(stateColor.opacity(needsAttention ? 0.35 : 0.15)))
+    }
+}
+
+struct UsageLine: View {
+    let usage: ProviderUsage
+    let now: Date
+
+    var body: some View {
+        let groups = Array(UsageFormat.lineGroups(usage).enumerated())
+        HStack(spacing: 6) {
+            Text(UsageFormat.name(usage.provider))
+                .foregroundStyle(usage.provider.spec.tint.color)
+                .frame(width: 44, alignment: .leading)
+            // agy's two groups don't fit at the narrowest popover width
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(groups, id: \.offset) { _, group in
+                        full(group, aligned: groups.count == 1)
+                    }
+                }
+                .fixedSize()
+                HStack(spacing: 8) {
+                    ForEach(groups, id: \.offset) { _, group in compact(group) }
+                }
+                .fixedSize()
+            }
+            Spacer(minLength: 4)
+            if let plan = usage.plan, !plan.isEmpty {
+                Text(plan.capitalized).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.caption2)
+        .monospacedDigit()
+        .opacity(usage.isStale(now: now) ? 0.5 : 1)
+        .help(UsageFormat.tooltip(usage, now: now))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(UsageFormat.accessibilityLabel(usage, now: now))
+    }
+
+    private func full(_ group: UsageGroup, aligned: Bool) -> some View {
+        HStack(spacing: 3) {
+            if let label = group.label { Text(label).foregroundStyle(.secondary) }
+            Text("5h").foregroundStyle(.tertiary)
+            figure(group.session, aligned: aligned)
+            Text("·").foregroundStyle(.tertiary)
+            Text("wk").foregroundStyle(.tertiary)
+            figure(group.weekly, aligned: aligned)
+        }
+    }
+
+    private func compact(_ group: UsageGroup) -> some View {
+        let high = UsageFormat.isHigh(group.session, now: now)
+            || UsageFormat.isHigh(group.weekly, now: now)
+        return HStack(spacing: 3) {
+            if let label = group.label { Text(label).foregroundStyle(.secondary) }
+            Text(UsageFormat.compact(group, now: now))
+                .foregroundStyle(high ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+        }
+    }
+
+    private func figure(_ window: UsageWindow?, aligned: Bool) -> some View {
+        Text(UsageFormat.percent(window, now: now))
+            .fontWeight(UsageFormat.isFull(window, now: now) ? .semibold : .regular)
+            .foregroundStyle(UsageFormat.isHigh(window, now: now)
+                             ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+            // keeps single-group lines in columns ("100%" over " 72%");
+            // multi-group lines need the width more than the alignment
+            .frame(minWidth: aligned ? 28 : nil, alignment: .trailing)
     }
 }
 

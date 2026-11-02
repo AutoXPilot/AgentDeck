@@ -9,6 +9,15 @@
   bringing ChatGPT forward. As with any app target, the click doesn't mark
   a session that needs you as handled, since a link can't prove it landed.
 
+- **Subscription usage under the header**, one line per subscription:
+  5-hour and weekly percent used, orange from 90%, reset times in the
+  tooltip. Codex comes from its rollout logs with nothing to set up.
+  Claude and agy come from an opt-in status line tee (**⋯ → Usage**) that
+  saves the figures and runs your existing status line behind it
+  unchanged; turning it off restores the original entry. No network calls,
+  no credentials. New helper commands: `statusline-install`,
+  `statusline-uninstall`, `statusline-status`, `debug-usage`.
+
 ### Docs
 
 - **`docs/` for the reasoning behind the code:** `DECISIONS.md` (what was

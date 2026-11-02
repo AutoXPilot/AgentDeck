@@ -55,6 +55,11 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var claudeEntrypoints: [String: String] = [:]
     /// Why a session is blocked, once we know: "permission prompt", …
     @Published private(set) var waitingReasons: [String: String] = [:]
+    /// Subscription usage per provider: Codex from its rollout logs,
+    /// Claude and agy from the files their status line tees write.
+    @Published private(set) var usage: [Provider: ProviderUsage] = [:]
+    /// Whether each status line tee (Claude, agy) is installed.
+    @Published private(set) var teeStatus: [Provider: StatusLineTee.Status] = [:]
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
     @Published private(set) var focusProblem: String? {
         didSet { if focusProblem != oldValue { noteMessageChanged() } }
@@ -164,6 +169,11 @@ final class SessionsModel: ObservableObject {
             reload()
             refreshWorkspaces()
             refreshTerminalTitles()
+            if let fixture = ProcessInfo.processInfo.environment["AGENTDECK_USAGE_FIXTURE"] {
+                usage = Self.usageFixture(at: fixture)
+            } else {
+                loadUsageAsync()
+            }
             return
         }
         try? FileManager.default.createDirectory(
@@ -187,6 +197,7 @@ final class SessionsModel: ObservableObject {
             Task { @MainActor in
                 self?.ensureWatching()
                 self?.reload(sweep: true)  // the one place that sweeps orphans
+                self?.loadUsageAsync()
             }
         }
         // .common so the 15s sweep keeps firing while a menu/context menu is
@@ -196,6 +207,7 @@ final class SessionsModel: ObservableObject {
         refreshTerminalTitles()
         reload()
         refreshWorkspaces()
+        loadUsageAsync()
     }
 
     // MARK: - Popover lifecycle
@@ -226,6 +238,32 @@ final class SessionsModel: ObservableObject {
         refreshTerminalTitles()
         loadCodexThreadsAsync()
         loadClaudeModelsAsync()
+        if !readOnly { loadUsageAsync() }
+    }
+
+    private func loadUsageAsync() {
+        let reader = codexUsage
+        usageQueue.async {
+            var loaded: [Provider: ProviderUsage] = [:]
+            if let codex = reader.load() { loaded[.codex] = codex }
+            let store = UsageStore()
+            for provider in [Provider.claude, .antigravity] {
+                if let found = store.load(provider) { loaded[provider] = found }
+            }
+            Task { @MainActor [weak self] in
+                guard let self, self.usage != loaded else { return }
+                self.usage = loaded
+            }
+        }
+    }
+
+    /// The render harness's stand-in for the usage files: a JSON array of
+    /// ProviderUsage, so layouts can be drawn without touching real state.
+    static func usageFixture(at path: String) -> [Provider: ProviderUsage] {
+        guard let data = FileManager.default.contents(atPath: path),
+              let list = try? UsageStore.decoder.decode([ProviderUsage].self, from: data)
+        else { return [:] }
+        return Dictionary(list.map { ($0.provider, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     private func loadCodexThreadsAsync() {
@@ -872,6 +910,17 @@ final class SessionsModel: ObservableObject {
     }
 
     func installHooks() {
+        runHelper(["install"], busy: "Installing…")
+    }
+
+    /// Turns a status line tee on or off. Never part of "Install hooks":
+    /// it rewrites the user's own status line setting.
+    func setUsageTee(_ provider: Provider, on: Bool) {
+        runHelper([on ? "statusline-install" : "statusline-uninstall", provider.rawValue],
+                  busy: on ? "Setting up usage…" : "Restoring status line…")
+    }
+
+    private func runHelper(_ arguments: [String], busy: String) {
         guard !isInstalling else { return }
         let bundled = Self.bundledHelperURL
         guard let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) else {
@@ -879,13 +928,14 @@ final class SessionsModel: ObservableObject {
             return
         }
         isInstalling = true
-        installMessage = "Installing…"
+        installMessage = busy
+        let command = arguments.first ?? "install"
         Task.detached {
             var text: String
             do {
                 let process = Process()
                 process.executableURL = bundled
-                process.arguments = ["install"]
+                process.arguments = arguments
                 let pipe = Pipe()
                 process.standardOutput = pipe
                 process.standardError = pipe
@@ -894,10 +944,10 @@ final class SessionsModel: ObservableObject {
                 process.waitUntilExit()
                 text = String(decoding: data, as: UTF8.self)
                 if process.terminationStatus != 0 {
-                    text = "install failed (exit \(process.terminationStatus)): \(text)"
+                    text = "\(command) failed (exit \(process.terminationStatus)): \(text)"
                 }
             } catch {
-                text = "install failed: \(error.localizedDescription)"
+                text = "\(command) failed: \(error.localizedDescription)"
             }
             let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
             await MainActor.run { [weak self] in
@@ -1026,6 +1076,10 @@ final class SessionsModel: ObservableObject {
     /// When the Codex thread cache was read — see `ModelSource.codex`.
     private var codexThreadsLoadedAt: Date?
     private var claudeModelGeneration = 0
+    private let codexUsage = CodexUsage.Reader()
+    /// Serial: the Codex reader keeps a per-file cache and isn't
+    /// thread-safe, and in-order loads mean the last result is the newest.
+    private let usageQueue = DispatchQueue(label: "AgentDeck.usage")
     /// Claude session id → the transcript mtime+size the model came from, so
     /// an unchanged (often multi-megabyte) transcript is never re-read.
     private var claudeModelFingerprints: [String: String] = [:]
@@ -1097,6 +1151,12 @@ final class SessionsModel: ObservableObject {
                 applicable: provider.spec.applicability.isApplicable())
         }
         if statuses != hookStatus { hookStatus = statuses }
+        let tee = StatusLineTee(helperPath: Self.helperURL.path)
+        var tees: [Provider: StatusLineTee.Status] = [:]
+        for provider in StatusLineTee.providers {
+            tees[provider] = tee.status(for: provider, policy: policy)
+        }
+        if tees != teeStatus { teeStatus = tees }
         iTermInstalled = NSWorkspace.shared
             .urlForApplication(withBundleIdentifier: "com.googlecode.iterm2") != nil
     }

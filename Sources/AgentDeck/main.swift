@@ -172,8 +172,11 @@ func renderPopover(to path: String) -> Never {
     model.popoverOpened()
     // let the async title fetch land before drawing
     RunLoop.main.run(until: Date().addingTimeInterval(2.5))
+    // the popover allows 360–460; layouts are checked at both ends
+    let width = ProcessInfo.processInfo.environment["AGENTDECK_RENDER_WIDTH"]
+        .flatMap(Double.init) ?? 380
     let renderer = ImageRenderer(
-        content: SessionListView(model: model, staticLayout: true).frame(width: 380)
+        content: SessionListView(model: model, staticLayout: true).frame(width: width)
     )
     renderer.scale = 2
     guard let image = renderer.nsImage,
