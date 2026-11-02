@@ -6,6 +6,8 @@ import Foundation
 /// under test. The app's reload() should contain no decisions: read files,
 /// call this, assign the output, perform the removals it was told about.
 public enum SessionPipeline {
+    public static let inferredWaitingReason = "may need you (no hook reports this prompt)"
+
     public struct Output: Sendable {
         public var rows: [SessionSnapshot]
         public var frozenOrder: [String]?
@@ -19,6 +21,7 @@ public enum SessionPipeline {
         snapshots: [SessionSnapshot],
         registry: [Int32: ClaudeSessionRegistry.Entry],
         liveSessions: [String: ClaudeSessionRegistry.Entry] = [:],
+        inferredWaiting: [String: Date] = [:],
         discovered extra: [SessionSnapshot] = [],
         acks: [String: Date],
         frozenOrder: [String]?,
@@ -56,6 +59,14 @@ public enum SessionPipeline {
             // and acknowledge a session it never reached. Adopt the live pid
             // and drop the pane, so focus resolves through the live process.
             // The recorded host is the old process's too.
+            // A prompt no hook reports (Codex MCP elicitations; see
+            // CodexStall): the row waits from when the thread got stuck,
+            // so an acknowledgement after that holds until it moves again.
+            if outcome.snapshot.state == .working, let since = inferredWaiting[snapshot.key] {
+                outcome.snapshot.state = .waiting
+                outcome.snapshot.updatedAt = max(outcome.snapshot.updatedAt, since)
+                reasons[snapshot.key] = inferredWaitingReason
+            }
             if let live, live.pid != snapshot.agentPid {
                 outcome.snapshot.agentPid = live.pid
                 outcome.snapshot.terminalSessionId = nil

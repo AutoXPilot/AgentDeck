@@ -98,6 +98,16 @@ gives no pane rather than a wrong one. Rejected: trusting the inherited
 pane (the original bug) and treating every daemon thread as app-hosted
 (loses the click for CLI threads).
 
+**Infer "may need you" for Codex prompts no hook reports.** (Unreleased)
+MCP elicitations fire no hook, so a Codex thread waiting on one looked
+busy for hours. A rollout ending in a non-shell tool call with no output,
+and nothing written for 2 minutes, is shown as waiting ("may need you").
+Shell commands are excluded because long builds look the same and
+Codex's own approvals for them fire PermissionRequest. Accepted risk: a
+non-shell tool that genuinely runs over 2 minutes is shown as waiting
+until it writes again. Rejected: leaving it `working` (Tony missed a
+prompt for 2.5 hours).
+
 ## Restore
 
 **Restore types a command into a login shell.** (0.5.0)

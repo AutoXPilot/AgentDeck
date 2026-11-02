@@ -211,6 +211,16 @@ probe exercised one, so no tool name is matched for them. agy has no
 SessionEnd; a row goes when its `agy` process does (the sweep), and the
 `agy --bg-updater` child process is never mistaken for a session.
 
+Codex fires no hook for an MCP server's prompt (the browser tool's "Allow
+Browser use to access …?"), so a thread waiting on one would look busy.
+When a Codex thread's last tool call has had no result for 2 minutes and
+nothing else has been written, the row shows as waiting ("may need you").
+Shell commands don't count, since a long build looks the same and Codex's
+own approval prompts for them do fire a hook. Codex threads run by
+Codex's shared app-server daemon (0.166+) are clicked through to their
+pane by the thread name in the pane title, because their hooks carry the
+daemon's pane, not theirs.
+
 Sessions are removed when their agent exits (SessionEnd, or the sweep for
 crashed/closed terminals) — except on `/clear` and resume, where the process
 keeps running. Sessions that need you (waiting, error, or done and not yet

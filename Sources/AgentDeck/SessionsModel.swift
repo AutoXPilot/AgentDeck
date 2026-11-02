@@ -50,6 +50,9 @@ final class SessionsModel: ObservableObject {
     /// Terminals running a Codex CLI, refreshed with the pane titles.
     private var codexCLITTYs: Set<String> = []
     private var appServerPidCache: [pid_t: Bool] = [:]
+    /// Codex threads stuck on a prompt no hook reports, by row key → since.
+    private var codexStalls: [String: Date] = [:]
+    private var codexStallGeneration = 0
     /// Claude session id → model from its transcript's last assistant turn.
     @Published private(set) var claudeModels: [String: String] = [:]
     /// Claude session id → how it was launched ("bg" = daemonized
@@ -205,6 +208,7 @@ final class SessionsModel: ObservableObject {
                 self?.ensureWatching()
                 self?.reload(sweep: true)  // the one place that sweeps orphans
                 self?.loadUsageAsync()
+                self?.checkCodexStallsAsync()
             }
         }
         // .common so the 15s sweep keeps firing while a menu/context menu is
@@ -246,6 +250,35 @@ final class SessionsModel: ObservableObject {
         loadCodexThreadsAsync()
         loadClaudeModelsAsync()
         if !readOnly { loadUsageAsync() }
+        if !readOnly { checkCodexStallsAsync() }
+    }
+
+    /// Looks for Codex threads that hooks call working but that are stuck
+    /// on a prompt no hook reports (see CodexStall). Off the main thread;
+    /// a change triggers a reload so the row and badge follow.
+    private func checkCodexStallsAsync() {
+        let working = sessions.filter { $0.provider == .codex && $0.state != .done && $0.state != .error }
+        guard !working.isEmpty else {
+            if !codexStalls.isEmpty { codexStalls = [:]; reload() }
+            return
+        }
+        codexStallGeneration += 1
+        let gen = codexStallGeneration
+        let ids = Set(working.map(\.sessionId))
+        Task.detached {
+            let now = Date()
+            var stalls: [String: Date] = [:]
+            for (id, url) in CodexStall.rollouts(for: ids) {
+                if let since = CodexStall.stalledSince(file: url, now: now) {
+                    stalls[SessionKey.make(.codex, id)] = since
+                }
+            }
+            Task { @MainActor [weak self] in
+                guard let self, gen == self.codexStallGeneration, stalls != self.codexStalls else { return }
+                self.codexStalls = stalls
+                self.reload()
+            }
+        }
     }
 
     private func loadUsageAsync() {
@@ -453,6 +486,7 @@ final class SessionsModel: ObservableObject {
             snapshots: all,
             registry: claudeRegistry,
             liveSessions: claudeLiveSessions,
+            inferredWaiting: codexStalls,
             discovered: AntigravityState.discoveredSnapshots(
                 antigravityPresence,
                 workspaces: antigravityPresence.isEmpty

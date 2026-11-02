@@ -28,6 +28,12 @@
   AgentDeck now ignores both and finds the thread's pane by its title among
   panes running `codex`; ChatGPT threads run by the daemon are recognised
   from Codex's thread records.
+- **A Codex thread waiting on a prompt that fires no hook** (an MCP
+  server's request, like the browser tool's "Allow Browser use to
+  access …?") showed as working indefinitely. A thread whose last tool call
+  has had no result for 2 minutes, with nothing else written, now shows as
+  waiting ("may need you"), counts in the badge and can notify. Shell
+  commands are excluded, since long builds look the same.
 
 ### Docs
 
