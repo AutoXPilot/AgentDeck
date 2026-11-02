@@ -193,9 +193,8 @@ func runDebugUsage() {
     var found: [ProviderUsage] = []
     if let codex = CodexUsage.Reader().load() { found.append(codex) }
     let store = UsageStore()
-    for provider in [Provider.claude, .antigravity] {
-        if let usage = store.load(provider) { found.append(usage) }
-    }
+    found += store.loadAll(.claude)
+    if let agy = store.load(.antigravity) { found.append(agy) }
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -220,8 +219,14 @@ func runStatusLineTee(arguments: [String]) -> Never {
         }
     }
     let input = FileHandle.standardInput.readDataToEndOfFile()
-    if let usage = StatusLineCapture.extract(provider: provider, data: input, now: Date()) {
-        try? UsageStore(directory: UsageStore.productionDirectory).record(usage)
+    if var usage = StatusLineCapture.extract(provider: provider, data: input, now: Date()) {
+        if provider == .claude {
+            // the tee runs in Claude's own environment, so CLAUDE_CONFIG_DIR
+            // here is the one this session uses
+            usage.account = ClaudeAccount.current(
+                configDirectory: ClaudeConfig.directory(policy: .load()))
+        }
+        try? UsageStore(directory: UsageStore.productionDirectory).recordUnlessEcho(usage)
     }
     let tee = StatusLineTee(helperPath: stableHelperURL.path)
     guard let chained = tee.chainedCommand(recordName: recordName) else { exit(0) }

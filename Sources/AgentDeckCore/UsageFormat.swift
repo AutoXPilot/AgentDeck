@@ -57,7 +57,7 @@ public enum UsageFormat {
 
     /// Multi-line hover text: every group (including tooltip-only ones)
     /// with reset times, then where the figures came from.
-    public static func tooltip(_ usage: ProviderUsage, now: Date,
+    public static func tooltip(_ usage: ProviderUsage, others: [ProviderUsage] = [], now: Date,
                                calendar: Calendar = .current,
                                locale: Locale = .current) -> String {
         var lines: [String] = []
@@ -90,6 +90,14 @@ public enum UsageFormat {
             }
         }
         if usage.isStale(now: now) { lines.append("Over 6 hours old.") }
+        if let account = usage.account { lines.append("Signed-in account \(account).") }
+        for other in others {
+            let figures = other.groups.filter { !$0.isEmpty }.map { group in
+                "5-hour \(percent(group.session, now: now)), weekly \(percent(group.weekly, now: now))"
+            }.joined(separator: "; ")
+            let seen = time(other.observedAt, now: now, calendar: calendar, locale: locale)
+            lines.append("Other account \(other.account ?? "?"): \(figures) (seen \(seen))")
+        }
         return lines.joined(separator: "\n")
     }
 

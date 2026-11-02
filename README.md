@@ -100,7 +100,8 @@ also hold conversation text) and decodes only `token_count` records; and
 the status line tee receives Claude's or agy's full status line payload
 (working folder, conversation title, agy's account email), which it
 forwards unchanged to your own status line command and otherwise
-discards. Your own command does whatever it did before.
+discards. To file Claude's figures under the right account it reads the
+account id (only that field) from `~/.claude.json`. Your own command does whatever it did before.
 
 Conversation content is parsed past but never retained, logged, or
 displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
@@ -329,6 +330,14 @@ figures has no line.
   which case it's left alone. The figures update while a session of that
   agent is open. For agy with no custom status line, the tee keeps agy's
   built-in one (`stack_with_default`).
+- **Two Claude accounts:** figures are kept per account and the line shows
+  the account you're signed in to now (read from `oauthAccount.accountUuid`
+  in `~/.claude.json`, first 8 characters; nothing else in that file is
+  read). The tooltip lists the other account's last figures. After
+  `/login`, an idle session keeps sending the old account's cached figures
+  until its next reply; those are recognised and not filed under the new
+  account. Until a session has replied on the new account, its line is
+  empty.
 - **Managed Macs:** a Claude policy that sets `allowManagedHooksOnly` or
   `disableAllHooks` also stops user status lines, so there's no Claude
   line there. Codex and agy are unaffected.

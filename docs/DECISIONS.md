@@ -178,6 +178,17 @@ follow the subscription one, so the reader selects `limit_id == "codex"`
 (or none, for older records) and looks past files without a record. The
 tooltip says the account isn't verified.
 
+**Claude figures are filed per account.** (Unreleased)
+Tony switches between two Claude accounts with `/login`, which moves
+every open session; an idle session keeps re-sending the old account's
+cached figures until its next reply. The tee tags each record with the
+signed-in account (the id prefix from `~/.claude.json`, the same field
+his own status line script uses; an identifier, not a credential) and
+drops a record that exactly matches another account's (same percent and
+reset time). The line shows the signed-in account only, others go in
+the tooltip. Codex accounts still aren't told apart: its records carry no
+account.
+
 **No pace prediction yet.** (Unreleased)
 "Runs out in…" from one sample is a guess until attribution and
 observation time are trustworthy; percent and reset time only.

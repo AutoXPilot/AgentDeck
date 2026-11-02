@@ -58,6 +58,8 @@ final class SessionsModel: ObservableObject {
     /// Subscription usage per provider: Codex from its rollout logs,
     /// Claude and agy from the files their status line tees write.
     @Published private(set) var usage: [Provider: ProviderUsage] = [:]
+    /// Other accounts' last figures (Claude), for the tooltip.
+    @Published private(set) var otherAccountUsage: [Provider: [ProviderUsage]] = [:]
     /// Whether each status line tee (Claude, agy) is installed.
     @Published private(set) var teeStatus: [Provider: StatusLineTee.Status] = [:]
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
@@ -245,14 +247,17 @@ final class SessionsModel: ObservableObject {
         let reader = codexUsage
         usageQueue.async {
             var loaded: [Provider: ProviderUsage] = [:]
+            var others: [Provider: [ProviderUsage]] = [:]
             if let codex = reader.load() { loaded[.codex] = codex }
             let store = UsageStore()
-            for provider in [Provider.claude, .antigravity] {
-                if let found = store.load(provider) { loaded[provider] = found }
-            }
+            let claude = UsageStore.pick(store.loadAll(.claude), signedIn: ClaudeAccount.current())
+            loaded[.claude] = claude.shown
+            if !claude.others.isEmpty { others[.claude] = claude.others }
+            if let agy = store.load(.antigravity) { loaded[.antigravity] = agy }
             Task { @MainActor [weak self] in
-                guard let self, self.usage != loaded else { return }
-                self.usage = loaded
+                guard let self else { return }
+                if self.usage != loaded { self.usage = loaded }
+                if self.otherAccountUsage != others { self.otherAccountUsage = others }
             }
         }
     }

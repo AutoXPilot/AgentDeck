@@ -222,3 +222,83 @@ struct UsageFormatTests {
                 == "Claude: 5-hour 100 percent used, weekly 17 percent used")
     }
 }
+
+struct UsageAccountTests {
+    private func claude(_ five: Double, resets: TimeInterval = 1_793_598_600, account: String?,
+                        at seconds: TimeInterval) -> ProviderUsage {
+        ProviderUsage(provider: .claude,
+                      groups: [UsageGroup(session: UsageWindow(usedPercent: five,
+                                                               resetsAt: Date(timeIntervalSince1970: resets)))],
+                      account: account, observedAt: Date(timeIntervalSince1970: seconds))
+    }
+
+    @Test func twoAccountsKeepSeparateRecords() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        try store.recordUnlessEcho(claude(40, account: "aaaa1111", at: 1))
+        try store.recordUnlessEcho(claude(90, resets: 1_793_590_000, account: "bbbb2222", at: 2))
+        #expect(store.load(.claude, account: "aaaa1111")?.groups.first?.session?.usedPercent == 40)
+        #expect(store.load(.claude, account: "bbbb2222")?.groups.first?.session?.usedPercent == 90)
+        #expect(store.loadAll(.claude).count == 2)
+    }
+
+    @Test func anIdleSessionEchoingTheOldAccountIsNotFiledUnderTheNewOne() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        try store.recordUnlessEcho(claude(40, account: "aaaa1111", at: 1))
+        // after /login to bbbb2222, an idle session re-sends aaaa1111's figures
+        #expect(try store.recordUnlessEcho(claude(40, account: "bbbb2222", at: 2)) == false)
+        #expect(store.load(.claude, account: "bbbb2222") == nil)
+        // a session that has heard from the new account is recorded
+        #expect(try store.recordUnlessEcho(claude(5, resets: 1_793_610_000, account: "bbbb2222", at: 3)))
+    }
+
+    @Test func pickShowsTheSignedInAccountAndListsTheOthers() {
+        let a = claude(40, account: "aaaa1111", at: 1)
+        let b = claude(90, account: "bbbb2222", at: 5)
+        let legacy = claude(70, account: nil, at: 9)
+        let picked = UsageStore.pick([a, b, legacy], signedIn: "aaaa1111")
+        #expect(picked.shown == a)
+        #expect(picked.others == [b])
+        // signed in to an account with no record yet: no line, not the other's
+        #expect(UsageStore.pick([a], signedIn: "cccc3333").shown == nil)
+        // account unknown: the newest record
+        #expect(UsageStore.pick([a, b], signedIn: nil).shown == b)
+    }
+
+    @Test func anAttributedRecordRetiresTheAccountlessFile() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        try store.record(claude(70, account: nil, at: 1))
+        try store.recordUnlessEcho(claude(40, account: "aaaa1111", at: 2))
+        #expect(store.load(.claude) == nil)
+        #expect(store.loadAll(.claude).map(\.account) == ["aaaa1111"])
+    }
+
+    @Test func accountNamesCannotEscapeTheDirectory() {
+        let store = UsageStore(directory: URL(fileURLWithPath: "/x"))
+        #expect(store.url(for: .claude, account: "../../etc").lastPathComponent == "claude.json")
+        #expect(store.url(for: .claude, account: "aaaa1111").lastPathComponent == "claude-aaaa1111.json")
+    }
+
+    @Test func readsOnlyTheAccountIdPrefixFromTheRightFile() throws {
+        let home = try temporaryDirectory()
+        let json = #"{"oauthAccount":{"accountUuid":"17ca1970-aaaa-bbbb","emailAddress":"x@example.com"},"projects":{}}"#
+        try Data(json.utf8).write(to: home.appendingPathComponent(".claude.json"))
+        let defaultDir = home.appendingPathComponent(".claude", isDirectory: true)
+        #expect(ClaudeAccount.current(configDirectory: defaultDir, home: home) == "17ca1970")
+        // a moved config folder holds its own .claude.json
+        let moved = home.appendingPathComponent("alt", isDirectory: true)
+        try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
+        #expect(ClaudeAccount.current(configDirectory: moved, home: home) == nil)
+        try Data(#"{"oauthAccount":{"accountUuid":"12116530-cccc"}}"#.utf8)
+            .write(to: moved.appendingPathComponent(".claude.json"))
+        #expect(ClaudeAccount.current(configDirectory: moved, home: home) == "12116530")
+    }
+
+    @Test func tooltipListsTheOtherAccount() {
+        let now = Date(timeIntervalSince1970: 1_793_590_000)
+        let shown = claude(40, account: "aaaa1111", at: 1_793_589_000)
+        let other = claude(90, resets: 1_793_595_000, account: "bbbb2222", at: 1_793_588_000)
+        let tip = UsageFormat.tooltip(shown, others: [other], now: now)
+        #expect(tip.contains("Signed-in account aaaa1111."))
+        #expect(tip.contains("Other account bbbb2222: 5-hour 90%"))
+    }
+}

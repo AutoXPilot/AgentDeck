@@ -49,6 +49,9 @@ public struct ProviderUsage: Codable, Equatable, Sendable {
     public var provider: Provider
     public var groups: [UsageGroup]
     public var plan: String?
+    /// Which account the figures belong to, when the source can tell
+    /// (Claude: the first 8 characters of the signed-in account's id).
+    public var account: String?
     /// When a source last reported a figure.
     public var observedAt: Date
     /// When a figure last moved. A status line re-sends cached figures on
@@ -56,10 +59,11 @@ public struct ProviderUsage: Codable, Equatable, Sendable {
     public var changedAt: Date
 
     public init(provider: Provider, groups: [UsageGroup], plan: String? = nil,
-                observedAt: Date, changedAt: Date? = nil) {
+                account: String? = nil, observedAt: Date, changedAt: Date? = nil) {
         self.provider = provider
         self.groups = groups
         self.plan = plan
+        self.account = account
         self.observedAt = observedAt
         self.changedAt = changedAt ?? observedAt
     }
@@ -90,8 +94,20 @@ public struct UsageStore: Sendable {
         self.directory = directory
     }
 
-    func url(for provider: Provider) -> URL {
-        directory.appendingPathComponent("\(provider.rawValue).json")
+    /// `<provider>.json`, or `<provider>-<account>.json` when the account
+    /// is known, so two accounts never overwrite each other.
+    func url(for provider: Provider, account: String? = nil) -> URL {
+        guard let account = Self.safeAccount(account) else {
+            return directory.appendingPathComponent("\(provider.rawValue).json")
+        }
+        return directory.appendingPathComponent("\(provider.rawValue)-\(account).json")
+    }
+
+    static func safeAccount(_ account: String?) -> String? {
+        guard let account, !account.isEmpty, account.count <= 64,
+              account.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
+        else { return nil }
+        return account
     }
 
     public static let encoder: JSONEncoder = {
@@ -107,31 +123,85 @@ public struct UsageStore: Sendable {
         return d
     }()
 
-    public func load(_ provider: Provider) -> ProviderUsage? {
-        guard let data = try? Data(contentsOf: url(for: provider)),
+    public func load(_ provider: Provider, account: String? = nil) -> ProviderUsage? {
+        decode(url(for: provider, account: account), provider: provider)
+    }
+
+    private func decode(_ url: URL, provider: Provider) -> ProviderUsage? {
+        guard let data = try? Data(contentsOf: url),
               let usage = try? Self.decoder.decode(ProviderUsage.self, from: data),
               usage.provider == provider
         else { return nil }
         return usage
     }
 
+    /// Every stored record for `provider`, one per account.
+    public func loadAll(_ provider: Provider) -> [ProviderUsage] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+        else { return [] }
+        return names.filter {
+            $0 == "\(provider.rawValue).json"
+                || ($0.hasPrefix("\(provider.rawValue)-") && $0.hasSuffix(".json"))
+        }.compactMap { decode(directory.appendingPathComponent($0), provider: provider) }
+    }
+
+    /// The record to show and the other accounts' records, for the tooltip.
+    /// With a known signed-in account only its record is shown; an
+    /// account-less record (written before accounts were tracked) is then
+    /// dropped as unattributable. Without one, the newest record is shown.
+    public static func pick(_ records: [ProviderUsage], signedIn: String?)
+        -> (shown: ProviderUsage?, others: [ProviderUsage]) {
+        if let signedIn {
+            let shown = records.first { $0.account == signedIn }
+            let others = records.filter { $0.account != nil && $0.account != signedIn }
+                .sorted { $0.observedAt > $1.observedAt }
+            return (shown, others)
+        }
+        let sorted = records.sorted { $0.observedAt > $1.observedAt }
+        return (sorted.first, Array(sorted.dropFirst()))
+    }
+
+    /// Saves `usage` unless it is another account's figures echoed back.
+    /// After `/login` every open session moves to the new account, but an
+    /// idle one keeps re-sending the old account's cached figures until its
+    /// next response; those match the old account's record exactly
+    /// (percent and reset time), so they're dropped rather than filed under
+    /// the new account. Returns whether it was saved.
+    @discardableResult
+    public func recordUnlessEcho(_ usage: ProviderUsage) throws -> Bool {
+        if usage.account != nil {
+            let echo = loadAll(usage.provider).contains {
+                $0.account != nil && $0.account != usage.account && $0.sameFigures(as: usage)
+            }
+            if echo { return false }
+        }
+        try record(usage)
+        if usage.account != nil {
+            // the account-less file predates account tracking; it can't be
+            // attributed, so it goes once an attributed one exists
+            try? FileManager.default.removeItem(at: url(for: usage.provider))
+        }
+        return true
+    }
+
     /// Saves `usage`, keeping the stored `changedAt` when the figures are
     /// unchanged. Atomic, owner-only.
     public func record(_ usage: ProviderUsage) throws {
         var usage = usage
-        if let previous = load(usage.provider), previous.sameFigures(as: usage) {
+        if let previous = load(usage.provider, account: usage.account), previous.sameFigures(as: usage) {
             usage.changedAt = previous.changedAt
         }
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
         let data = try Self.encoder.encode(usage)
+        let destination = url(for: usage.provider, account: usage.account)
         let temp = directory.appendingPathComponent(".\(usage.provider.rawValue).\(UUID().uuidString).tmp")
         guard fm.createFile(atPath: temp.path, contents: data,
                             attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        if rename(temp.path, url(for: usage.provider).path) != 0 {
+        if rename(temp.path, destination.path) != 0 {
             try? fm.removeItem(at: temp)
             throw CocoaError(.fileWriteUnknown)
         }

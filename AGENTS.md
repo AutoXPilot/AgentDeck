@@ -136,8 +136,11 @@ Restore
 
 Usage lines
 - `UsageSnapshot.swift` — `UsageWindow`/`UsageGroup`/`ProviderUsage` (the
-  only fields stored) and `UsageStore` (`…/AgentDeck/usage/<provider>.json`,
-  0600; `changedAt` moves only when a figure does).
+  only fields stored) and `UsageStore` (`…/AgentDeck/usage/<provider>[-<account>].json`,
+  0600; `changedAt` moves only when a figure does; `recordUnlessEcho` drops
+  another account's figures re-sent by an idle session; `pick` shows the
+  signed-in account). `ClaudeAccount` (in `ClaudeEnvironment.swift`) reads
+  only `oauthAccount.accountUuid`.
 - `CodexUsage.swift` — newest `token_count` record across rollouts (exact
   envelope, `limit_id` `codex`, windows by minutes, tail grows to 8 MB).
 - `StatusLineCapture.swift` — allow-listed figures from Claude's and agy's
@@ -245,8 +248,8 @@ was checked, is [docs/platform-facts.md](docs/platform-facts.md).
 
 ## Open items
 
-- Usage lines: several Claude or Codex accounts aren't told apart (the
-  figures are whichever account reported last). Claude's structured `/usage` (an experimental SDK
+- Usage lines: several Codex accounts aren't told apart (the figures are
+  whichever account reported last); Claude's are filed per account. Claude's structured `/usage` (an experimental SDK
   `get_usage` control request) would give per-model rows; not used.
 - agy permission prompts aren't detected (tool name never observed); agy
   print mode isn't filtered.

@@ -238,7 +238,9 @@ struct SessionListView: View {
             .filter { !UsageFormat.lineGroups($0).isEmpty }
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(lines, id: \.provider) { UsageLine(usage: $0, now: now) }
+                ForEach(lines, id: \.provider) {
+                    UsageLine(usage: $0, others: model.otherAccountUsage[$0.provider] ?? [], now: now)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 7)
@@ -701,6 +703,8 @@ struct SessionRow: View {
 
 struct UsageLine: View {
     let usage: ProviderUsage
+    /// Other accounts of the same provider, listed in the tooltip.
+    var others: [ProviderUsage] = []
     let now: Date
 
     var body: some View {
@@ -731,7 +735,7 @@ struct UsageLine: View {
         .font(.caption2)
         .monospacedDigit()
         .opacity(usage.isStale(now: now) ? 0.5 : 1)
-        .help(UsageFormat.tooltip(usage, now: now))
+        .help(UsageFormat.tooltip(usage, others: others, now: now))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(UsageFormat.accessibilityLabel(usage, now: now))
     }

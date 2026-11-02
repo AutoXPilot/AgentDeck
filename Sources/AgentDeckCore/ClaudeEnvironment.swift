@@ -161,3 +161,30 @@ public enum ClaudeConfig {
     /// files, which a relaunch picks up.
     public static let current: URL = directory(policy: .load())
 }
+
+/// The signed-in Claude account, as an 8-character prefix of its id. Rate
+/// limits belong to the account, and `/login` in any terminal moves every
+/// open session to the new one. Only `oauthAccount.accountUuid` is read
+/// from the file; no token lives there.
+public enum ClaudeAccount {
+    /// `.claude.json` sits beside the default `~/.claude` folder, and inside
+    /// the folder when `CLAUDE_CONFIG_DIR` moves it.
+    public static func stateFile(configDirectory: URL,
+                                 home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        let defaultDirectory = home.appendingPathComponent(".claude", isDirectory: true)
+        if configDirectory.standardizedFileURL.path == defaultDirectory.standardizedFileURL.path {
+            return home.appendingPathComponent(".claude.json")
+        }
+        return configDirectory.appendingPathComponent(".claude.json")
+    }
+
+    public static func current(configDirectory: URL = ClaudeConfig.current,
+                               home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        guard let data = try? Data(contentsOf: stateFile(configDirectory: configDirectory, home: home)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = object["oauthAccount"] as? [String: Any],
+              let id = account["accountUuid"] as? String, id.count >= 8
+        else { return nil }
+        return String(id.prefix(8))
+    }
+}

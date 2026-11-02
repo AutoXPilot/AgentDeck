@@ -16,7 +16,9 @@
   saves the figures and runs your existing status line behind it
   unchanged; turning it off restores the original entry. No network calls,
   no credentials. New helper commands: `statusline-install`,
-  `statusline-uninstall`, `statusline-status`, `debug-usage`.
+  `statusline-uninstall`, `statusline-status`, `debug-usage`. With two
+  Claude accounts, the line shows the one you're signed in to and the
+  tooltip lists the other.
 
 ### Docs
 
