@@ -86,6 +86,18 @@ Lacking a tty isn't evidence of print mode (discovered and background
 sessions have none either). Print mode is filtered only once a payload or
 environment discriminator is observed; none has been yet.
 
+**Codex threads run by the shared daemon: ignore its pane, find the real one.** (Unreleased)
+From Codex 0.166 hooks run under one app-server daemon, with its pid and
+the pane id it inherited. The helper records neither for such a thread
+(unless the ancestry is ChatGPT.app's own app-server, which stays
+app-hosted). The app treats a thread whose `originator` is `Codex
+Desktop` as ChatGPT-hosted, and otherwise looks for the pane among iTerm
+panes whose terminal runs a `codex` CLI: a unique title match on the
+thread name, or the only Codex pane for an unnamed thread. Ambiguity
+gives no pane rather than a wrong one. Rejected: trusting the inherited
+pane (the original bug) and treating every daemon thread as app-hosted
+(loses the click for CLI threads).
+
 ## Restore
 
 **Restore types a command into a login shell.** (0.5.0)

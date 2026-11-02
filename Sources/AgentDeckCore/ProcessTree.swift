@@ -227,4 +227,23 @@ public enum ProcessTree {
     public static func codexThreadsRunning(_ threadIds: Set<String>) -> Set<String> {
         sessionsRunning(provider: .codex, ids: threadIds)
     }
+
+    /// Codex's shared app-server daemon (`~/.codex/packages/app-server-daemon/
+    /// …/codex app-server`, from 0.166), which runs threads for the CLI and
+    /// ChatGPT.app alike. Hooks run under it, so its pid is shared by every
+    /// thread and its environment holds whatever pane started it.
+    public static func isCodexAppServer(_ pid: pid_t) -> Bool {
+        CodexAppServer.matches(executablePath: executablePath(of: pid),
+                               argvMentionsAppServer: argumentsMention("app-server", pid: pid))
+    }
+
+    /// Terminals running a Codex CLI (not the daemon). Each process's
+    /// executable and arguments are checked in place; nothing is kept.
+    public static func codexCLITTYs() -> Set<String> {
+        var ttys = Set<String>()
+        for pid in allPids() where looksLikeAgent(pid, provider: .codex) && !isCodexAppServer(pid) {
+            if let tty = controllingTTY(of: pid) { ttys.insert(tty) }
+        }
+        return ttys
+    }
 }

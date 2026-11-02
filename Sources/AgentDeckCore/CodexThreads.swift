@@ -86,6 +86,40 @@ public enum CodexThreads {
         return parse(String(decoding: result.output, as: UTF8.self))
     }
 
+    /// Which client started each thread: `codex-tui` for the CLI, `Codex
+    /// Desktop` for ChatGPT.app, `codex_exec` for `codex exec`. Since Codex
+    /// runs threads in a shared app-server daemon, a hook's process
+    /// ancestry no longer says which app a thread belongs to; this does.
+    /// Kept out of `query` so that query's fixed shape still rejects a
+    /// misaligned row.
+    static let originatorQuery = "select id, originator from threads where originator is not null"
+
+    public static let desktopOriginator = "Codex Desktop"
+
+    public static func parseOriginators(_ output: String, separator: String = "\u{1}") -> [String: String] {
+        var result: [String: String] = [:]
+        for line in output.split(separator: "\n") {
+            let cols = line.components(separatedBy: separator)
+            // an identifier, not text: anything long or odd is dropped
+            guard cols.count == 2, !cols[0].isEmpty, !cols[1].isEmpty, cols[1].count <= 40
+            else { continue }
+            result[cols[0]] = cols[1]
+        }
+        return result
+    }
+
+    /// Empty when the column doesn't exist (older Codex) or the read fails.
+    public static func originators(from url: URL = CodexThreads.defaultURL) -> [String: String] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        let result = BoundedSubprocess.run(
+            "/usr/bin/sqlite3",
+            arguments: ["-readonly", "-separator", "\u{1}", url.path, originatorQuery],
+            timeout: 5
+        )
+        guard result.status == 0, !result.timedOut else { return [:] }
+        return parseOriginators(String(decoding: result.output, as: UTF8.self))
+    }
+
     /// Whether a thread exists: true or false from a successful read, nil
     /// when the database couldn't be read. Restore needs the difference — a
     /// deleted conversation should be reported, while a database it simply

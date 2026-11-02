@@ -45,6 +45,11 @@ final class SessionsModel: ObservableObject {
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
     @Published private(set) var codexThreads: [String: CodexThread] = [:]
+    /// thread id → the client that started it (`codex-tui`, `Codex Desktop`).
+    private var codexOriginators: [String: String] = [:]
+    /// Terminals running a Codex CLI, refreshed with the pane titles.
+    private var codexCLITTYs: Set<String> = []
+    private var appServerPidCache: [pid_t: Bool] = [:]
     /// Claude session id → model from its transcript's last assistant turn.
     @Published private(set) var claudeModels: [String: String] = [:]
     /// Claude session id → how it was launched ("bg" = daemonized
@@ -284,9 +289,11 @@ final class SessionsModel: ObservableObject {
             // value win.
             let readAt = Date()
             let threads = CodexThreads.load()
+            let originators = CodexThreads.originators()
             Task { @MainActor [weak self] in
                 guard let self, gen == self.codexThreadGeneration else { return }
                 self.codexThreads = threads
+                self.codexOriginators = originators
                 self.codexThreadsLoadedAt = readAt
                 self.onChange?()
             }
@@ -588,6 +595,12 @@ final class SessionsModel: ObservableObject {
     /// `ClaudeDesktop.effectiveHost`). A Desktop-started session with no
     /// hook snapshot becomes app-hosted once its transcript is read.
     func effectiveHost(for snapshot: SessionSnapshot) -> SessionHost {
+        if snapshot.provider == .codex, snapshot.host.kind != .app,
+           codexOriginators[snapshot.sessionId] == CodexThreads.desktopOriginator {
+            // a ChatGPT thread run by Codex's shared daemon: its hooks carry
+            // no ChatGPT ancestry, but the thread record says whose it is
+            return SessionHost(kind: .app, bundlePath: Self.chatGPTBundlePath)
+        }
         guard snapshot.provider == .claude else { return snapshot.host }
         return ClaudeDesktop.effectiveHost(
             recorded: snapshot.host,
@@ -702,9 +715,28 @@ final class SessionsModel: ObservableObject {
     /// Where clicking this row should take you: its iTerm pane, or the app
     /// that hosts it (Codex inside ChatGPT.app has no pane but does have an
     /// app), or nowhere.
+    static var chatGPTBundlePath: String {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex")?.path
+            ?? "/Applications/ChatGPT.app"
+    }
+
+    /// A Codex thread run by the shared app-server daemon: its recorded pid
+    /// is the daemon (snapshots written before the helper knew), or the
+    /// helper recorded neither pid nor pane.
+    func isRunByCodexDaemon(_ snapshot: SessionSnapshot) -> Bool {
+        guard snapshot.provider == .codex else { return false }
+        guard let pid = snapshot.agentPid else { return snapshot.terminalSessionId == nil }
+        if let cached = appServerPidCache[pid] { return cached }
+        let result = ProcessTree.isCodexAppServer(pid)
+        appServerPidCache[pid] = result
+        return result
+    }
+
     func focusTarget(for snapshot: SessionSnapshot) -> FocusTarget {
-        FocusResolver.resolve(
-            terminalSessionId: snapshot.terminalSessionId ?? paneByControllingTTY(snapshot),
+        // a daemon-run thread's recorded pane is the daemon's, not its own
+        let recordedPane = isRunByCodexDaemon(snapshot) ? nil : snapshot.terminalSessionId
+        return FocusResolver.resolve(
+            terminalSessionId: recordedPane ?? paneByControllingTTY(snapshot),
             owningAppBundlePath: owningAppBundle(for: snapshot),
             host: effectiveHost(for: snapshot),
             provider: snapshot.provider, sessionId: snapshot.sessionId
@@ -721,6 +753,14 @@ final class SessionsModel: ObservableObject {
     /// same pid. Otherwise a recycled pid would lead to whatever pane its
     /// new owner happens to run in.
     private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
+        if isRunByCodexDaemon(snapshot) {
+            let ttyByGuid = Dictionary(paneByTTY.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
+            let panes = terminalTitles.compactMap { guid, title in
+                ttyByGuid[guid].map { (guid: guid, tty: $0, title: title) }
+            }
+            return CodexAppServer.pane(threadName: codexNames[snapshot.sessionId],
+                                       panes: panes, codexTTYs: codexCLITTYs)
+        }
         // agy: the hook recorded its own pid; trusted only while it passes
         // the identity check (start time, `agy` executable)
         if snapshot.provider == .antigravity, let pid = snapshot.agentPid,
@@ -1192,6 +1232,7 @@ final class SessionsModel: ObservableObject {
         let generation = titleFetchGeneration
         Task.detached {
             let outcome = ITermFocus.fetchSessionNames()
+            let codexTTYs = ProcessTree.codexCLITTYs()
             let list: ITermFocus.SessionList
             switch outcome {
             case .success(let raw):
@@ -1208,6 +1249,7 @@ final class SessionsModel: ObservableObject {
                 guard let self, generation == self.titleFetchGeneration else { return }
                 self.terminalTitles = list.names
                 self.paneByTTY = list.guidByTTY
+                self.codexCLITTYs = codexTTYs
                 self.onChange?()
             }
         }

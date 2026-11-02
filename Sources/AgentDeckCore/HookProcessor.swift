@@ -34,12 +34,15 @@ public enum HookProcessor {
         parentPid: pid_t?,
         store: SnapshotStore,
         host: SessionHost? = nil,
+        isAppServer: (pid_t) -> Bool = ProcessTree.isCodexAppServer,
+        findAncestor: (Provider, pid_t) -> pid_t? = { ProcessTree.findAgentAncestor(provider: $0, startingAt: $1) },
         now: Date = Date()
     ) -> HookAction {
         guard let event = HookPayload.parse(
             provider: provider, data: payloadData, argvEvent: argvEvent) else { return .ignore }
         return apply(event, provider: provider, environment: environment,
-                     parentPid: parentPid, store: store, host: host, now: now)
+                     parentPid: parentPid, store: store, host: host,
+                     isAppServer: isAppServer, findAncestor: findAncestor, now: now)
     }
 
     /// The store step: map the event to an action and apply it to the
@@ -52,6 +55,8 @@ public enum HookProcessor {
         parentPid: pid_t?,
         store: SnapshotStore,
         host: SessionHost? = nil,
+        isAppServer: (pid_t) -> Bool = ProcessTree.isCodexAppServer,
+        findAncestor: (Provider, pid_t) -> pid_t? = { ProcessTree.findAgentAncestor(provider: $0, startingAt: $1) },
         now: Date = Date()
     ) -> HookAction {
         let event = e.event
@@ -78,16 +83,24 @@ public enum HookProcessor {
                 if event == "Stop" && existing == nil && provider.spec.stopUpdatesOnly {
                     return .ignore
                 }
-                let envPane = environment["ITERM_SESSION_ID"]
+                let ancestor = parentPid.flatMap { findAncestor(provider, $0) }
                 // Where the session runs, read from its process ancestry on
                 // every event. Injected by tests.
-                let observedHost = host ?? parentPid.map {
+                let classified = host ?? parentPid.map {
                     HostClassifier.classify(
                         ancestorBundlePaths: ProcessTree.ancestorBundlePaths(startingAt: $0),
-                        terminalSessionId: envPane, transcriptEntrypoint: nil)
+                        terminalSessionId: environment["ITERM_SESSION_ID"], transcriptEntrypoint: nil)
                 } ?? .unknown
-                let terminal = carriedPane(
-                    envPane: envPane, existing: existing, observedHost: observedHost)
+                // A thread run by Codex's shared daemon (not inside an app
+                // bundle, which ChatGPT's own app-server is): the pane, pid
+                // and ancestry are the daemon's, not this thread's. Record
+                // none of them; the app finds the pane another way.
+                let viaAppServer = provider == .codex && classified.kind != .app
+                    && ancestor.map(isAppServer) == true
+                let observedHost = viaAppServer ? .unknown : classified
+                let terminal = viaAppServer ? nil : carriedPane(
+                    envPane: environment["ITERM_SESSION_ID"], existing: existing,
+                    observedHost: observedHost)
                 // an unknown reading keeps what was recorded (raw, so a kind
                 // a newer build wrote survives)
                 let hostKind = observedHost.kind?.rawValue ?? existing?.hostKind
@@ -96,9 +109,7 @@ public enum HookProcessor {
                 // cwd fallback chain ends at the short session id so a
                 // Notification-before-SessionStart can't render a blank row
                 let cwd = e.cwd ?? existing?.projectPath ?? ""
-                let pid = parentPid.flatMap {
-                    ProcessTree.findAgentAncestor(provider: provider, startingAt: $0)
-                } ?? existing?.agentPid
+                let pid = viaAppServer ? nil : ancestor ?? existing?.agentPid
                 let snapshot = SessionSnapshot(
                     provider: provider,
                     sessionId: sessionId,

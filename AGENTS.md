@@ -120,6 +120,10 @@ Discovery, liveness, state
   title cleanup.
 - `ClaudeEnvironment.swift` — managed policy (`managed-settings.json`, MDM
   plist) and `CLAUDE_CONFIG_DIR` resolution.
+- `CodexAppServer.swift` — Codex's shared app-server daemon (0.166+): detection,
+  and the title match that finds a daemon-run CLI thread's pane. The helper
+  drops the daemon's pid and inherited pane; `CodexThreads.originators`
+  tells ChatGPT threads (`Codex Desktop`) from CLI ones.
 - `ClaudeTranscript.swift`, `ModelSource.swift`, `ModelName.swift`,
   `CodexThreads.swift`, `CodexSessionIndex.swift`, `RowMeta.swift` — model,
   names and tooltip metadata.

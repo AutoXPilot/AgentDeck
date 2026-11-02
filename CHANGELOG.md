@@ -20,6 +20,15 @@
   Claude accounts, the line shows the one you're signed in to and the
   tooltip lists the other.
 
+### Fixed
+
+- **Codex threads run by Codex's shared app-server daemon (0.166+)** no
+  longer point at a dead iTerm pane ("That iTerm2 pane no longer exists").
+  Their hooks carry the daemon's pid and the pane it was started from, so
+  AgentDeck now ignores both and finds the thread's pane by its title among
+  panes running `codex`; ChatGPT threads run by the daemon are recognised
+  from Codex's thread records.
+
 ### Docs
 
 - **`docs/` for the reasoning behind the code:** `DECISIONS.md` (what was

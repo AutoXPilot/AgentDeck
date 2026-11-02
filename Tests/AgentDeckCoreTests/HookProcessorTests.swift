@@ -348,3 +348,100 @@ final class HookProcessorTests {
         #expect(store.loadAll().isEmpty)
     }
 }
+
+/// Codex 0.166 runs threads in a shared app-server daemon; hooks run under
+/// it with the daemon's pid and the pane id it inherited when it started.
+struct CodexAppServerHookTests {
+    private func run(host: SessionHost, isAppServer: Bool, existing: SessionSnapshot? = nil)
+        throws -> SessionSnapshot? {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentdeck-daemon-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let store = SnapshotStore(directory: dir)
+        if let existing { try store.write(existing) }
+        let payload = #"{"session_id":"01a19a81-2544-7700-a234-09859685e7db","cwd":"/Users/me","hook_event_name":"UserPromptSubmit"}"#
+        HookProcessor.process(
+            provider: .codex, payloadData: Data(payload.utf8),
+            environment: ["ITERM_SESSION_ID": "w1t3p0:03A3044B-E84D-4617-B158-F8C59A0C3965"],
+            parentPid: 100, store: store, host: host,
+            isAppServer: { $0 == 58350 && isAppServer }, findAncestor: { _, _ in 58350 })
+        return store.load(key: "codex-01a19a81-2544-7700-a234-09859685e7db")
+    }
+
+    @Test func aDaemonRunThreadRecordsNeitherTheDaemonsPaneNorItsPid() throws {
+        let snapshot = try #require(try run(host: SessionHost(kind: .terminal), isAppServer: true))
+        #expect(snapshot.terminalSessionId == nil)
+        #expect(snapshot.agentPid == nil)
+        #expect(snapshot.state == .working)
+    }
+
+    @Test func aStalePaneFromAnEarlierDaemonHookIsNotCarriedForward() throws {
+        let stale = SessionSnapshot(
+            provider: .codex, sessionId: "01a19a81-2544-7700-a234-09859685e7db", projectPath: "/Users/me",
+            state: .working, event: "UserPromptSubmit", updatedAt: Date(timeIntervalSince1970: 1),
+            terminalSessionId: "w1t3p0:03A3044B-E84D-4617-B158-F8C59A0C3965", agentPid: 58350,
+            hostKind: "terminal")
+        let snapshot = try #require(try run(host: .unknown, isAppServer: true, existing: stale))
+        #expect(snapshot.terminalSessionId == nil)
+        #expect(snapshot.agentPid == nil)
+    }
+
+    @Test func chatGPTsOwnAppServerKeepsItsAppHost() throws {
+        let host = SessionHost(kind: .app, bundlePath: "/Applications/ChatGPT.app")
+        let snapshot = try #require(try run(host: host, isAppServer: true))
+        #expect(snapshot.hostKind == "app")
+        #expect(snapshot.agentPid == 58350)
+    }
+
+    @Test func anOrdinaryCLIStillRecordsItsPaneAndPid() throws {
+        let snapshot = try #require(try run(host: SessionHost(kind: .terminal), isAppServer: false))
+        #expect(snapshot.terminalSessionId == "w1t3p0:03A3044B-E84D-4617-B158-F8C59A0C3965")
+        #expect(snapshot.agentPid == 58350)
+    }
+}
+
+struct CodexAppServerMatchTests {
+    let panes: [(guid: String, tty: String, title: String)] = [
+        (guid: "A", tty: "ttys015", title: "tonyhoang | travel-planning (codex)"),
+        (guid: "B", tty: "ttys011", title: "tonyhoang | webapp (codex)"),
+        (guid: "C", tty: "ttys020", title: "travel-planning notes"),  // not running codex
+    ]
+
+    @Test func recognisesTheDaemonByPathOrArguments() {
+        #expect(CodexAppServer.matches(
+            executablePath: "/Users/me/.codex/packages/app-server-daemon/releases/0.166.0/bin/codex",
+            argvMentionsAppServer: false))
+        #expect(CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", argvMentionsAppServer: true))
+        #expect(!CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", argvMentionsAppServer: false))
+    }
+
+    @Test func aUniqueTitleMatchAmongCodexPanesWins() {
+        #expect(CodexAppServer.pane(threadName: "travel-planning", panes: panes,
+                                    codexTTYs: ["ttys015", "ttys011"]) == "A")
+    }
+
+    @Test func aPaneNotRunningCodexIsNeverChosen() {
+        #expect(CodexAppServer.pane(threadName: "travel-planning", panes: panes,
+                                    codexTTYs: ["ttys011"]) == nil)
+    }
+
+    @Test func ambiguityGivesNoPane() {
+        let twins = panes + [(guid: "D", tty: "ttys030", title: "travel-planning (codex)")]
+        #expect(CodexAppServer.pane(threadName: "travel-planning", panes: twins,
+                                    codexTTYs: ["ttys015", "ttys030"]) == nil)
+        #expect(CodexAppServer.pane(threadName: nil, panes: panes, codexTTYs: ["ttys015", "ttys011"]) == nil)
+    }
+
+    @Test func anUnnamedThreadUsesTheOnlyCodexPane() {
+        #expect(CodexAppServer.pane(threadName: nil, panes: panes, codexTTYs: ["ttys011"]) == "B")
+    }
+
+    @Test func originatorsParseAsShortIdentifiersOnly() {
+        let sep = "\u{1}"
+        let out = ["01a19a81\(sep)codex-tui", "01a163c8\(sep)Codex Desktop",
+                   "bad\(sep)" + String(repeating: "x", count: 80), "short"].joined(separator: "\n")
+        let parsed = CodexThreads.parseOriginators(out)
+        #expect(parsed == ["01a19a81": "codex-tui", "01a163c8": "Codex Desktop"])
+        #expect(!CodexThreads.originatorQuery.contains("title"))
+    }
+}

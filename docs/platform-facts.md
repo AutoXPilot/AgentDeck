@@ -47,6 +47,9 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | After `codex resume`, no hook runs until the first message, so a restored session is confirmed by its process instead. | 2026-10 | observed |
 | `threads.title` in `state_5.sqlite` is the first user message unless renamed; a `/rename` lands in `session_index.jsonl`. | 0.145.0 | observed |
 | The single-quoted hook command fires. | 2026-10-28 | observed |
+| Threads run in a shared app-server daemon (`~/.codex/packages/app-server-daemon/releases/<ver>/bin/codex app-server`, 0.166.0 seen), used by the CLI and ChatGPT.app alike; the `codex` in a terminal is a client connected over a Unix socket, its argv naming no thread. Hooks run as the daemon's children, so they carry the daemon's pid and the `ITERM_SESSION_ID` it inherited from whatever pane started it. | cli 0.165.0 client, daemon 0.166.0, 2026-11-02 | observed |
+| An MCP server's elicitation (e.g. the browser tool's "Allow Browser use to access …?" form) fires no hook: no PermissionRequest, so the row stays `working` while Codex waits on you. The rollout shows only a function call without output; Codex's log records the answer (`McpServerElicitationRequest` response, `serverRequest/resolved`), not the request. | daemon 0.166.0, 2026-11-02 | observed |
+| `threads.originator` in `state_5.sqlite`: `codex-tui` (CLI, including via the daemon), `Codex Desktop` (ChatGPT.app), `codex_exec` (`codex exec`). The CLI titles its iTerm pane with the thread name (`<user> \| <thread name> (codex)`). | 2026-11-02 | observed |
 | Rollout `event_msg` / `token_count` records carry `rate_limits`: `limit_id`, `primary`/`secondary` `{used_percent, window_minutes 300/10080, resets_at}` (epoch), `plan_type`. A `limit_id: "premium"` record with null windows can follow the `codex` one. No account id. Single lines reach 2.6 MB; active rollouts can sit in older date folders. | cli 0.165.0, 2026-11-01 | observed, fixture |
 
 ## Codex in ChatGPT.app
@@ -111,4 +114,6 @@ row (date, version, result) when one is done.
 | Claude status line tee on a real `statusLine`: the original output unchanged, figures match `/usage`, uninstall restores the entry | done 2026-11-01 (2.1.316): the chained script kept writing its records with the same figures (76% / 18%); uninstall was JSON-equal to the backup |
 | agy status line tee: the built-in line still shows with `stack_with_default`, figures match `agy -p /usage`, agy doesn't disable the status line | done 2026-11-01 (1.4.12, after a self-update from 1.4.9): figures matched, the built-in hint line still showed, uninstall was JSON-equal to the backup |
 | Work Mac: no Claude usage line, Codex and agy lines shown | pending |
+| Clicking a daemon-run Codex CLI thread focuses its pane (matched by title among panes running `codex`) | done 2026-11-02 (CLI 0.165.0, daemon 0.166.0) |
+| A ChatGPT thread run by the daemon is shown as ChatGPT-hosted (originator `Codex Desktop`) | pending (no ChatGPT thread run since the daemon appeared) |
 | A notarized build opens from a quarantined download | blocked on [plans/distribution.md](plans/distribution.md) |
