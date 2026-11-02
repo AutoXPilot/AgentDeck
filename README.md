@@ -16,7 +16,9 @@ waiting on you** — then click a row to jump to that exact iTerm2 tab/pane.
   dismiss it with right-click → Dismiss. ↑/↓ + Return, ⌘1–9, filter field,
   right-click actions
 - A marker on sessions running **unsupervised** (approvals off)
-- Event-driven via the CLIs' lifecycle hooks — no polling, no output scraping
+- Event-driven via the CLIs' lifecycle hooks, plus Claude's session registry
+  and agy's presence locks; no output scraping. A 15-second sweep checks that
+  sessions' processes are still alive
 
 <img src="Resources/screenshot.png" width="440" alt="AgentDeck popover showing Claude and Codex sessions with waiting, done, working and ready states">
 
@@ -169,7 +171,8 @@ background task finishing must not flip the main session — Stop owns "done".
 
 Codex registers SessionStart/UserPromptSubmit/PermissionRequest/Stop/
 SessionEnd (same `hooks.json` schema as Claude's settings). All verified
-firing live against codex-cli 0.147.0. No StopFailure → no error state for
+firing live, first against codex-cli 0.145–0.147 and most recently the
+version under [Tested against](#tested-against). No StopFailure → no error state for
 Codex; the liveness sweep backstops removal for crashes.
 
 Antigravity (agy 1.4.7, observed live): a session's first event is
@@ -378,7 +381,9 @@ AgentDeck adapts to what the policy allows. It reads the policy
   Claude with a lock instead of a red X. Sessions still appear, read from
   Claude's own session files: every live session, "waiting on you" badges
   and notifications, click to focus, and restore. What you lose without
-  hooks: "done" and "error" states, permission modes in restore, and Codex.
+  Claude's hooks: "done" and "error" states for Claude, and permission modes
+  in restore. Claude's policy doesn't govern Codex or agy, so their hooks
+  are installed and work as usual.
 - **Permission modes the policy refuses** (`disableBypassPermissionsMode`,
   `disableAutoMode`) are left off restore commands, so a session comes back
   in the default mode instead of failing to start.
@@ -421,9 +426,11 @@ your machine" section above are what such a request usually needs.
   name says claude or codex; for agy, the executable is named exactly
   `agy` and isn't the `--bg-updater` child). A recycled pid fails one or
   the other. A session that passes both is kept however long it sits
-  quiet — a Codex
-  session waiting for input over a weekend used to lose its row at seven
-  days; pid-less snapshots still go after 24 hours.
+  quiet — a Codex session waiting for input over a weekend used to lose its
+  row at seven days; pid-less snapshots still go after 24 hours. One
+  exception: every Codex thread in the ChatGPT app reports the same pid,
+  ChatGPT's shared Codex server, which proves only that the app is open.
+  Those rows also go after 24 hours without an event.
 - `session_id` is sanitized before becoming a filename; hook payloads can
   never write outside the sessions directory. Stale temp/corrupt files are
   swept. The sessions-dir watcher re-arms if the directory is recreated.
@@ -473,12 +480,13 @@ pane to focus — those rows say so instead of failing silently.
 ## Development
 
 ```sh
-swift build && ./test.sh    # 350 tests; works with CLT-only or full Xcode
+swift build && ./test.sh    # works with CLT-only or full Xcode
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (each encodes a
 production bug this project already hit — quoting, p_comm, AppleScript
-dictionary shadowing, and friends).
+dictionary shadowing, and friends), and [AGENTS.md](AGENTS.md) for the map
+of the code, its invariants and the docs behind them.
 
 ## License
 

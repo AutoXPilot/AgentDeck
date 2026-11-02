@@ -14,8 +14,15 @@ swift build            # debug build
 .build/debug/agentdeck-hook debug-ancestry  # process-walk diagnostics
 ```
 
-The README's "How it works" section is the architecture doc. Ground rules
-learned the hard way (each has a regression test — keep them passing):
+[AGENTS.md](AGENTS.md) is the map of the code: layout, data flow,
+invariants, how to verify a change, how to release. It links to
+[docs/DECISIONS.md](docs/DECISIONS.md) (why things are as they are) and
+[docs/platform-facts.md](docs/platform-facts.md) (what the agents and
+macOS actually do). README's "How it works" describes the same design as
+users see it.
+
+Ground rules learned the hard way (each has a regression test — keep them
+passing):
 
 - Hook commands must be quoted (paths contain "Application Support").
 - Match agent processes by executable path, not p_comm — the claude binary

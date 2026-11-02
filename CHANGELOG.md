@@ -9,6 +9,18 @@
   bringing ChatGPT forward. As with any app target, the click doesn't mark
   a session that needs you as handled, since a link can't prove it landed.
 
+### Docs
+
+- **`docs/` for the reasoning behind the code:** `DECISIONS.md` (what was
+  chosen, over what, and why), `platform-facts.md` (what each agent, app and
+  macOS actually does, with the version, date and how it was checked, plus
+  the live checks still owed) and `plans/distribution.md` (signing and
+  notarization). AGENTS.md links to them, and says to update them in the
+  same commit as the change.
+- README corrections: a managed Claude policy doesn't affect Codex or agy;
+  ChatGPT-hosted Codex threads expire after 24 quiet hours; the 15-second
+  sweep is mentioned instead of "no polling".
+
 ## 0.6.0
 
 More agents in one list: Google's Antigravity CLI (`agy`) joins Claude Code

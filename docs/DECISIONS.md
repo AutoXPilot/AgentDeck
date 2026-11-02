@@ -1,0 +1,172 @@
+# Decisions
+
+Why AgentDeck is the way it is, so a choice isn't re-argued or quietly
+undone. One entry per decision: what was chosen, over what, and why.
+Newest last within each section. When a change reverses one, edit the
+entry (say what replaced it and when) in the same commit; don't delete it.
+
+Shipped behaviour is described in README.md; this file is only the
+reasoning.
+
+## Architecture
+
+**Logic lives in AgentDeckCore; the app target stays thin.** (0.1–0.4)
+Decisions are pure functions with inputs, tested in core; `SessionsModel`
+reads files, calls core, assigns outputs and performs side effects. The
+app target has no tests, and the bugs that reached users there were
+decisions made inline in the app. Testing pure decisions is not enough on
+its own: a field missing from `SessionSnapshot.CodingKeys`, installer
+races and snapshot locking were core bugs that decision-level tests
+missed, so persistence (round-trips through the real encoder) and
+concurrency get their own tests.
+
+**One provider table, deliberately not more.** (0.6.0)
+`ProviderSpec` holds what genuinely varies by data: badge, hook file and
+format, events, policy gating, applicability, executable matching, resume
+rule, running evidence. Model selection (`ModelSource`), event mapping
+(`EventMapping`) and each provider's own stores (registry, transcripts,
+Codex threads, agy presence) stay per-provider code: they differ in
+logic, not data, and folding them into the table would hide that.
+
+**No `Provider.unknown`.** (0.5.1)
+A file naming a provider this build doesn't know is kept as written
+(opaque JSON) and skipped, never decoded into a real case or deleted.
+Two builds of AgentDeck share one data folder, so an older build must
+not destroy a newer build's data. 0.5.0 lacks this; 0.5.1 is the
+minimum for running mixed versions.
+
+**The helper is never downgraded.** (0.5.1)
+`HelperSync` replaces the shared helper only with one whose version is
+the same or newer. Before this, whichever copy of the app launched last
+won, so an old copy silently ran new hooks through an old helper.
+
+## Sessions and state
+
+**Hooks plus discovery, not hooks alone.** (0.5.0)
+Hooks report only sessions running when an event fired, so sessions
+started before installation, or idle past the snapshot cap, were missing
+(15 rows for 36 live sessions on the development Mac). Claude's own
+registry (`~/.claude/sessions/<pid>.json`) and agy's presence locks fill
+the gap. Codex has no equivalent, so it stays hook-only.
+
+**`done` and `error` come only from hooks.** (0.5.0)
+A registry or lock can say a session exists or is waiting; it can't say a
+turn finished or failed. Inferring those would show false completions.
+
+**Never invent sessions from database recency.** (0.6.0)
+`state_5.sqlite` and agy's conversation files say a conversation exists
+and when it last changed, not that it is running. Rows come only from a
+hook, a live registry entry, or a held lock.
+
+**Liveness by identity, with one exception.** (0.5.0, 0.6.0)
+A snapshot whose pid is alive, started before the snapshot's last update,
+and looks like the agent is kept however long it is quiet (a Codex
+session waiting over a weekend used to vanish at seven days). The
+exception: every ChatGPT-hosted Codex thread reports the same pid,
+ChatGPT's shared Codex server, so that pid proves the app is open, not
+that a thread is. Those rows follow the 24-hour idle rule for pid-less
+snapshots and don't count as running for restore.
+
+**Host: the outermost app bundle wins; unknown is not app.** (0.6.0)
+Claude Desktop runs Claude Code from an inner `claude.app` bundle, so
+the nearest bundle is the wrong host; the outermost `.app` on the process
+chain is the right one. A verified app host beats an inherited
+`ITERM_SESSION_ID` (a GUI launched from a shell inherits it). When the
+process walk fails and nothing else says, the host is unknown and the
+behaviour stays terminal-first, because treating unknown as app would
+stop restoring ordinary terminal sessions.
+
+**A click on an app-hosted row never marks it handled.** (0.6.0)
+Activating an app or opening a `codex://` link can't prove the user
+reached that session, so a session that needs you keeps its badge until
+dismissed or until a hook clears it.
+
+**agy print mode is not filtered by "no tty".** (0.6.0)
+Lacking a tty isn't evidence of print mode (discovered and background
+sessions have none either). Print mode is filtered only once a payload or
+environment discriminator is observed; none has been yet.
+
+## Restore
+
+**Restore types a command into a login shell.** (0.5.0)
+iTerm's `command` parameter runs the program without a shell, so PATH,
+version managers and shell setup are missing. Restore opens a tab with
+the default profile and types `cd -- '<cwd>' && command <bin> …` with
+`write text`.
+
+**`command` before the binary.** (0.6.0)
+A shell alias or function of the same name would otherwise rewrite the
+restored line (an `agy` alias adding `--dangerously-skip-permissions`,
+for instance). `command` runs the real executable.
+
+**Commands are built, never stored.** (0.5.0)
+The original command line can contain a prompt or a credential, so it is
+never recorded. Restore builds the line from a UUID session id, a
+validated absolute cwd and an allow-listed permission mode. agy hooks
+record no mode, so an agy restore carries none.
+
+**Per-boot records are append-only.** (0.5.0)
+Shutdown closes sessions one at a time, so a record mirroring the live
+list would be empty when needed. Sessions that stop keep their last-seen
+time; closures within five minutes form one group; a session must miss
+two refreshes in a row to count as closed.
+
+**Launch reservations never expire on a timer.** (0.5.0)
+A tab stopped at a prompt still starts the conversation once answered,
+so a timed expiry would allow a duplicate launch. A reservation clears
+when the session is seen running or the user clears it.
+
+**App-hosted sessions are shown, never restored.** (decided 2026-10-26, 0.6.0)
+Restore reopens sessions in iTerm; a Claude Desktop or ChatGPT session
+reopened there would be a different thing in a different place. Filtered
+at capture and again at plan time, because older records already contain
+Desktop sessions and a session can be captured before its host is known.
+
+## Privacy and user files
+
+**Metadata only.** (0.1.0; Codex titles from 0.5.0)
+No prompt, response or tool argument is stored, logged or displayed.
+Codex's `threads.title` is not selected because Codex fills it with the
+first message of any thread that wasn't renamed (through 0.4.1 such a
+title could appear as a row name). agy's `lastUserInput`, `toolCall.args`
+and free-text `error` are dropped while parsing. Tests plant marker
+strings and check written files and logs for them.
+
+**Only the installer touches agent configs, and only its own entries.**
+Backup first, a basis check against concurrent edits, symlinks followed.
+For agy, AgentDeck owns the hook set named `agentdeck` and refuses to
+replace a set of that name it didn't write.
+
+**Hook commands are single-quoted.** (0.5.0)
+The helper lives under "Application Support"; single quotes stop the
+shell interpreting any character in the path. The older double-quoted
+form is still read as healthy so an upgrade doesn't show a false error.
+
+**Managed policy is read, never written.** (0.5.1)
+A restriction found in any policy source counts, which can only make
+AgentDeck more careful. Only Claude's hooks are gated by Claude's policy;
+Codex and agy are unaffected and the installer continues past a blocked
+Claude.
+
+## Distribution
+
+**Developer ID + notarization, then a Homebrew cask.** (planned, see
+[plans/distribution.md](plans/distribution.md))
+Not the Mac App Store: its sandbox would stop AgentDeck reading
+`~/.claude`, editing agent configs and scripting iTerm. No Sparkle:
+Homebrew handles upgrades. Signing will use the maintainer's personal
+Apple Developer account, which keeps the MIT project independent of any
+employer.
+
+**Stable bundle identifier `com.tonyhoang.agentdeck`.**
+macOS keys Automation and notification grants to the app's identity, so
+a changing identifier would re-prompt on every build.
+
+## Documentation
+
+**Docs live in this repo.** (2026-11-01)
+AGENTS.md is the map; this folder holds reasoning, platform evidence and
+plans. A separate knowledge base was considered and rejected: for one
+repo with one maintainer it would restate the code and drift. A change
+that alters a decision, a platform fact or a plan's status updates the
+matching file in the same commit.

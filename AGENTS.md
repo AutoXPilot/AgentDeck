@@ -1,8 +1,21 @@
 # AgentDeck — guide for coding agents
 
-Read this before changing anything. It is the map; README.md is for users,
-CONTRIBUTING.md holds the rules each past bug taught, CHANGELOG.md is the
-history. Keep this file current when you change how something works.
+Read this before changing anything. It is the map. Read next, when the
+task touches them:
+
+| Need | Read |
+|---|---|
+| Why something is the way it is, before changing it | [docs/DECISIONS.md](docs/DECISIONS.md) |
+| What an agent, app or macOS actually does (versions, dates, how checked), and live checks still owed | [docs/platform-facts.md](docs/platform-facts.md) |
+| Signing, notarization, Homebrew cask | [docs/plans/distribution.md](docs/plans/distribution.md) |
+| Shipped behaviour as users see it | README.md |
+| Rules each past bug taught | CONTRIBUTING.md |
+| History, release by release | CHANGELOG.md |
+
+**Keep the docs current in the same commit:** a change that alters how
+something works updates this file; one that makes or reverses a choice
+updates DECISIONS.md; a new or re-checked platform fact, or a live check
+done, updates platform-facts.md; progress on a plan updates its file.
 
 ## What it is
 
@@ -27,7 +40,7 @@ cloud/remote session.
 ## Layout
 
 ```
-Sources/AgentDeckCore/   all logic, pure where possible, fully tested
+Sources/AgentDeckCore/   all logic, pure where possible, tested
 Sources/agentdeck-hook/  the helper the hooks run (tiny; delegates to core)
 Sources/AgentDeck/       AppKit/SwiftUI app — thin glue, NO tests
 Tests/AgentDeckCoreTests/  Swift Testing (`@Test`, `#expect`)
@@ -36,10 +49,13 @@ packaging/agentdeck.rb   Homebrew formula (HEAD build) — source of truth for t
 .github/workflows/       ci.yml (build+test on push), release.yml (on tag v*)
 ```
 
-**The rule that shaped the codebase:** every escaped bug lived in the
-untested app target. Put decisions in AgentDeckCore as pure functions with
-inputs, test them there, and keep `SessionsModel` to reading files, calling
-core, assigning outputs and side effects.
+**The rule that shaped the codebase:** the app target has no tests, and
+decisions made inline there kept escaping. Put decisions in AgentDeckCore as
+pure functions with inputs, test them there, and keep `SessionsModel` to
+reading files, calling core, assigning outputs and side effects. Pure-decision
+tests aren't enough on their own: a field missing from `CodingKeys`,
+installer races and lock bugs were core bugs they missed, so test
+persistence (round-trip through the real encoder) and concurrency too.
 
 ## Data flow
 
@@ -85,8 +101,9 @@ Discovery, liveness, state
 - `AntigravityState.swift` — non-blocking `flock` probe of presence locks,
   `last_conversations.json` for an unambiguous cwd.
 - `Liveness.swift` — what to delete: dead/reused pids, superseded after
-  `/clear`, 24 h idle for pid-less or app-hosted-Codex rows; confirmed-live
-  keys are never deleted.
+  `/clear`, 24 h idle for pid-less or app-hosted-Codex rows, 7 days idle
+  only where a live pid's start time can't be read; confirmed-live keys
+  are never deleted.
 - `RunningEvidence.swift` — the single "is it running" definition (capture,
   offers, preflight, pre-launch re-check, confirmation, reservations).
 - `SessionPipeline.swift` — the whole snapshots→rows derivation.
@@ -149,7 +166,8 @@ swift build                 # all targets
 ./test.sh --filter <name>   # one test
 ./install-app.sh            # release build → ~/Applications/AgentDeck.app
 pkill -x AgentDeck; open ~/Applications/AgentDeck.app
-.build/debug/AgentDeck --render-popover /tmp/x.png   # offscreen render of the real popover, read-only
+.build/debug/AgentDeck --render-popover /tmp/x.png   # offscreen render of the real popover; writes only the PNG
+.build/debug/agentdeck-hook debug-ancestry           # process-walk diagnostics
 ~/Applications/AgentDeck.app/Contents/MacOS/agentdeck-hook status   # versions, hook health, active count
 tail ~/Library/Application\ Support/AgentDeck/app.log
 ```
@@ -177,10 +195,16 @@ Expectations that have held every change so far:
    `AgentDeck-vX.Y.Z.zip` and creates the GitHub release.
 4. Download the zip and run `AgentDeck.app/Contents/MacOS/AgentDeck --version`.
 
+Before step 1, re-read README, this file and `docs/` against the release:
+counts, versions, "not yet verified" notes and open items go stale first.
+
 Repo: github.com/AutoXPilot/AgentDeck (public, personal account). Push uses
 the SSH host alias `github-tunghoangt`.
 
 ## Platform facts worth knowing
+
+The ones that bite most often; the full list, with versions and how each
+was checked, is [docs/platform-facts.md](docs/platform-facts.md).
 
 - Claude's version-named binaries are pruned on update: use argv[0]
   (`KERN_PROCARGS2`) when `proc_pidpath` fails.
@@ -190,22 +214,21 @@ the SSH host alias `github-tunghoangt`.
   login shell with `write text`.
 - Hook commands are single-quoted (`'<path>' <provider>`); the old
   double-quoted form is still accepted as healthy.
-- Codex: hooks are trusted per file/event/index in `~/.codex/config.toml`
-  (`[hooks.state]`); ChatGPT.app accepts changed hooks silently. All ChatGPT
-  threads report one shared server pid. `codex://threads/<thread id>` opens
-  the exact thread (verified); `FocusResolver.deepLink` builds it.
-- agy: hooks read only at startup; no SessionStart on `--continue`; one turn
-  = several invocations and one `Stop{fullyIdle:true}`; `ask_question` is the
-  waiting tool; `agy --bg-updater` is also named `agy` and is excluded.
-- Ad-hoc signing: notifications are refused (UNUserNotificationCenter needs a
-  real identity); keep a stable `--identifier` so Automation grants survive
-  rebuilds.
+- All ChatGPT threads report one shared Codex server pid.
+  `codex://threads/<thread id>` opens the exact thread;
+  `FocusResolver.deepLink` builds it.
+- agy reads hooks only at startup, sends no SessionStart on `--continue`,
+  and puts prompt text (`lastUserInput`) in every payload.
+- Ad-hoc signing: `UNUserNotificationCenter` is refused, so notifications
+  fall back to `osascript`; keep a stable `--identifier` so Automation
+  grants survive rebuilds.
 
 ## Open items
 
 - agy permission prompts aren't detected (tool name never observed); agy
   print mode isn't filtered.
-- Claude Desktop label/tag/click path is tested in core only (no live
-  Desktop-hosted session observed since the code landed).
-- Distribution: Developer ID signing + notarization (needs an Apple Developer
-  account) so a downloaded build opens on managed Macs; then a Homebrew cask.
+- Live checks still owed (reboot banner, Locate…, the Claude Desktop row,
+  agy permission prompts and print mode): the table at the end of
+  [docs/platform-facts.md](docs/platform-facts.md).
+- Distribution: Developer ID signing + notarization, then a Homebrew cask —
+  [docs/plans/distribution.md](docs/plans/distribution.md).
