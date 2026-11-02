@@ -103,10 +103,13 @@ public struct StatusLineTee: Sendable {
     }
 
     /// The original command to run behind the tee, from a record name
-    /// passed on the tee's argv. nil = nothing to chain.
+    /// passed on the tee's argv. nil = nothing to chain. A retired record
+    /// still counts: a refresh that started before uninstall must still
+    /// show the user's own line.
     public func chainedCommand(recordName: String) -> String? {
         guard !recordName.contains("/"),
-              let record = loadRecord(at: chainDirectory.appendingPathComponent(recordName)),
+              let record = loadRecord(at: chainDirectory.appendingPathComponent(recordName),
+                                      includingRetired: true),
               let original = record["original"] as? [String: Any],
               let command = original["command"] as? String,
               !command.trimmingCharacters(in: .whitespaces).isEmpty
@@ -114,13 +117,39 @@ public struct StatusLineTee: Sendable {
         return command
     }
 
-    func loadRecord(at url: URL) -> [String: Any]? {
+    func loadRecord(at url: URL, includingRetired: Bool = false) -> [String: Any]? {
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["installedCommand"] is String,
               object["original"] != nil || object[Self.absentMarker] as? Bool == true
         else { return nil }
+        if !includingRetired, object[Self.retiredKey] != nil { return nil }
         return object
+    }
+
+    static let retiredKey = "retiredAt"
+    static let retiredGrace: TimeInterval = 3600
+
+    /// Uninstall marks the record retired instead of deleting it, and
+    /// records retired over an hour ago are removed on the next install,
+    /// uninstall or status check.
+    func retire(_ record: [String: Any], at url: URL, now: Date = Date()) {
+        var record = record
+        record[Self.retiredKey] = now.timeIntervalSince1970
+        try? writeRecord(record, to: url)
+    }
+
+    func pruneRetired(now: Date = Date()) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: chainDirectory.path) else { return }
+        for name in names where name.hasSuffix(".json") {
+            let url = chainDirectory.appendingPathComponent(name)
+            guard let record = loadRecord(at: url, includingRetired: true),
+                  let retired = record[Self.retiredKey] as? Double,
+                  now.timeIntervalSince1970 - retired > Self.retiredGrace
+            else { continue }
+            try? fm.removeItem(at: url)
+        }
     }
 
     func writeRecord(_ record: [String: Any], to url: URL) throws {
@@ -156,15 +185,57 @@ public struct StatusLineTee: Sendable {
     public func status(for provider: Provider, settingsURL: URL? = nil,
                        policy: ClaudePolicy = .load(), applicable: Bool? = nil) -> Status {
         guard let settingsURL = settingsURL ?? Self.settingsURL(for: provider) else { return .notApplicable }
-        if provider == .claude, policy.hooksBlocked { return .blockedByPolicy }
-        if !(applicable ?? provider.spec.applicability.isApplicable()) { return .notApplicable }
         let current = (try? HookInstaller.readJSONObject(at: settingsURL))?["statusLine"]
         let ours = installedCommand(provider: provider, settingsURL: settingsURL)
+        // checked before policy: a tee installed before a policy arrived
+        // must still be removable from the menu
         if command(of: current) == ours {
             return loadRecord(at: recordURL(provider: provider, settingsURL: settingsURL)) == nil
                 ? .orphaned : .installed
         }
-        return looksLikeTee(command(of: current)) ? .orphaned : .notInstalled
+        if looksLikeTee(command(of: current)) { return .orphaned }
+        if provider == .claude, policy.hooksBlocked { return .blockedByPolicy }
+        if !(applicable ?? provider.spec.applicability.isApplicable()) { return .notApplicable }
+        return .notInstalled
+    }
+
+    /// The original entry, plus whatever the user changed in other fields
+    /// while the tee was installed (`padding`, `refreshInterval`, agy's
+    /// `enabled`…): a field whose current value differs from what install
+    /// wrote is the user's, and is kept. nil = remove the key.
+    static func restoredEntry(original: Any?, installed: [String: Any]?,
+                              current: [String: Any]) -> Any? {
+        guard let installed else { return original }  // record from before this was kept
+        var edits: [String: Any] = [:]
+        var removed: [String] = []
+        for (key, value) in current where key != "command" && key != "type" {
+            if let wrote = installed[key], HookInstaller.jsonEqual([wrote], [value]) { continue }  // wrapped: a bare scalar isn't a JSON document
+            edits[key] = value
+        }
+        for key in installed.keys where key != "command" && key != "type" && current[key] == nil {
+            removed.append(key)
+        }
+        guard !edits.isEmpty || !removed.isEmpty else { return original }
+        var entry = original as? [String: Any] ?? [:]
+        guard original == nil || original is [String: Any] else { return original }
+        for (key, value) in edits { entry[key] = value }
+        for key in removed { entry.removeValue(forKey: key) }
+        return entry
+    }
+
+    // MARK: - Running
+
+    /// One tee run: record the figures (Claude's under the signed-in
+    /// account), then run the user's original command with the same input.
+    /// nil = nothing to chain (the tee prints nothing).
+    public func run(provider: Provider, recordName: String, input: Data, store: UsageStore,
+                    claudeAccount: () -> String?, now: Date = Date()) -> ChainRunner.Result? {
+        if var usage = StatusLineCapture.extract(provider: provider, data: input, now: now) {
+            if provider == .claude { usage.account = claudeAccount() }
+            _ = try? store.recordUnlessEcho(usage)
+        }
+        guard let chained = chainedCommand(recordName: recordName) else { return nil }
+        return ChainRunner.run(command: chained, input: input)
     }
 
     // MARK: - Install / uninstall
@@ -210,13 +281,16 @@ public struct StatusLineTee: Sendable {
                 "installedCommand": ours,
             ]
             if let current { record["original"] = current } else { record[Self.absentMarker] = true }
-            try writeRecord(record, to: recordURL)
-
             installed["type"] = "command"
             installed["command"] = ours
             // with no command of the user's to chain the tee prints nothing;
             // agy can stack its built-in line above a custom one
             if provider == .antigravity, !hadCommand { installed["stack_with_default"] = true }
+            // what was written, so uninstall can tell the user's later
+            // edits to other fields from the tee's own
+            record["installed"] = installed
+            pruneRetired()
+            try writeRecord(record, to: recordURL)
             root["statusLine"] = installed
             try HookInstaller.backupAndWrite(root, to: url, basis: basis)
             return true
@@ -232,16 +306,20 @@ public struct StatusLineTee: Sendable {
             let basis = try? Data(contentsOf: url)
             var root = try HookInstaller.readJSONObject(at: url)
             guard command(of: root["statusLine"]) == record["installedCommand"] as? String else {
-                try? FileManager.default.removeItem(at: recordURL)
+                retire(record, at: recordURL)
                 return .leftUserChange
             }
-            if let original = record["original"] {
-                root["statusLine"] = original
+            let restored = Self.restoredEntry(
+                original: record["original"], installed: record["installed"] as? [String: Any],
+                current: root["statusLine"] as? [String: Any] ?? [:])
+            if let restored {
+                root["statusLine"] = restored
             } else {
                 root.removeValue(forKey: "statusLine")
             }
             try HookInstaller.backupAndWrite(root, to: url, basis: basis)
-            try? FileManager.default.removeItem(at: recordURL)
+            retire(record, at: recordURL)
+            pruneRetired()
             return .restored
         }
     }

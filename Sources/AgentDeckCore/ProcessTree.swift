@@ -234,7 +234,82 @@ public enum ProcessTree {
     /// thread and its environment holds whatever pane started it.
     public static func isCodexAppServer(_ pid: pid_t) -> Bool {
         CodexAppServer.matches(executablePath: executablePath(of: pid),
-                               argvMentionsAppServer: argumentsMention("app-server", pid: pid))
+                               firstArgument: argument(1, of: pid))
+    }
+
+    /// The shared daemon specifically (by install path), not ChatGPT's own
+    /// bundled `codex app-server`, whose pid ChatGPT-hosted rows rely on.
+    public static func isCodexSharedDaemon(_ pid: pid_t) -> Bool {
+        executablePath(of: pid)?.contains("/app-server-daemon/") == true
+    }
+
+    /// One argument of the process (argv[index]), read from `KERN_PROCARGS2`
+    /// and not kept. Used only to compare against a fixed word.
+    static func argument(_ index: Int, of pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size
+        else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else { return nil }
+        let argc = Int(buffer.withUnsafeBytes { $0.load(as: Int32.self) })
+        guard index < argc else { return nil }
+        var i = MemoryLayout<Int32>.size
+        while i < size, buffer[i] != 0 { i += 1 }        // exec path
+        while i < size, buffer[i] == 0 { i += 1 }        // padding
+        for n in 0...index {
+            let start = i
+            while i < size, buffer[i] != 0 { i += 1 }
+            if n == index { return String(decoding: buffer[start..<i], as: UTF8.self) }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Codex thread ids whose rollout a Codex app-server daemon holds open.
+    /// The daemon keeps the rollout of each thread it is running open and
+    /// closes it when the thread ends, so this is the daemon-run thread's
+    /// running evidence (its CLI client names no thread). Only file paths
+    /// are read, from the daemon's own descriptor table.
+    public static func codexDaemonOpenThreads(daemons: [pid_t]? = nil) -> Set<String> {
+        var ids = Set<String>()
+        for pid in daemons ?? codexDaemonPids() {
+            for file in openFilePaths(of: pid) {
+                if let id = CodexAppServer.threadId(fromRolloutPath: file) { ids.insert(id) }
+            }
+        }
+        return ids
+    }
+
+    /// The shared daemon's processes. Walks every process, so callers that
+    /// ask often cache it.
+    public static func codexDaemonPids() -> [pid_t] {
+        allPids().filter { isCodexSharedDaemon($0) }
+    }
+
+    static func openFilePaths(of pid: pid_t) -> [String] {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return [] }
+        let count = Int(size) / MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: count + 16)
+        let filled = fds.withUnsafeMutableBytes {
+            proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
+        }
+        guard filled > 0 else { return [] }
+        var paths: [String] = []
+        for fd in fds.prefix(Int(filled) / MemoryLayout<proc_fdinfo>.stride)
+        where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var info = vnode_fdinfowithpath()
+            let n = proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info,
+                                   Int32(MemoryLayout<vnode_fdinfowithpath>.size))
+            guard n == Int32(MemoryLayout<vnode_fdinfowithpath>.size) else { continue }
+            let path = withUnsafeBytes(of: info.pvip.vip_path) { raw in
+                String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+            }
+            if !path.isEmpty { paths.append(path) }
+        }
+        return paths
     }
 
     /// Terminals running a Codex CLI (not the daemon). Each process's

@@ -302,3 +302,70 @@ struct UsageAccountTests {
         #expect(tip.contains("Other account bbbb2222: 5-hour 90%"))
     }
 }
+
+
+struct UsageMergeTests {
+    private func claude(_ five: Double, resets: TimeInterval, account: String? = "aaaa1111",
+                        at seconds: TimeInterval) -> ProviderUsage {
+        ProviderUsage(provider: .claude,
+                      groups: [UsageGroup(session: UsageWindow(usedPercent: five,
+                                                               resetsAt: Date(timeIntervalSince1970: resets)))],
+                      account: account, observedAt: Date(timeIntervalSince1970: seconds))
+    }
+
+    @Test func anIdleSessionsOlderFigureDoesNotPullUsageBack() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        try store.recordUnlessEcho(claude(77, resets: 5000, at: 100))
+        try store.recordUnlessEcho(claude(76, resets: 5000, at: 200))
+        #expect(store.load(.claude, account: "aaaa1111")?.groups.first?.session?.usedPercent == 77)
+    }
+
+    @Test func anOlderWindowNeverReplacesANewerOne() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        try store.recordUnlessEcho(claude(5, resets: 9000, at: 100))
+        try store.recordUnlessEcho(claude(90, resets: 5000, at: 200))
+        #expect(store.load(.claude, account: "aaaa1111")?.groups.first?.session?.usedPercent == 5)
+        // a new window does replace it
+        try store.recordUnlessEcho(claude(1, resets: 12000, at: 300))
+        #expect(store.load(.claude, account: "aaaa1111")?.groups.first?.session?.usedPercent == 1)
+    }
+
+    @Test func anEchoOfAnyRecentFigureOfTheOtherAccountIsDropped() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        // account A seen at 40% then 45% in the same window, then a new window
+        try store.recordUnlessEcho(claude(40, resets: 5000, at: 100))
+        try store.recordUnlessEcho(claude(45, resets: 5000, at: 200))
+        try store.recordUnlessEcho(claude(2, resets: 9000, at: 300))
+        // after /login to B, idle sessions re-send A's cached 40% (old window)
+        #expect(try store.recordUnlessEcho(claude(40, resets: 5000, account: "bbbb2222", at: 400)) == false)
+        #expect(store.load(.claude, account: "bbbb2222") == nil)
+    }
+
+    @Test func unchangedFiguresAreNotRewrittenWithinAMinute() throws {
+        let store = UsageStore(directory: try temporaryDirectory())
+        #expect(try store.recordUnlessEcho(claude(10, resets: 5000, at: 100)))
+        #expect(try store.recordUnlessEcho(claude(10, resets: 5000, at: 130)) == false)
+        #expect(try store.recordUnlessEcho(claude(10, resets: 5000, at: 170)))
+    }
+
+    @Test func staleMeansTheFiguresHaventChanged() {
+        let u = ProviderUsage(provider: .claude, groups: [], observedAt: Date(timeIntervalSince1970: 7 * 3600),
+                              changedAt: Date(timeIntervalSince1970: 0))
+        #expect(u.isStale(now: Date(timeIntervalSince1970: 7 * 3600)))
+    }
+}
+
+struct DaemonRunningEvidenceTests {
+    @Test func aDaemonHeldThreadCountsAsRunning() {
+        let key = SessionKey.make(.codex, "01a19a81-2544-7700-a234-09859685e7db")
+        let evidence = RunningEvidence(claudeRegistryLive: [], daemonLive: [key],
+                                       pidTrusted: { _, _, _ in false }, processScan: { _, _ in [] })
+        let row = SessionSnapshot(provider: .codex, sessionId: "01a19a81-2544-7700-a234-09859685e7db",
+                                  projectPath: "/x", state: .working, event: "Stop", updatedAt: Date())
+        #expect(evidence.runningKeys(rows: [row]).contains(key))
+        let entry = WorkspaceEntry(provider: .codex, sessionId: row.sessionId, cwd: "/x", lastSeen: Date())
+        #expect(evidence.isRunning(entry, snapshot: row))
+        #expect(!RunningEvidence(claudeRegistryLive: [], pidTrusted: { _, _, _ in false },
+                                 processScan: { _, _ in [] }).isRunning(entry, snapshot: row))
+    }
+}

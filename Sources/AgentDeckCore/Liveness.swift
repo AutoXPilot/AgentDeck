@@ -37,7 +37,14 @@ public enum Liveness {
         }
         public static let system = ProcessProbe(
             startTime: { pid in isAlive(pid: pid) ? ProcessTree.startTime(of: pid) : nil },
-            isAgent: { pid, provider in ProcessTree.looksLikeAgent(pid, provider: provider) }
+            isAgent: { pid, provider in
+                // Codex's shared daemon runs every thread, so its pid proves
+                // none of them (snapshots written before the helper knew
+                // still carry it); daemon-held rollouts are the evidence
+                // instead. ChatGPT's own app-server isn't this daemon.
+                ProcessTree.looksLikeAgent(pid, provider: provider)
+                    && !(provider == .codex && ProcessTree.isCodexSharedDaemon(pid))
+            }
         )
     }
 

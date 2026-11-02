@@ -62,9 +62,13 @@ public enum SessionPipeline {
             // A prompt no hook reports (Codex MCP elicitations; see
             // CodexStall): the row waits from when the thread got stuck,
             // so an acknowledgement after that holds until it moves again.
-            if outcome.snapshot.state == .working, let since = inferredWaiting[snapshot.key] {
+            // A stall older than the latest hook is from an earlier turn: a
+            // newer prompt proves the thread moved on, even before the next
+            // background check clears the cached stall.
+            if outcome.snapshot.state == .working, let since = inferredWaiting[snapshot.key],
+               since >= outcome.snapshot.updatedAt {
                 outcome.snapshot.state = .waiting
-                outcome.snapshot.updatedAt = max(outcome.snapshot.updatedAt, since)
+                outcome.snapshot.updatedAt = since
                 reasons[snapshot.key] = inferredWaitingReason
             }
             if let live, live.pid != snapshot.agentPid {

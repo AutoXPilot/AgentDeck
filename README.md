@@ -100,8 +100,11 @@ also hold conversation text) and decodes only `token_count` records; and
 the status line tee receives Claude's or agy's full status line payload
 (working folder, conversation title, agy's account email), which it
 forwards unchanged to your own status line command and otherwise
-discards. To file Claude's figures under the right account it reads the
-account id (only that field) from `~/.claude.json`. Your own command does whatever it did before.
+discards. To file Claude's figures under the right account it keeps the
+first 8 characters of the account id from `~/.claude.json`, in the usage
+file's name and contents. The chain record
+(`…/AgentDeck/statusline-chain/`, owner-only) keeps your original status
+line entry, command included, since that's what it runs and restores. Your own command does whatever it did before.
 
 Conversation content is parsed past but never retained, logged, or
 displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
@@ -324,7 +327,10 @@ agy      Gemini 5h 2% · wk 1%   Claude/GPT 5h 0% · wk 67%
 ```
 
 90% and over is orange; `reset` means the window rolled over since the
-figure was taken; a dimmed line is over 6 hours old. Hover a line for
+figure was taken; a dimmed line's figures haven't changed in 6 hours.
+Within one window a figure never goes down: every open session's tee
+reports its own cached copy, and an idle session's older one is ignored.
+Hover a line for
 reset times and where the figures came from. A subscription with no
 figures has no line.
 
@@ -336,17 +342,23 @@ figures has no line.
   (or agy) puts `agentdeck-hook statusline` in that slot; it saves the
   figures and runs your previous status line command behind it with the
   same input, so your status line looks as before. **Stop reading … usage**
-  restores the original entry exactly, unless you've changed it since, in
-  which case it's left alone. The figures update while a session of that
+  restores the original entry, keeping any change you made to its other
+  fields (`padding`, `refreshInterval`…) meanwhile; if you replaced the
+  command itself, the entry is left as it is. A refresh already running
+  when you turn it off still shows your own line. Your status line command
+  gets 5 seconds per refresh and runs with normal signal handling. The figures update while a session of that
   agent is open. For agy with no custom status line, the tee keeps agy's
   built-in one (`stack_with_default`).
 - **Two Claude accounts:** figures are kept per account and the line shows
   the account you're signed in to now (read from `oauthAccount.accountUuid`
-  in `~/.claude.json`, first 8 characters; nothing else in that file is
-  read). The tooltip lists the other account's last figures. After
-  `/login`, an idle session keeps sending the old account's cached figures
-  until its next reply; those are recognised and not filed under the new
-  account. Until a session has replied on the new account, its line is
+  in `~/.claude.json`, first 8 characters; the file is parsed and only that
+  field is kept). The tooltip lists the other account's last figures.
+  After `/login`, an idle session keeps sending the old account's cached
+  figures until its next reply. They carry that account's 5-hour reset
+  time, current or recent, which no other account shares, so they're not
+  filed under the new account. An echo of an old window seen before
+  AgentDeck tracked accounts can still slip through once, until a session
+  replies on the new account. Until then, the new account's line is
   empty.
 - **Managed Macs:** a Claude policy that sets `allowManagedHooksOnly` or
   `disableAllHooks` also stops user status lines, so there's no Claude

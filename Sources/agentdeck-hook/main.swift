@@ -17,6 +17,7 @@ signal(SIGPIPE, SIG_IGN)
 //   agentdeck-hook status           print install/health report
 //   agentdeck-hook debug-ancestry   print the process walk (diagnostics)
 //   agentdeck-hook debug-usage      print the usage figures AgentDeck sees
+//   agentdeck-hook debug-codex      daemon-run Codex threads and Codex CLI terminals
 //   agentdeck-hook statusline <claude|antigravity> <record>
 //                                   the status line tee (see StatusLineTee)
 //   agentdeck-hook statusline-install|statusline-uninstall <claude|antigravity|all>
@@ -210,6 +211,9 @@ func runStatusLineTee(arguments: [String]) -> Never {
           StatusLineTee.providers.contains(provider)
     else { exit(0) }
     let recordName = arguments[1]
+    // read once before any handler can: a lazily initialised static isn't
+    // safe to touch for the first time inside a signal handler
+    _ = ChainRunner.activeGroup
     // Claude cancels a superseded run; take the chained command with us
     for sig in [SIGTERM, SIGINT, SIGHUP] {
         signal(sig) { received in
@@ -218,19 +222,22 @@ func runStatusLineTee(arguments: [String]) -> Never {
             _exit(128 + received)
         }
     }
-    let input = FileHandle.standardInput.readDataToEndOfFile()
-    if var usage = StatusLineCapture.extract(provider: provider, data: input, now: Date()) {
-        if provider == .claude {
-            // the tee runs in Claude's own environment, so CLAUDE_CONFIG_DIR
-            // here is the one this session uses
-            usage.account = ClaudeAccount.current(
-                configDirectory: ClaudeConfig.directory(policy: .load()))
-        }
-        try? UsageStore(directory: UsageStore.productionDirectory).recordUnlessEcho(usage)
+    // A stdin that never closes must not leave the tee hanging: the
+    // chained command has 5 s of its own, so 15 s covers the whole run.
+    DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
+        let group = ChainRunner.activeGroup
+        if group > 0 { kill(-group, SIGKILL) }
+        _exit(0)
     }
+    let input = FileHandle.standardInput.readDataToEndOfFile()
     let tee = StatusLineTee(helperPath: stableHelperURL.path)
-    guard let chained = tee.chainedCommand(recordName: recordName) else { exit(0) }
-    let result = ChainRunner.run(command: chained, input: input)
+    // the tee runs in Claude's own environment, so CLAUDE_CONFIG_DIR here
+    // is the one this session uses
+    let result = tee.run(
+        provider: provider, recordName: recordName, input: input,
+        store: UsageStore(directory: UsageStore.productionDirectory),
+        claudeAccount: { ClaudeAccount.current(configDirectory: ClaudeConfig.directory(policy: .load())) })
+    guard let result else { exit(0) }
     FileHandle.standardOutput.write(result.stdout)
     exit(result.status)
 }
@@ -340,6 +347,12 @@ case "install": runInstall()
 case "status": runStatus()
 case "debug-ancestry": runDebugAncestry()
 case "debug-usage": runDebugUsage()
+case "debug-codex":
+    // which Codex threads the shared daemon runs (ids only), and how long the scan takes
+    let start = Date()
+    let ids = ProcessTree.codexDaemonOpenThreads()
+    print("daemon threads: \(ids.sorted()) in \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+    print("codex CLI ttys: \(ProcessTree.codexCLITTYs().sorted())")
 case "statusline": runStatusLineTee(arguments: Array(CommandLine.arguments.dropFirst(2)))
 case "statusline-supported": exit(0)
 case "statusline-install": runStatusLineInstall(CommandLine.arguments.dropFirst(2).first)
@@ -348,6 +361,6 @@ case "statusline-status": runStatusLineStatus()
 case "--version", "-v", "version": print(AgentDeckVersion.current)
 default:
     print("agentdeck-hook \(AgentDeckVersion.current)")
-    print("usage: agentdeck-hook \(providerNames)|install|status|debug-ancestry|debug-usage|statusline-install|statusline-uninstall|statusline-status|--version")
+    print("usage: agentdeck-hook \(providerNames)|install|status|debug-ancestry|debug-usage|debug-codex|statusline-install|statusline-uninstall|statusline-status|--version")
     exit(64)
 }

@@ -17,8 +17,11 @@ public enum CodexStall {
     /// count as the session moving on.
     static let settleWindow: TimeInterval = 10
 
+    /// Tools that legitimately run long: shell commands, and waiting on
+    /// sub-agents or a timer (`wait`, `sleep`).
     static let shellTools: Set<String> = [
         "exec", "shell", "local_shell", "exec_command", "write_stdin", "apply_patch",
+        "wait", "sleep",
     ]
 
     struct Tail {

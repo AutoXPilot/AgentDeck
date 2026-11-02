@@ -407,33 +407,54 @@ struct CodexAppServerMatchTests {
         (guid: "C", tty: "ttys020", title: "travel-planning notes"),  // not running codex
     ]
 
-    @Test func recognisesTheDaemonByPathOrArguments() {
+    @Test func recognisesTheDaemonByPathOrAnExactFirstArgument() {
         #expect(CodexAppServer.matches(
             executablePath: "/Users/me/.codex/packages/app-server-daemon/releases/0.166.0/bin/codex",
-            argvMentionsAppServer: false))
-        #expect(CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", argvMentionsAppServer: true))
-        #expect(!CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", argvMentionsAppServer: false))
+            firstArgument: nil))
+        #expect(CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", firstArgument: "app-server"))
+        #expect(!CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", firstArgument: nil))
+        // an ordinary CLI whose prompt or folder mentions the words
+        #expect(!CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex",
+                                        firstArgument: "fix the app-server handshake"))
+        #expect(!CodexAppServer.matches(executablePath: "/opt/homebrew/bin/codex", firstArgument: "-C"))
     }
 
-    @Test func aUniqueTitleMatchAmongCodexPanesWins() {
-        #expect(CodexAppServer.pane(threadName: "travel-planning", panes: panes,
-                                    codexTTYs: ["ttys015", "ttys011"]) == "A")
+    @Test func threadIdsComeFromRolloutFileNames() {
+        #expect(CodexAppServer.threadId(fromRolloutPath:
+            "/Users/me/.codex/sessions/2026/11/01/rollout-2026-11-01T23-25-17-01a19a81-2544-7700-a234-09859685e7db.jsonl")
+            == "01a19a81-2544-7700-a234-09859685e7db")
+        #expect(CodexAppServer.threadId(fromRolloutPath: "/x/state_5.sqlite") == nil)
+        #expect(CodexAppServer.threadId(fromRolloutPath: "/x/rollout-short.jsonl") == nil)
+    }
+
+    @Test func theTitleMustEndInExactlyTheThreadName() {
+        let match = CodexAppServer.pane(threadName: "travel-planning", panes: panes,
+                                        codexTTYs: ["ttys015", "ttys011"], allowSolePane: false)
+        #expect(match == CodexAppServer.PaneMatch(guid: "A", byName: true))
+        // "web" is not "webapp"
+        #expect(CodexAppServer.pane(threadName: "web", panes: panes,
+                                    codexTTYs: ["ttys015", "ttys011"], allowSolePane: true) == nil)
     }
 
     @Test func aPaneNotRunningCodexIsNeverChosen() {
         #expect(CodexAppServer.pane(threadName: "travel-planning", panes: panes,
-                                    codexTTYs: ["ttys011"]) == nil)
+                                    codexTTYs: ["ttys011"], allowSolePane: true) == nil)
     }
 
     @Test func ambiguityGivesNoPane() {
         let twins = panes + [(guid: "D", tty: "ttys030", title: "travel-planning (codex)")]
         #expect(CodexAppServer.pane(threadName: "travel-planning", panes: twins,
-                                    codexTTYs: ["ttys015", "ttys030"]) == nil)
-        #expect(CodexAppServer.pane(threadName: nil, panes: panes, codexTTYs: ["ttys015", "ttys011"]) == nil)
+                                    codexTTYs: ["ttys015", "ttys030"], allowSolePane: true) == nil)
+        #expect(CodexAppServer.pane(threadName: nil, panes: panes,
+                                    codexTTYs: ["ttys015", "ttys011"], allowSolePane: true) == nil)
     }
 
-    @Test func anUnnamedThreadUsesTheOnlyCodexPane() {
-        #expect(CodexAppServer.pane(threadName: nil, panes: panes, codexTTYs: ["ttys011"]) == "B")
+    @Test func theSoleCodexPaneIsOnlyForAKnownCLIThreadAndIsAGuess() {
+        #expect(CodexAppServer.pane(threadName: nil, panes: panes, codexTTYs: ["ttys011"], allowSolePane: true)
+                == CodexAppServer.PaneMatch(guid: "B", byName: false))
+        // a ChatGPT, exec or not-yet-known thread gets no pane
+        #expect(CodexAppServer.pane(threadName: nil, panes: panes, codexTTYs: ["ttys011"],
+                                    allowSolePane: false) == nil)
     }
 
     @Test func originatorsParseAsShortIdentifiersOnly() {

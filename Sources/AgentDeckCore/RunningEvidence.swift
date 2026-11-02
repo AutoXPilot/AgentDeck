@@ -15,6 +15,10 @@ public struct RunningEvidence {
     /// Session keys whose presence lock a running process holds
     /// (Antigravity's `presence/<id>.lock`).
     public var presenceLive: Set<String>
+    /// Codex session keys whose rollout the shared app-server daemon holds
+    /// open: a daemon-run thread records no pid, and its CLI client's
+    /// arguments name no thread.
+    public var daemonLive: Set<String>
     /// Whether a snapshot's pid still belongs to its agent.
     public var pidTrusted: (_ pid: Int32, _ updatedAt: Date, _ provider: Provider) -> Bool
     /// Which of these session ids a running agent process of the provider
@@ -25,6 +29,7 @@ public struct RunningEvidence {
     public init(
         claudeRegistryLive: Set<String>,
         presenceLive: Set<String> = [],
+        daemonLive: Set<String> = [],
         pidTrusted: @escaping (Int32, Date, Provider) -> Bool = { pid, updatedAt, provider in
             Liveness.pidIsTrustworthy(pid, forUpdatedAt: updatedAt, provider: provider)
         },
@@ -34,6 +39,7 @@ public struct RunningEvidence {
     ) {
         self.claudeRegistryLive = claudeRegistryLive
         self.presenceLive = presenceLive
+        self.daemonLive = daemonLive
         self.pidTrusted = pidTrusted
         self.processScan = processScan
     }
@@ -49,6 +55,7 @@ public struct RunningEvidence {
         keys.formUnion(presenceLive.filter {
             SessionKey.split($0)?.provider.spec.running == .trustworthyPidOrPresence
         })
+        keys.formUnion(daemonLive.filter { SessionKey.split($0)?.provider == .codex })
         for row in rows {
             guard row.provider.spec.running.trustsPid, row.pidProvesSession,
                   let pid = row.agentPid, pidTrusted(pid, row.updatedAt, row.provider)
@@ -87,6 +94,7 @@ public struct RunningEvidence {
         case .claudeRegistry:
             return claudeRegistryLive.contains(entry.sessionId)
         case .trustworthyPid(let scan):
+            if entry.provider == .codex, daemonLive.contains(entry.key) { return true }
             if let snapshot, let pid = snapshot.agentPid,
                snapshot.pidProvesSession,
                pidTrusted(pid, snapshot.updatedAt, entry.provider) {

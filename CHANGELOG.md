@@ -33,7 +33,20 @@
   access …?") showed as working indefinitely. A thread whose last tool call
   has had no result for 2 minutes, with nothing else written, now shows as
   waiting ("may need you"), counts in the badge and can notify. Shell
-  commands are excluded, since long builds look the same.
+  commands, `wait` and `sleep` are excluded, since they run long; a newer
+  prompt or a thread that's no longer running clears it.
+- Review fixes (Codex Astra and Fable): daemon-run Codex threads count as
+  running while the daemon holds their rollout (restore capture and
+  preflight, and they're no longer aged out overnight); pane matching needs
+  the exact thread name in the title and never marks a guessed pane
+  handled; an ordinary `codex` whose arguments mention "app-server" is no
+  longer taken for the daemon; your status line command gets default
+  SIGPIPE handling back and is never left running by a cancelled refresh;
+  usage figures can't go backwards within a window; uninstalling the tee
+  keeps edits you made to other fields and doesn't blank a refresh in
+  progress; a tee installed before a managed policy stays removable from
+  the menu; a dimmed usage line now means its figures haven't changed in 6
+  hours.
 
 ### Docs
 

@@ -46,6 +46,11 @@ struct CodexStallTests {
         #expect(CodexStall.stalledSince(in: tail, isWholeFile: true, now: t0.addingTimeInterval(600)) == nil)
     }
 
+    @Test func waitingOnASubAgentIsNotAStall() {
+        let tail = data([call("2026-11-02T11:56:24.856Z", id: "b", name: "wait")])
+        #expect(CodexStall.stalledSince(in: tail, isWholeFile: true, now: t0.addingTimeInterval(600)) == nil)
+    }
+
     @Test func aFinishedTurnIsNotAStall() {
         let tail = data([call("2026-11-02T11:56:24.856Z", id: "b"),
                          line("2026-11-02T11:56:25.000Z", "event_msg", #"{"type":"task_complete"}"#)])
@@ -93,6 +98,15 @@ struct InferredWaitingPipelineTests {
                                         inferredWaiting: [row.key: Date(timeIntervalSince1970: 900)],
                                         acks: ack, frozenOrder: nil, popoverVisible: false)
         #expect(fresh.alertCount == 1)
+    }
+
+    @Test func aStallFromBeforeTheLatestHookIsIgnored() {
+        // a new prompt (hook at 700) after the thread stalled at 500
+        let row = codex(.working, updated: 700)
+        let out = SessionPipeline.run(snapshots: [row], registry: [:],
+                                      inferredWaiting: [row.key: Date(timeIntervalSince1970: 500)],
+                                      acks: [:], frozenOrder: nil, popoverVisible: false)
+        #expect(out.rows.first?.state == .working)
     }
 
     @Test func hookStatesOtherThanWorkingAreLeftAlone() {

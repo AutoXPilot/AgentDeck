@@ -46,22 +46,42 @@ public enum ChainRunner {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        // The helper ignores SIGPIPE and blocks the cancel signals below;
+        // both would otherwise carry over exec into the user's command, and
+        // a script that relies on SIGPIPE (`producer | head -1`) would spin
+        var defaults = sigset_t()
+        sigemptyset(&defaults)
+        for sig in [SIGPIPE, SIGTERM, SIGINT, SIGHUP] { sigaddset(&defaults, sig) }
+        posix_spawnattr_setsigdefault(&attributes, &defaults)
+        var emptyMask = sigset_t()
+        sigemptyset(&emptyMask)
+        posix_spawnattr_setsigmask(&attributes, &emptyMask)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF
+                                                     | POSIX_SPAWN_SETSIGMASK))
         posix_spawnattr_setpgroup(&attributes, 0)
 
         let argv: [UnsafeMutablePointer<CChar>?] = [
             strdup("/bin/sh"), strdup("-c"), strdup(command), nil,
         ]
         defer { argv.forEach { free($0) } }
+        // A cancel arriving between the spawn and recording the group would
+        // find no group to kill and leave the command running: hold those
+        // signals until the group is recorded.
+        var cancel = sigset_t()
+        sigemptyset(&cancel)
+        for sig in [SIGTERM, SIGINT, SIGHUP] { sigaddset(&cancel, sig) }
+        var previousMask = sigset_t()
+        pthread_sigmask(SIG_BLOCK, &cancel, &previousMask)
         var pid: pid_t = 0
         let spawned = posix_spawn(&pid, "/bin/sh", &actions, &attributes, argv, environ)
+        if spawned == 0 { activeGroup = pid }
+        pthread_sigmask(SIG_SETMASK, &previousMask, nil)
         close(inPipe[0])
         close(outPipe[1])
         guard spawned == 0 else {
             close(inPipe[1]); close(outPipe[0])
             return Result(stdout: Data(), status: 127, timedOut: false)
         }
-        activeGroup = pid
         defer { activeGroup = 0 }
 
         // stdin on its own thread: a command that never reads it would

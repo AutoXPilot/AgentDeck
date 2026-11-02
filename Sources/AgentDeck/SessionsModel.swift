@@ -52,6 +52,11 @@ final class SessionsModel: ObservableObject {
     private var appServerPidCache: [pid_t: Bool] = [:]
     /// Codex threads stuck on a prompt no hook reports, by row key → since.
     private var codexStalls: [String: Date] = [:]
+    /// Codex session keys whose rollout the shared daemon holds open,
+    /// refreshed with the stall check.
+    private var codexDaemonLive: Set<String> = []
+    /// nil until first looked for
+    private var codexDaemonPids: [pid_t]?
     private var codexStallGeneration = 0
     /// Claude session id → model from its transcript's last assistant turn.
     @Published private(set) var claudeModels: [String: String] = [:]
@@ -258,23 +263,22 @@ final class SessionsModel: ObservableObject {
     /// a change triggers a reload so the row and badge follow.
     private func checkCodexStallsAsync() {
         let working = sessions.filter { $0.provider == .codex && $0.state != .done && $0.state != .error }
-        guard !working.isEmpty else {
-            if !codexStalls.isEmpty { codexStalls = [:]; reload() }
-            return
-        }
         codexStallGeneration += 1
         let gen = codexStallGeneration
         let ids = Set(working.map(\.sessionId))
+        let live = runningEvidence.runningKeys(rows: working)
         Task.detached {
             let now = Date()
             var stalls: [String: Date] = [:]
             for (id, url) in CodexStall.rollouts(for: ids) {
-                if let since = CodexStall.stalledSince(file: url, now: now) {
-                    stalls[SessionKey.make(.codex, id)] = since
-                }
+                let key = SessionKey.make(.codex, id)
+                // a thread that died mid-call isn't waiting on anyone
+                guard live.contains(key) else { continue }
+                if let since = CodexStall.stalledSince(file: url, now: now) { stalls[key] = since }
             }
             Task { @MainActor [weak self] in
-                guard let self, gen == self.codexStallGeneration, stalls != self.codexStalls else { return }
+                guard let self, gen == self.codexStallGeneration else { return }
+                guard stalls != self.codexStalls else { return }
                 self.codexStalls = stalls
                 self.reload()
             }
@@ -442,8 +446,23 @@ final class SessionsModel: ObservableObject {
         // snapshot follows the normal pid / idle rules.
         antigravityPresence = Provider.antigravity.spec.applicability.isApplicable()
             ? AntigravityState.runningConversations() : []
+        // Before any removal decision: a daemon-run thread has no pid of
+        // its own, so without this its row would be judged on the daemon's.
+        if all.contains(where: { $0.provider == .codex }) {
+            // the daemon's pid is found by walking every process, so it's
+            // cached and re-found on the sweep or once it has gone
+            if sweep || codexDaemonPids == nil
+                || codexDaemonPids?.allSatisfy(ProcessTree.isCodexSharedDaemon) == false {
+                codexDaemonPids = ProcessTree.codexDaemonPids()
+            }
+            codexDaemonLive = Set(ProcessTree.codexDaemonOpenThreads(daemons: codexDaemonPids ?? [])
+                .map { SessionKey.make(.codex, $0) })
+        } else {
+            codexDaemonLive = []
+        }
         let confirmedLive = Set(claudeLiveSessions.keys.map { SessionKey.make(.claude, $0) })
             .union(presenceLiveKeys)
+            .union(codexDaemonLive)
         let liveByPid = Dictionary(claudeLiveSessions.values.map { ($0.pid, $0) },
                                    uniquingKeysWith: { a, b in
                                        (a.observedAt ?? .distantPast) >= (b.observedAt ?? .distantPast) ? a : b
@@ -786,14 +805,19 @@ final class SessionsModel: ObservableObject {
     /// already checked against the process start time, has to name this
     /// same pid. Otherwise a recycled pid would lead to whatever pane its
     /// new owner happens to run in.
+    private func codexDaemonPane(_ snapshot: SessionSnapshot) -> CodexAppServer.PaneMatch? {
+        let ttyByGuid = Dictionary(paneByTTY.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
+        let panes = terminalTitles.compactMap { guid, title in
+            ttyByGuid[guid].map { (guid: guid, tty: $0, title: title) }
+        }
+        return CodexAppServer.pane(
+            threadName: codexNames[snapshot.sessionId], panes: panes, codexTTYs: codexCLITTYs,
+            allowSolePane: codexOriginators[snapshot.sessionId] == CodexThreads.cliOriginator)
+    }
+
     private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
         if isRunByCodexDaemon(snapshot) {
-            let ttyByGuid = Dictionary(paneByTTY.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
-            let panes = terminalTitles.compactMap { guid, title in
-                ttyByGuid[guid].map { (guid: guid, tty: $0, title: title) }
-            }
-            return CodexAppServer.pane(threadName: codexNames[snapshot.sessionId],
-                                       panes: panes, codexTTYs: codexCLITTYs)
+            return codexDaemonPane(snapshot)?.guid
         }
         // agy: the hook recorded its own pid; trusted only while it passes
         // the identity check (start time, `agy` executable)
@@ -892,6 +916,7 @@ final class SessionsModel: ObservableObject {
             if popoverVisible { onRequestClose?() }
             return
         }
+        let guessedPane = isRunByCodexDaemon(snapshot) && codexDaemonPane(snapshot)?.byName != true
         let fallbackURL = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId)
         Self.appLog("activate key=\(snapshot.key) guid=\(guid)")
         pendingFocus = { [weak self] in
@@ -905,7 +930,10 @@ final class SessionsModel: ObservableObject {
                 guard let self else { return }
                 if result == "focused" {
                     self.focusProblem = nil
-                    self.acknowledge(snapshot)
+                    // a pane picked only for being the one Codex pane may
+                    // be another thread's: focusing it doesn't prove this
+                    // session was seen
+                    if !guessedPane { self.acknowledge(snapshot) }
                 } else {
                     self.focusProblem = SessionsModel.describeFocusFailure(result)
                     if let fallbackURL { NSWorkspace.shared.open(fallbackURL) }
@@ -1405,7 +1433,7 @@ extension SessionsModel {
     /// `RunningEvidence`), from the registry view this reload read.
     var runningEvidence: RunningEvidence {
         RunningEvidence(claudeRegistryLive: Set(claudeLiveSessions.keys),
-                        presenceLive: presenceLiveKeys)
+                        presenceLive: presenceLiveKeys, daemonLive: codexDaemonLive)
     }
 
     func runningKeys(_ rows: [SessionSnapshot]) -> Set<String> {
@@ -1533,7 +1561,9 @@ extension SessionsModel {
             ? Set(AntigravityState.runningConversations().map {
                 SessionKey.make(.antigravity, $0.conversationId)
             }) : []
-        return RunningEvidence(claudeRegistryLive: live, presenceLive: presence)
+        let daemon = entry.provider == .codex
+            ? Set(ProcessTree.codexDaemonOpenThreads().map { SessionKey.make(.codex, $0) }) : []
+        return RunningEvidence(claudeRegistryLive: live, presenceLive: presence, daemonLive: daemon)
             .isRunning(entry, snapshot: SnapshotStore().load(key: entry.key))
     }
 

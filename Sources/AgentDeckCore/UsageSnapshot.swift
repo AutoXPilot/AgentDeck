@@ -57,6 +57,10 @@ public struct ProviderUsage: Codable, Equatable, Sendable {
     /// When a figure last moved. A status line re-sends cached figures on
     /// every run, so `observedAt` alone would keep claiming freshness.
     public var changedAt: Date
+    /// Earlier 5-hour reset times of this account, newest last. A reset
+    /// time is specific to the account, so a figure carrying one of these
+    /// under another account is this account's figure echoed back.
+    public var recentResets: [Date]?
 
     public init(provider: Provider, groups: [UsageGroup], plan: String? = nil,
                 account: String? = nil, observedAt: Date, changedAt: Date? = nil) {
@@ -70,8 +74,20 @@ public struct ProviderUsage: Codable, Equatable, Sendable {
 
     public static let staleAfter: TimeInterval = 6 * 3600
 
+    /// The figures haven't moved in 6 hours. `changedAt`, not
+    /// `observedAt`: an idle session keeps re-sending cached figures, which
+    /// would otherwise look fresh forever.
     public func isStale(now: Date) -> Bool {
-        now.timeIntervalSince(observedAt) > Self.staleAfter
+        now.timeIntervalSince(changedAt) > Self.staleAfter
+    }
+
+    /// Reset times that identify this account's windows.
+    var accountResets: Set<Date> {
+        var all = Set(recentResets ?? [])
+        for group in groups {
+            if let r = group.session?.resetsAt { all.insert(r) }
+        }
+        return all
     }
 
     /// Same figures, ignoring when they were seen.
@@ -164,33 +180,93 @@ public struct UsageStore: Sendable {
     /// Saves `usage` unless it is another account's figures echoed back.
     /// After `/login` every open session moves to the new account, but an
     /// idle one keeps re-sending the old account's cached figures until its
-    /// next response; those match the old account's record exactly
-    /// (percent and reset time), so they're dropped rather than filed under
-    /// the new account. Returns whether it was saved.
+    /// next response. Those carry the old account's 5-hour reset time (the
+    /// current one or a recent one), which no other account shares, so
+    /// they're dropped rather than filed under the new account. Serialized
+    /// per provider: tees run concurrently, one per open session. Returns
+    /// whether anything was written.
     @discardableResult
     public func recordUnlessEcho(_ usage: ProviderUsage) throws -> Bool {
-        if usage.account != nil {
-            let echo = loadAll(usage.provider).contains {
-                $0.account != nil && $0.account != usage.account && $0.sameFigures(as: usage)
+        try withLock(usage.provider) {
+            if usage.account != nil, isEcho(usage, among: loadAll(usage.provider)) { return false }
+            let written = try recordLocked(usage)
+            if usage.account != nil {
+                // the account-less file predates account tracking; it can't
+                // be attributed, so it goes once an attributed one exists
+                try? FileManager.default.removeItem(at: url(for: usage.provider))
             }
-            if echo { return false }
+            return written
         }
-        try record(usage)
-        if usage.account != nil {
-            // the account-less file predates account tracking; it can't be
-            // attributed, so it goes once an attributed one exists
-            try? FileManager.default.removeItem(at: url(for: usage.provider))
-        }
-        return true
     }
 
-    /// Saves `usage`, keeping the stored `changedAt` when the figures are
-    /// unchanged. Atomic, owner-only.
-    public func record(_ usage: ProviderUsage) throws {
-        var usage = usage
-        if let previous = load(usage.provider, account: usage.account), previous.sameFigures(as: usage) {
-            usage.changedAt = previous.changedAt
+    func isEcho(_ usage: ProviderUsage, among records: [ProviderUsage]) -> Bool {
+        let incoming = usage.groups.compactMap { $0.session?.resetsAt }
+        guard !incoming.isEmpty else { return false }
+        return records.contains { other in
+            other.account != nil && other.account != usage.account
+                && !other.accountResets.isDisjoint(with: incoming)
         }
+    }
+
+    /// Saves `usage`, merged with what's stored (see `merge`). Atomic,
+    /// owner-only.
+    @discardableResult
+    public func record(_ usage: ProviderUsage) throws -> Bool {
+        try withLock(usage.provider) { try recordLocked(usage) }
+    }
+
+    /// Every open session's tee reports its own cached figures, so an idle
+    /// one can report an older figure after a busy one reported a newer
+    /// one. Within one window (same reset time) usage only grows, and an
+    /// older window never replaces a newer one. nil = nothing worth writing
+    /// (same figures seen under a minute ago).
+    static func merge(previous: ProviderUsage?, incoming: ProviderUsage) -> ProviderUsage? {
+        guard let previous else { return incoming }
+        func window(_ old: UsageWindow?, _ new: UsageWindow?) -> UsageWindow? {
+            guard let old else { return new }
+            guard let new else { return old }
+            if let o = old.resetsAt, let n = new.resetsAt {
+                if n < o { return old }
+                if n == o, old.usedPercent > new.usedPercent { return old }
+            }
+            return new
+        }
+        var merged = incoming
+        merged.groups = incoming.groups.map { group in
+            guard let before = previous.groups.first(where: { $0.label == group.label }) else { return group }
+            var g = group
+            g.session = window(before.session, group.session)
+            g.weekly = window(before.weekly, group.weekly)
+            return g
+        }
+        for old in previous.groups where !merged.groups.contains(where: { $0.label == old.label }) {
+            merged.groups.append(old)
+        }
+        merged.observedAt = max(previous.observedAt, incoming.observedAt)
+        // earlier windows only: the current one is in the groups already
+        var resets = previous.recentResets ?? []
+        let current = Set(merged.groups.compactMap { $0.session?.resetsAt })
+        for r in previous.groups.compactMap({ $0.session?.resetsAt })
+        where !resets.contains(r) && !current.contains(r) {
+            resets.append(r)
+        }
+        merged.recentResets = resets.isEmpty ? nil : Array(resets.suffix(8))
+        if merged.sameFigures(as: previous) {
+            merged.changedAt = previous.changedAt
+            if incoming.observedAt.timeIntervalSince(previous.observedAt) < 60,
+               merged.recentResets == previous.recentResets {
+                return nil
+            }
+        } else {
+            merged.changedAt = incoming.observedAt
+        }
+        return merged
+    }
+
+    private func recordLocked(_ incoming: ProviderUsage) throws -> Bool {
+        guard let usage = Self.merge(previous: load(incoming.provider, account: incoming.account),
+                                     incoming: incoming)
+        else { return false }
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
@@ -205,5 +281,21 @@ public struct UsageStore: Sendable {
             try? fm.removeItem(at: temp)
             throw CocoaError(.fileWriteUnknown)
         }
+        return true
+    }
+
+    /// flock on a per-provider sidecar; fails closed like the installer's.
+    private func withLock<T>(_ provider: Provider, _ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let lock = directory.appendingPathComponent(".\(provider.rawValue).lock")
+        let fd = open(lock.path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 {
+            guard errno == EINTR else { throw CocoaError(.fileWriteUnknown) }
+        }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
     }
 }

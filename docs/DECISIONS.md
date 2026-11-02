@@ -98,12 +98,33 @@ gives no pane rather than a wrong one. Rejected: trusting the inherited
 pane (the original bug) and treating every daemon thread as app-hosted
 (loses the click for CLI threads).
 
+**A daemon-run Codex thread is running while the daemon holds its rollout open.** (Unreleased)
+Its hooks carry the daemon's pid, which every thread shares, and its CLI
+client's arguments name no thread, so neither the pid rule nor the argv
+scan works. The daemon keeps open exactly the rollouts of the threads it
+runs (seen: two live CLI threads, two open rollouts; finished `codex exec`
+threads not held). That set feeds running evidence (capture, restore
+preflight) and the never-delete set, and the daemon's pid is no longer
+trusted for any Codex row. ChatGPT's own bundled app-server is told apart
+by path and keeps its pid.
+
+**Usage only grows within a window, and Claude echoes are recognised by
+reset time.** (Unreleased)
+Every open session's tee reports its own cached figures, so the store
+keeps the larger percent within one reset time and never lets an older
+window replace a newer one; writes are serialized per provider. A
+5-hour reset time belongs to one account, so a figure carrying another
+account's current or recent reset time is that account's, echoed by an
+idle session, and is dropped.
+
 **Infer "may need you" for Codex prompts no hook reports.** (Unreleased)
 MCP elicitations fire no hook, so a Codex thread waiting on one looked
 busy for hours. A rollout ending in a non-shell tool call with no output,
 and nothing written for 2 minutes, is shown as waiting ("may need you").
-Shell commands are excluded because long builds look the same and
-Codex's own approvals for them fire PermissionRequest. Accepted risk: a
+Shell commands, `wait` and `sleep` are excluded because they legitimately
+run long, and Codex's own approvals for shell commands fire
+PermissionRequest. A stall older than the latest hook is ignored (a new
+prompt proves the thread moved on), and a thread must count as running. Accepted risk: a
 non-shell tool that genuinely runs over 2 minutes is shown as waiting
 until it writes again. Rejected: leaving it `working` (Tony missed a
 prompt for 2.5 hours).

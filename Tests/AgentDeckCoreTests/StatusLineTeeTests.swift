@@ -116,9 +116,19 @@ struct ChainRunnerTests {
     }
 
     @Test func runsInTheCallersDirectoryAndEnvironment() {
-        let r = ChainRunner.run(command: "pwd", input: Data())
+        setenv("AGENTDECK_CHAIN_TEST", "inherited", 1)
+        let r = ChainRunner.run(command: "pwd; printf %s \"$AGENTDECK_CHAIN_TEST\"", input: Data())
         #expect(String(decoding: r.stdout, as: UTF8.self)
-                == FileManager.default.currentDirectoryPath + "\n")
+                == FileManager.default.currentDirectoryPath + "\ninherited")
+    }
+
+    @Test func theCommandGetsDefaultSignalHandlingBack() {
+        // the helper ignores SIGPIPE; a status line script relying on it
+        // (`producer | head -1`) must not inherit that
+        signal(SIGPIPE, SIG_IGN)
+        let r = ChainRunner.run(
+            command: #"perl -e 'print defined $SIG{PIPE} ? $SIG{PIPE} : "DEFAULT"'"#, input: Data())
+        #expect(String(decoding: r.stdout, as: UTF8.self) == "DEFAULT")
     }
 }
 
@@ -269,5 +279,65 @@ struct StatusLineTeeInstallTests {
         let record = tee.recordURL(provider: .claude, settingsURL: url.resolvingSymlinksInPath())
         let perms = try FileManager.default.attributesOfItem(atPath: record.path)[.posixPermissions] as? NSNumber
         #expect(perms?.intValue == 0o600)
+    }
+}
+
+
+struct StatusLineTeeReviewTests {
+    let helper = "/Users/me/Library/Application Support/AgentDeck/bin/agentdeck-hook"
+    let original = #"{"type":"command","command":"echo mine","refreshInterval":60,"padding":1}"#
+
+    private func setup(_ json: String) throws -> (StatusLineTee, URL) {
+        let dir = try tempDir()
+        let settings = dir.appendingPathComponent("settings.json")
+        try Data(json.utf8).write(to: settings)
+        return (StatusLineTee(helperPath: helper, chainDirectory: dir.appendingPathComponent("chain")), settings)
+    }
+
+    @Test func uninstallKeepsEditsMadeToOtherFieldsWhileInstalled() throws {
+        let (tee, url) = try setup(#"{"statusLine":\#(original)}"#)
+        try tee.install(.claude, settingsURL: url, policy: .none)
+        var root = try HookInstaller.readJSONObject(at: url)
+        var line = root["statusLine"] as! [String: Any]
+        line["padding"] = 4                 // the user's edit
+        line.removeValue(forKey: "refreshInterval")
+        root["statusLine"] = line
+        try JSONSerialization.data(withJSONObject: root).write(to: url)
+        #expect(try tee.uninstall(.claude, settingsURL: url) == .restored)
+        let restored = try HookInstaller.readJSONObject(at: url)["statusLine"] as! [String: Any]
+        #expect(restored["command"] as? String == "echo mine")
+        #expect(restored["padding"] as? Int == 4)
+        #expect(restored["refreshInterval"] == nil)
+    }
+
+    @Test func aRefreshAfterUninstallStillRunsTheUsersCommand() throws {
+        let (tee, url) = try setup(#"{"statusLine":\#(original)}"#)
+        try tee.install(.claude, settingsURL: url, policy: .none)
+        let name = tee.recordName(provider: .claude, settingsURL: url.resolvingSymlinksInPath())
+        try tee.uninstall(.claude, settingsURL: url)
+        #expect(tee.chainedCommand(recordName: name) == "echo mine")
+        // and the retired record is cleaned up after the grace period
+        tee.pruneRetired(now: Date().addingTimeInterval(StatusLineTee.retiredGrace + 60))
+        #expect(tee.chainedCommand(recordName: name) == nil)
+    }
+
+    @Test func anInstalledTeeStaysRemovableUnderALaterPolicy() throws {
+        let (tee, url) = try setup(#"{"statusLine":\#(original)}"#)
+        try tee.install(.claude, settingsURL: url, policy: .none)
+        var blocked = ClaudePolicy()
+        blocked.hooksBlocked = true
+        #expect(tee.status(for: .claude, settingsURL: url, policy: blocked, applicable: true) == .installed)
+    }
+
+    @Test func aTeeRunRecordsUnderTheAccountAndPrintsTheUsersLine() throws {
+        let (tee, url) = try setup(#"{"statusLine":\#(original)}"#)
+        try tee.install(.claude, settingsURL: url, policy: .none)
+        let name = tee.recordName(provider: .claude, settingsURL: url.resolvingSymlinksInPath())
+        let store = UsageStore(directory: try tempDir())
+        let payload = #"{"cwd":"/x","rate_limits":{"five_hour":{"used_percentage":30,"resets_at":1793598600}}}"#
+        let result = tee.run(provider: .claude, recordName: name, input: Data(payload.utf8),
+                             store: store, claudeAccount: { "aaaa1111" })
+        #expect(String(decoding: result?.stdout ?? Data(), as: UTF8.self) == "mine\n")
+        #expect(store.load(.claude, account: "aaaa1111")?.groups.first?.session?.usedPercent == 30)
     }
 }

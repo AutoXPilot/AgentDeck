@@ -95,6 +95,7 @@ public enum CodexThreads {
     static let originatorQuery = "select id, originator from threads where originator is not null"
 
     public static let desktopOriginator = "Codex Desktop"
+    public static let cliOriginator = "codex-tui"
 
     public static func parseOriginators(_ output: String, separator: String = "\u{1}") -> [String: String] {
         var result: [String: String] = [:]

@@ -71,7 +71,9 @@ AgentDeck.app: dir watcher (250 ms debounce) + 15 s sweep
 ```
 
 The helper must never block an agent turn: bounded stdin read, 8 s watchdog,
-silent exit 0 on any error, no stdout.
+silent exit 0 on any error, no stdout. The status line tee
+(`agentdeck-hook statusline`) is the exception that prints: it has its own
+15 s watchdog, and the chained command 5 s.
 
 ## Core files (Sources/AgentDeckCore)
 
@@ -106,6 +108,9 @@ Discovery, liveness, state
   are never deleted.
 - `RunningEvidence.swift` — the single "is it running" definition (capture,
   offers, preflight, pre-launch re-check, confirmation, reservations).
+  Codex threads run by the shared daemon count while the daemon holds
+  their rollout open (`daemonLive`, from `ProcessTree.codexDaemonOpenThreads`);
+  the daemon's own pid proves nothing (`Liveness.ProcessProbe.system`).
 - `SessionPipeline.swift` — the whole snapshots→rows derivation.
 - `Attention.swift`, `AutoAck.swift`, `RowOrdering.swift`, `WaitingTracker.swift`,
   `EmptyState.swift` — badge counts, ordering (needs-you first, then newest),
