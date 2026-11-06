@@ -6,8 +6,7 @@ import Foundation
 /// to show a renamed Codex session by name.
 public enum CodexSessionIndex {
     public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/session_index.jsonl")
+        CodexHome.current.appendingPathComponent("session_index.jsonl")
     }
 
     /// session id → thread name. Append-only log: later entries win.

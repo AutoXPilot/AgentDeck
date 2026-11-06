@@ -10,28 +10,67 @@ import Foundation
 /// belong to whichever one wrote the newest record.
 public enum CodexUsage {
     public static var defaultSessionsDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions", isDirectory: true)
+        CodexHome.current.appendingPathComponent("sessions", isDirectory: true)
     }
 
     /// The bucket for the subscription. A `premium` record with null
     /// windows can follow it in the same turn; older records have no id.
     static let subscriptionLimitID = "codex"
+    /// Buckets seen beside the subscription that say nothing about it.
+    static let companionLimitIDs: Set<String> = ["premium"]
     static let sessionWindowMinutes = 300
     static let weeklyWindowMinutes = 10_080
+
+    /// What one rollout line says about the subscription.
+    enum Reading {
+        case usage(ProviderUsage)
+        /// A token_count event that carries no subscription figures this
+        /// reader understands: `rate_limits` null or without windows, or a
+        /// bucket other than `codex`/`premium` (another plan kind, such as
+        /// an organization's).
+        /// Newer than any figure, it means the account in use isn't
+        /// reporting, so older figures (possibly another account's) aren't
+        /// shown in its place.
+        case notReporting(observedAt: Date)
+
+        var observedAt: Date {
+            switch self {
+            case .usage(let usage): return usage.observedAt
+            case .notReporting(let at): return at
+            }
+        }
+
+        var usage: ProviderUsage? {
+            if case .usage(let usage) = self { return usage }
+            return nil
+        }
+    }
 
     /// Parses one JSONL line; nil unless it is a token_count event with at
     /// least one subscription window.
     public static func parse(line: Data) -> ProviderUsage? {
+        read(line: line)?.usage
+    }
+
+    /// nil = not a token_count event, or one that says nothing either way
+    /// (a `premium` record, a Codex too old to report limits).
+    static func read(line: Data) -> Reading? {
         guard let object = try? JSONSerialization.jsonObject(with: line),
               let record = object as? [String: Any],
               record["type"] as? String == "event_msg",
               let payload = record["payload"] as? [String: Any],
-              payload["type"] as? String == "token_count",
-              let limits = payload["rate_limits"] as? [String: Any]
+              payload["type"] as? String == "token_count"
         else { return nil }
+        let observed = (record["timestamp"] as? String).flatMap {
+            SnapshotStore.isoFractional.date(from: $0) ?? SnapshotStore.isoPlain.date(from: $0)
+        } ?? Date()
+        // absent: a Codex from before rate limits were reported
+        guard let rawLimits = payload["rate_limits"] else { return nil }
+        guard let limits = rawLimits as? [String: Any] else { return .notReporting(observedAt: observed) }
         if let id = limits["limit_id"], !(id is NSNull) {
-            guard id as? String == subscriptionLimitID else { return nil }
+            guard let id = id as? String else { return .notReporting(observedAt: observed) }
+            if companionLimitIDs.contains(id) { return nil }
+            if id != subscriptionLimitID { return .notReporting(observedAt: observed) }
         }
         var session: UsageWindow?
         var weekly: UsageWindow?
@@ -49,16 +88,14 @@ public enum CodexUsage {
             default: if key == "primary" { session = session ?? parsed } else { weekly = weekly ?? parsed }
             }
         }
-        guard session != nil || weekly != nil else { return nil }
-        let observed = (record["timestamp"] as? String).flatMap {
-            SnapshotStore.isoFractional.date(from: $0) ?? SnapshotStore.isoPlain.date(from: $0)
-        } ?? Date()
-        return ProviderUsage(
+        // the subscription bucket (or an unnamed one) with no windows
+        guard session != nil || weekly != nil else { return .notReporting(observedAt: observed) }
+        return .usage(ProviderUsage(
             provider: .codex,
             groups: [UsageGroup(session: session, weekly: weekly)],
             plan: limits["plan_type"] as? String,
             observedAt: observed
-        )
+        ))
     }
 
     private static func number(_ value: Any?) -> Double? {
@@ -72,13 +109,17 @@ public enum CodexUsage {
     /// read) and end mid-line (Codex still appending). Both partial lines
     /// are dropped unless `data` is the whole file.
     public static func latest(in data: Data, isWholeFile: Bool) -> ProviderUsage? {
+        latestReading(in: data, isWholeFile: isWholeFile)?.usage
+    }
+
+    static func latestReading(in data: Data, isWholeFile: Bool) -> Reading? {
         var lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
         if !isWholeFile, !lines.isEmpty { lines.removeFirst() }
         if data.last != UInt8(ascii: "\n"), !lines.isEmpty { lines.removeLast() }
         for line in lines.reversed() where !line.isEmpty {
             // cheap prefilter before JSON decoding; parse() checks the envelope
             guard line.range(of: Data("token_count".utf8)) != nil else { continue }
-            if let usage = parse(line: Data(line)) { return usage }
+            if let reading = read(line: Data(line)) { return reading }
         }
         return nil
     }
@@ -89,6 +130,10 @@ public enum CodexUsage {
     /// Reads backwards from the end, doubling the window until a record is
     /// found or `maxTail` is reached. A single line can run to megabytes.
     public static func latest(inFile url: URL) -> ProviderUsage? {
+        latestReading(inFile: url)?.usage
+    }
+
+    static func latestReading(inFile url: URL) -> Reading? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd() else { return nil }
@@ -98,7 +143,7 @@ public enum CodexUsage {
             guard (try? handle.seek(toOffset: start)) != nil,
                   let data = try? handle.read(upToCount: Int(size - start))
             else { return nil }
-            if let usage = latest(in: data, isWholeFile: start == 0) { return usage }
+            if let reading = latestReading(in: data, isWholeFile: start == 0) { return reading }
             if start == 0 || window >= UInt64(maxTail) { return nil }
             window *= 2
         }
@@ -115,7 +160,7 @@ public enum CodexUsage {
     public final class Reader: @unchecked Sendable {
         let directory: URL
         let maxFiles: Int
-        private var cache: [FileKey: ProviderUsage?] = [:]
+        private var cache: [FileKey: Reading?] = [:]
         private var last: ProviderUsage?
 
         public init(directory: URL = CodexUsage.defaultSessionsDirectory, maxFiles: Int = 20) {
@@ -123,19 +168,23 @@ public enum CodexUsage {
             self.maxFiles = maxFiles
         }
 
-        /// The newest valid observation across the most recently modified
+        /// The newest observation across the most recently modified
         /// rollouts. Active conversations can live in older date folders,
-        /// so every folder is listed. A miss keeps the previous figure.
+        /// so every folder is listed. A miss (none of the newest files has a
+        /// record, e.g. a run of short `codex exec` threads) keeps the last
+        /// figure, which expires with its windows. A newest record saying
+        /// the account isn't reporting drops it: an older figure could
+        /// belong to another account.
         public func load() -> ProviderUsage? {
             let files = CodexUsage.rollouts(in: directory).prefix(maxFiles)
-            var fresh: [FileKey: ProviderUsage?] = [:]
-            var best: ProviderUsage?
+            var fresh: [FileKey: Reading?] = [:]
+            var best: Reading?
             for key in files {
-                let found: ProviderUsage?
+                let found: Reading?
                 if let cached = cache[key] {
                     found = cached
                 } else {
-                    found = CodexUsage.latest(inFile: URL(fileURLWithPath: key.path))
+                    found = CodexUsage.latestReading(inFile: URL(fileURLWithPath: key.path))
                 }
                 fresh[key] = found
                 if let found, found.observedAt > (best?.observedAt ?? .distantPast) {
@@ -146,7 +195,11 @@ public enum CodexUsage {
                 if let best, key.modified <= best.observedAt { break }
             }
             cache = fresh
-            if let best { last = best }
+            switch best {
+            case .usage(let usage)?: last = usage
+            case .notReporting?: last = nil
+            case nil: break
+            }
             return last
         }
     }

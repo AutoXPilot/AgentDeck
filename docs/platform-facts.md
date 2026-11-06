@@ -115,6 +115,9 @@ row (date, version, result) when one is done.
 | Claude status line tee on a real `statusLine`: the original output unchanged, figures match `/usage`, uninstall restores the entry | done 2026-11-01 (2.1.316): the chained script kept writing its records with the same figures (76% / 18%); uninstall was JSON-equal to the backup |
 | agy status line tee: the built-in line still shows with `stack_with_default`, figures match `agy -p /usage`, agy doesn't disable the status line | done 2026-11-01 (1.4.12, after a self-update from 1.4.9): figures matched, the built-in hint line still showed, uninstall was JSON-equal to the backup |
 | Work Mac: no Claude usage line, Codex and agy lines shown | pending |
+| Work Mac: Codex rollouts under an organization plan carry `rate_limits` (and which `limit_id` / `plan_type`) | not run |
+| A Claude policy `statusLine` overrides the user's `statusLine` | not observed (assumed from managed-settings precedence; AgentDeck treats it as blocking) |
+| A Claude session without subscription limits (API key) omits `rate_limits` from the status line payload | not observed |
 | Clicking a daemon-run Codex CLI thread focuses its pane (matched by title among panes running `codex`) | done 2026-11-02 (CLI 0.165.0, daemon 0.166.0) |
 | A ChatGPT thread run by the daemon is shown as ChatGPT-hosted (originator `Codex Desktop`) | pending (no ChatGPT thread run since the daemon appeared) |
 | A Codex MCP prompt (browser permission form) shows as "may need you" within about 2¼ minutes | pending (built 2026-11-02 from the travel-planning case; unit-tested on its record shapes) |

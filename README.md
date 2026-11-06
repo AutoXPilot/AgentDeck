@@ -35,8 +35,8 @@ waiting on you** — then click a row to jump to that exact iTerm2 tab/pane.
 AgentDeck's installer edits up to three files you own:
 
 - `~/.claude/settings.json` — adds hook entries for 7 lifecycle events
-- `~/.codex/hooks.json` — adds hook entries for 5 lifecycle events (only if
-  `~/.codex` exists)
+- `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) — adds hook entries
+  for 5 lifecycle events (only if that folder exists)
 - `~/.gemini/config/hooks.json` — adds one hook set named `agentdeck`
   covering 6 events (only if `~/.gemini/antigravity-cli` exists). Your
   other hook sets are carried over unchanged. If a set named `agentdeck`
@@ -95,7 +95,8 @@ conversation map in `cache/last_conversations.json`, and whether
 
 For the usage lines, AgentDeck keeps only the allow-listed usage fields
 (percent used and reset time per window, Codex's plan name). To find them
-it reads the end of Codex's rollout logs (`~/.codex/sessions/…`, which
+it reads the end of Codex's rollout logs (`~/.codex/sessions/…` or
+`$CODEX_HOME/sessions/…`, which
 also hold conversation text) and decodes only `token_count` records; and
 the status line tee receives Claude's or agy's full status line payload
 (working folder, conversation title, agy's account email), which it
@@ -104,7 +105,9 @@ discards. To file Claude's figures under the right account it keeps the
 first 8 characters of the account id from `~/.claude.json`, in the usage
 file's name and contents. The chain record
 (`…/AgentDeck/statusline-chain/`, owner-only) keeps your original status
-line entry, command included, since that's what it runs and restores. Your own command does whatever it did before.
+line entry, command included, since that's what it runs and restores.
+Beside it, a `.ran` file per tee holds two times only: when the tee last
+ran and when it last saw figures. Your own command does whatever it did before.
 
 Conversation content is parsed past but never retained, logged, or
 displayed. (Through 0.4.1 that was not strictly true: an unrenamed Codex
@@ -332,11 +335,18 @@ Within one window a figure never goes down: every open session's tee
 reports its own cached copy, and an idle session's older one is ignored.
 Hover a line for
 reset times and where the figures came from. A subscription with no
-figures has no line.
+figures has no line, and a line goes rather than show figures that can no
+longer update: once every window on it has reset since the figures were
+taken, or they haven't moved for over a week.
 
 - **Codex:** read from the newest `token_count` record in Codex's rollout
-  logs; nothing to set up. The record names no account, so with several
-  Codex accounts the line shows whichever one ran last.
+  logs (`$CODEX_HOME/sessions`, `~/.codex` by default); nothing to set up.
+  The record names no account, so with several Codex accounts the line
+  shows whichever one ran last. If the newest record has no subscription
+  figures (`rate_limits` empty or without windows, or a limit kind other
+  than the personal `codex` one, as an organization's plan may report),
+  there's no line rather than an older figure that may be another
+  account's.
 - **Claude and agy:** only their status line is given these figures, and
   each allows one status line command. **⋯ → Usage → Show Claude usage…**
   (or agy) puts `agentdeck-hook statusline` in that slot; it saves the
@@ -348,11 +358,23 @@ figures has no line.
   when you turn it off still shows your own line. Your status line command
   gets 5 seconds per refresh and runs with normal signal handling. The figures update while a session of that
   agent is open. For agy with no custom status line, the tee keeps agy's
-  built-in one (`stack_with_default`).
+  built-in one (`stack_with_default`). Turning it off also deletes
+  AgentDeck's saved figures for that agent. The line shows only while the
+  tee is in place and has run since you turned it on; when it hasn't, the
+  Usage menu says why under **Stop reading … usage**: waiting for a
+  session to refresh, not run in the 10 minutes since setup (the agent may
+  read another settings file, run a managed status line, or the Mac may
+  block the helper), or the account reports no usage figures (an API key,
+  or a plan without these limits; also after 30 minutes of refreshes
+  without figures, e.g. after switching to such an account). The menu item doesn't appear for an
+  agent whose settings folder doesn't exist.
 - **Two Claude accounts:** figures are kept per account and the line shows
   the account you're signed in to now (read from `oauthAccount.accountUuid`
   in `~/.claude.json`, first 8 characters; the file is parsed and only that
-  field is kept). The tooltip lists the other account's last figures.
+  field is kept). The tooltip lists the other account's last figures. If
+  the signed-in account can't be read (an API key, or a `.claude.json`
+  AgentDeck can't find), figures filed under an account aren't shown: on a
+  work laptop they could be a personal login's.
   After `/login`, an idle session keeps sending the old account's cached
   figures until its next reply. They carry that account's 5-hour reset
   time, current or recent, which no other account shares, so they're not
@@ -360,9 +382,12 @@ figures has no line.
   AgentDeck tracked accounts can still slip through once, until a session
   replies on the new account. Until then, the new account's line is
   empty.
-- **Managed Macs:** a Claude policy that sets `allowManagedHooksOnly` or
-  `disableAllHooks` also stops user status lines, so there's no Claude
-  line there. Codex and agy are unaffected.
+- **Managed Macs:** a Claude policy that sets `allowManagedHooksOnly`,
+  `disableAllHooks` or its own `statusLine` means a user status line never
+  runs, so there's no Claude line and the menu says so. A tee installed
+  before such a policy arrived stays removable. Codex and agy are
+  unaffected. See [Managed Macs](#managed-macs) before turning the tee on
+  for a Mac that may block unsigned tools.
 
 AgentDeck makes no network calls for this and reads no credentials.
 [CodexBar](https://github.com/steipete/CodexBar) is the fuller alternative
@@ -481,6 +506,17 @@ AgentDeck adapts to what the policy allows. It reads the policy
   only in a shell profile; Copy diagnostics shows which directory it used.
 - **No Codex installed**: the Codex dot is neutral, not red, and nothing is
   written to `~/.codex`. The same goes for Antigravity and `~/.gemini`.
+  `CODEX_HOME` is honoured when the app can see it (set for launchd with
+  `launchctl setenv`); like `CLAUDE_CONFIG_DIR`, one exported only in a
+  shell profile isn't visible to a menu-bar app.
+- **Usage lines**: see [Subscription usage](#subscription-usage) for what
+  shows when a policy or plan doesn't report figures. The status line tee
+  runs your own status line command behind AgentDeck's helper, so if the
+  Mac later stops running the helper (an app allow-list, a security tool),
+  your status line goes blank with it until you choose **Stop reading …
+  usage**, which the app does itself without the helper. Setup refuses
+  when the helper won't start. On a Mac that restricts which programs
+  run, leave the tee off.
 - **No iTerm2 installed**: monitoring works; restore says it needs iTerm2.
 
 Discovery reads Claude's session files, which aren't a documented

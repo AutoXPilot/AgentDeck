@@ -75,6 +75,19 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var otherAccountUsage: [Provider: [ProviderUsage]] = [:]
     /// Whether each status line tee (Claude, agy) is installed.
     @Published private(set) var teeStatus: [Provider: StatusLineTee.Status] = [:]
+    /// Whether each installed tee has run and passed figures since setup.
+    @Published private(set) var teeActivity: [Provider: StatusLineTee.Activity] = [:]
+    /// The render harness draws fixture usage with no tees installed.
+    private var usageFromFixture = false
+
+    /// The saved record for `provider` if it gets a line (see
+    /// `UsageFormat.shows`).
+    func visibleUsage(_ provider: Provider, now: Date) -> ProviderUsage? {
+        guard let record = usage[provider] else { return nil }
+        if usageFromFixture { return record }
+        return UsageFormat.shows(record, tee: teeStatus[provider],
+                                 activity: teeActivity[provider], now: now) ? record : nil
+    }
     /// Last pane-focus failure, surfaced in the footer instead of a log file.
     @Published private(set) var focusProblem: String? {
         didSet { if focusProblem != oldValue { noteMessageChanged() } }
@@ -186,6 +199,7 @@ final class SessionsModel: ObservableObject {
             refreshTerminalTitles()
             if let fixture = ProcessInfo.processInfo.environment["AGENTDECK_USAGE_FIXTURE"] {
                 usage = Self.usageFixture(at: fixture)
+                usageFromFixture = true
             } else {
                 loadUsageAsync()
             }
@@ -292,7 +306,10 @@ final class SessionsModel: ObservableObject {
             var others: [Provider: [ProviderUsage]] = [:]
             if let codex = reader.load() { loaded[.codex] = codex }
             let store = UsageStore()
-            let claude = UsageStore.pick(store.loadAll(.claude), signedIn: ClaudeAccount.current())
+            // resolved each time, as the tee does: the account file moves
+            // with a CLAUDE_CONFIG_DIR that policy can set after launch
+            let account = ClaudeAccount.current(configDirectory: ClaudeConfig.directory(policy: .load()))
+            let claude = UsageStore.pick(store.loadAll(.claude), signedIn: account)
             loaded[.claude] = claude.shown
             if !claude.others.isEmpty { others[.claude] = claude.others }
             if let agy = store.load(.antigravity) { loaded[.antigravity] = agy }
@@ -1023,8 +1040,27 @@ final class SessionsModel: ObservableObject {
     /// Turns a status line tee on or off. Never part of "Install hooks":
     /// it rewrites the user's own status line setting.
     func setUsageTee(_ provider: Provider, on: Bool) {
-        runHelper([on ? "statusline-install" : "statusline-uninstall", provider.rawValue],
-                  busy: on ? "Setting up usage…" : "Restoring status line…")
+        guard !on else {
+            runHelper(["statusline-install", provider.rawValue], busy: "Setting up usage…")
+            return
+        }
+        // in-process, not via the helper: if this Mac stopped running the
+        // helper, the status line is blank until this restores it
+        guard !isInstalling else { return }
+        isInstalling = true
+        installMessage = "Restoring status line…"
+        let helperPath = Self.helperURL.path
+        Task.detached {
+            let report = StatusLineTee(helperPath: helperPath)
+                .uninstallReport([provider], store: UsageStore())
+            let message = report.lines.joined(separator: "\n")
+            await MainActor.run { [weak self] in
+                self?.installMessage = message.isEmpty ? "done" : message
+                self?.isInstalling = false
+                self?.loadUsageAsync()
+                self?.reload()
+            }
+        }
     }
 
     private func runHelper(_ arguments: [String], busy: String) {
@@ -1260,10 +1296,13 @@ final class SessionsModel: ObservableObject {
         if statuses != hookStatus { hookStatus = statuses }
         let tee = StatusLineTee(helperPath: Self.helperURL.path)
         var tees: [Provider: StatusLineTee.Status] = [:]
+        var activity: [Provider: StatusLineTee.Activity] = [:]
         for provider in StatusLineTee.providers {
             tees[provider] = tee.status(for: provider, policy: policy)
+            activity[provider] = tee.activity(for: provider)
         }
         if tees != teeStatus { teeStatus = tees }
+        if activity != teeActivity { teeActivity = activity }
         iTermInstalled = NSWorkspace.shared
             .urlForApplication(withBundleIdentifier: "com.googlecode.iterm2") != nil
     }

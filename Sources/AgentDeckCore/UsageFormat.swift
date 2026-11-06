@@ -35,6 +35,39 @@ public enum UsageFormat {
         return "\(bare(group.session))/\(bare(group.weekly))"
     }
 
+    /// Whether a saved record gets a line. Claude's and agy's figures come
+    /// from their status line tees, so they show only while the tee is in
+    /// place, actually running and passing figures; figures saved before
+    /// it was removed, blocked or overridden can't update. Any record goes
+    /// once it has expired. Codex has no tee: its reader already drops
+    /// figures the newest rollouts don't back.
+    public static func shows(_ usage: ProviderUsage, tee: StatusLineTee.Status?,
+                             activity: StatusLineTee.Activity?, now: Date) -> Bool {
+        if usage.isExpired(now: now) { return false }
+        guard StatusLineTee.providers.contains(usage.provider) else { return true }
+        return tee == .installed && activity == .reporting
+    }
+
+    /// A note under the usage menu item when the tee is in place but the
+    /// line can't show, so "installed" never stands in for "working".
+    public static func teeNote(_ provider: Provider, status: StatusLineTee.Status?,
+                               activity: StatusLineTee.Activity?) -> String? {
+        let name = name(provider)
+        switch status {
+        case .overriddenByPolicy?:
+            return "\(name) usage: your organization's policy now runs its own status line"
+        case .installed?:
+            switch activity {
+            case .waiting?: return "\(name) usage: waiting for a \(name) session to refresh its status line"
+            case .notRunning?: return "\(name) usage: \(name) hasn't run AgentDeck's status line since setup"
+            case .noFigures?: return "\(name) usage: this account reports no usage figures"
+            case .reporting?, nil: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
     /// Groups drawn on the line; tooltip-only groups and empty ones are left out.
     public static func lineGroups(_ usage: ProviderUsage) -> [UsageGroup] {
         usage.groups.filter { $0.inLine && !$0.isEmpty }

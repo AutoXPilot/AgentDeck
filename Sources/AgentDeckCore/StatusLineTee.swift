@@ -45,6 +45,9 @@ public struct StatusLineTee: Sendable {
 
     public enum Status: Equatable, Sendable {
         case installed
+        /// Installed, but Claude policy (arrived since) means the user's
+        /// status line no longer runs. Still removable.
+        case overriddenByPolicy
         case notInstalled
         /// Managed Claude policy runs only the managed status line.
         case blockedByPolicy
@@ -63,8 +66,8 @@ public struct StatusLineTee: Sendable {
         public var description: String {
             switch self {
             case .blockedByPolicy:
-                return "your organization's Claude Code policy runs only its own status line, "
-                    + "so AgentDeck's would never run — nothing was written"
+                return "your organization's Claude Code policy sets the status line or allows only "
+                    + "its own hooks, so AgentDeck's would never run — nothing was written"
             case .notACommand(let path):
                 return "the status line in \(path) isn't a shell command; it was left alone"
             case .orphaned(let path):
@@ -131,8 +134,8 @@ public struct StatusLineTee: Sendable {
     static let retiredGrace: TimeInterval = 3600
 
     /// Uninstall marks the record retired instead of deleting it, and
-    /// records retired over an hour ago are removed on the next install,
-    /// uninstall or status check.
+    /// records retired over an hour ago are removed on the next install or
+    /// uninstall.
     func retire(_ record: [String: Any], at url: URL, now: Date = Date()) {
         var record = record
         record[Self.retiredKey] = now.timeIntervalSince1970
@@ -183,20 +186,140 @@ public struct StatusLineTee: Sendable {
     }
 
     public func status(for provider: Provider, settingsURL: URL? = nil,
-                       policy: ClaudePolicy = .load(), applicable: Bool? = nil) -> Status {
+                       policy: ClaudePolicy = .load(), applicable: Bool? = nil,
+                       now: Date = Date()) -> Status {
         guard let settingsURL = settingsURL ?? Self.settingsURL(for: provider) else { return .notApplicable }
         let current = (try? HookInstaller.readJSONObject(at: settingsURL))?["statusLine"]
         let ours = installedCommand(provider: provider, settingsURL: settingsURL)
         // checked before policy: a tee installed before a policy arrived
         // must still be removable from the menu
         if command(of: current) == ours {
-            return loadRecord(at: recordURL(provider: provider, settingsURL: settingsURL)) == nil
-                ? .orphaned : .installed
+            guard loadRecord(at: recordURL(provider: provider, settingsURL: settingsURL)) != nil
+            else { return .orphaned }
+            guard provider == .claude, policy.statusLineBlocked else { return .installed }
+            // the policy reading is partly assumption (a managed statusLine
+            // overriding the user's isn't observed); a tee that ran lately
+            // proves Claude still runs it
+            let name = recordName(provider: provider, settingsURL: settingsURL.resolvingSymlinksInPath())
+            if let ran = loadHeartbeat(recordName: name)?.ranAt,
+               now.timeIntervalSince(ran) < Self.notRunningAfter {
+                return .installed
+            }
+            return .overriddenByPolicy
         }
         if looksLikeTee(command(of: current)) { return .orphaned }
-        if provider == .claude, policy.hooksBlocked { return .blockedByPolicy }
-        if !(applicable ?? provider.spec.applicability.isApplicable()) { return .notApplicable }
+        if provider == .claude, policy.statusLineBlocked { return .blockedByPolicy }
+        if !(applicable ?? Self.isApplicable(settingsURL: settingsURL)) { return .notApplicable }
         return .notInstalled
+    }
+
+    /// The tool is set up here: the folder that holds its settings exists
+    /// (`~/.claude` or the `CLAUDE_CONFIG_DIR` one, `~/.gemini/
+    /// antigravity-cli`). Installing otherwise would create a settings file
+    /// for a tool that isn't there.
+    static func isApplicable(settingsURL: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(
+            atPath: settingsURL.deletingLastPathComponent().path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    // MARK: - Activity
+
+    /// When the tee last ran behind this settings file, and when it last
+    /// saw figures. Written by the tee itself, so it proves the tool really
+    /// runs the status line AgentDeck installed: a managed status line, a
+    /// `CLAUDE_CONFIG_DIR` the app can't see, or a helper the Mac won't run
+    /// all leave the settings looking installed but this unwritten.
+    public struct Heartbeat: Codable, Equatable, Sendable {
+        public var ranAt: Date
+        public var figuresAt: Date?
+
+        public init(ranAt: Date, figuresAt: Date? = nil) {
+            self.ranAt = ranAt
+            self.figuresAt = figuresAt
+        }
+    }
+
+    public enum Activity: Equatable, Sendable {
+        /// Ran since setup and has passed usage figures.
+        case reporting
+        /// Ran since setup but the tool never passed figures (an account
+        /// without subscription limits, such as an API key or a plan that
+        /// doesn't report them).
+        case noFigures
+        /// Not run since setup yet.
+        case waiting
+        /// Not run in the `notRunningAfter` since setup.
+        case notRunning
+    }
+
+    /// Runs without figures for this long mean the account stopped
+    /// reporting them (another login, a plan without limits). Every open
+    /// session of an account with limits passes its cached figures on each
+    /// refresh, so a gap this long isn't an idle session.
+    public static let figuresLapseAfter: TimeInterval = 30 * 60
+
+    /// How long after setup a tee that never ran counts as not running.
+    /// Any status line refresh runs it, and a session refreshes within
+    /// seconds of activity.
+    public static let notRunningAfter: TimeInterval = 10 * 60
+    static let heartbeatInterval: TimeInterval = 60
+
+    static func activity(installedAt: Date?, heartbeat: Heartbeat?, now: Date) -> Activity {
+        let since = installedAt ?? .distantPast
+        if let heartbeat, heartbeat.ranAt >= since {
+            if let figures = heartbeat.figuresAt, figures >= since,
+               heartbeat.ranAt.timeIntervalSince(figures) <= figuresLapseAfter {
+                return .reporting
+            }
+            return .noFigures
+        }
+        if let installedAt, now.timeIntervalSince(installedAt) > notRunningAfter { return .notRunning }
+        return .waiting
+    }
+
+    func heartbeatURL(recordName: String) -> URL {
+        chainDirectory.appendingPathComponent("\(recordName).ran")
+    }
+
+    func loadHeartbeat(recordName: String) -> Heartbeat? {
+        guard let data = try? Data(contentsOf: heartbeatURL(recordName: recordName)) else { return nil }
+        return try? UsageStore.decoder.decode(Heartbeat.self, from: data)
+    }
+
+    /// Notes a run. At most once a minute unless figures first appear:
+    /// the status line can refresh several times a second. Called under
+    /// the usage store's lock, so concurrent tees don't lose `figuresAt`.
+    func noteRun(recordName: String, figures: Bool, now: Date) {
+        guard !recordName.contains("/") else { return }
+        let previous = loadHeartbeat(recordName: recordName)
+        let next = Heartbeat(ranAt: now, figuresAt: figures ? now : previous?.figuresAt)
+        if let previous, now.timeIntervalSince(previous.ranAt) < Self.heartbeatInterval,
+           (previous.figuresAt != nil) == (next.figuresAt != nil) {
+            return
+        }
+        guard let data = try? UsageStore.encoder.encode(next) else { return }
+        let fm = FileManager.default
+        guard (try? fm.createDirectory(at: chainDirectory, withIntermediateDirectories: true,
+                                       attributes: [.posixPermissions: 0o700])) != nil else { return }
+        let temp = chainDirectory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        guard fm.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600])
+        else { return }
+        if rename(temp.path, heartbeatURL(recordName: recordName).path) != 0 {
+            try? fm.removeItem(at: temp)
+        }
+    }
+
+    /// Whether the installed tee behind `provider`'s settings is running
+    /// and reporting. nil when no tee of this install is in place.
+    public func activity(for provider: Provider, settingsURL: URL? = nil, now: Date = Date()) -> Activity? {
+        guard let settingsURL = (settingsURL ?? Self.settingsURL(for: provider))?.resolvingSymlinksInPath()
+        else { return nil }
+        let name = recordName(provider: provider, settingsURL: settingsURL)
+        guard let record = loadRecord(at: chainDirectory.appendingPathComponent(name)) else { return nil }
+        let installedAt = (record["installedAt"] as? Double).map { Date(timeIntervalSince1970: $0) }
+        return Self.activity(installedAt: installedAt, heartbeat: loadHeartbeat(recordName: name), now: now)
     }
 
     /// The original entry, plus whatever the user changed in other fields
@@ -230,9 +353,19 @@ public struct StatusLineTee: Sendable {
     /// nil = nothing to chain (the tee prints nothing).
     public func run(provider: Provider, recordName: String, input: Data, store: UsageStore,
                     claudeAccount: () -> String?, now: Date = Date()) -> ChainRunner.Result? {
-        if var usage = StatusLineCapture.extract(provider: provider, data: input, now: now) {
+        let captured = StatusLineCapture.extract(provider: provider, data: input, now: now)
+        // a run that began before uninstall still chains the user's
+        // command, but records nothing: uninstall has deleted the figures
+        let active = {
+            !recordName.contains("/")
+                && self.loadRecord(at: self.chainDirectory.appendingPathComponent(recordName)) != nil
+        }
+        if var usage = captured {
             if provider == .claude { usage.account = claudeAccount() }
-            _ = try? store.recordUnlessEcho(usage)
+            _ = try? store.recordUnlessEcho(usage, onlyIf: active)
+        }
+        _ = try? store.locked(provider) {
+            if active() { noteRun(recordName: recordName, figures: captured != nil, now: now) }
         }
         guard let chained = chainedCommand(recordName: recordName) else { return nil }
         return ChainRunner.run(command: chained, input: input)
@@ -245,7 +378,7 @@ public struct StatusLineTee: Sendable {
     public func install(_ provider: Provider, settingsURL: URL? = nil,
                         policy: @autoclosure () -> ClaudePolicy = .load()) throws -> Bool {
         guard let requested = settingsURL ?? Self.settingsURL(for: provider) else { return false }
-        if provider == .claude, policy().hooksBlocked { throw TeeError.blockedByPolicy }
+        if provider == .claude, policy().statusLineBlocked { throw TeeError.blockedByPolicy }
         let url = requested.resolvingSymlinksInPath()
         return try HookInstaller.withInstallLock(for: url) {
             let basis = try? Data(contentsOf: url)
@@ -279,6 +412,7 @@ public struct StatusLineTee: Sendable {
                 "provider": provider.rawValue,
                 "settingsPath": url.path,
                 "installedCommand": ours,
+                "installedAt": Date().timeIntervalSince1970,
             ]
             if let current { record["original"] = current } else { record[Self.absentMarker] = true }
             installed["type"] = "command"
@@ -295,6 +429,47 @@ public struct StatusLineTee: Sendable {
             try HookInstaller.backupAndWrite(root, to: url, basis: basis)
             return true
         }
+    }
+
+    /// Uninstalls each provider's tee and deletes its saved figures, which
+    /// nothing will update any more. One line of outcome per provider, and
+    /// whether any failed. Shared by the helper and the app, which runs it
+    /// in-process so the tee can be removed even when the helper can't run.
+    public func uninstallReport(_ providers: [Provider], store: UsageStore,
+                                settingsURL: (Provider) -> URL? = { StatusLineTee.settingsURL(for: $0) })
+        -> (lines: [String], failed: Bool) {
+        var lines: [String] = []
+        var failed = false
+        for provider in providers {
+            let name = provider.spec.displayName
+            do {
+                let url = settingsURL(provider)
+                switch try uninstall(provider, settingsURL: url) {
+                case .restored: lines.append("\(name): original status line restored")
+                case .leftUserChange: lines.append("\(name): status line was changed since; left as it is")
+                }
+                // after the record is retired, under the lock tees record
+                // under, so a run already in flight can't put them back
+                _ = try? store.locked(provider) {
+                    store.removeAllLocked(provider)
+                    if let resolved = url?.resolvingSymlinksInPath() {
+                        try? FileManager.default.removeItem(at: heartbeatURL(
+                            recordName: recordName(provider: provider, settingsURL: resolved)))
+                    }
+                }
+            } catch TeeError.missingRecord(let path) {
+                if status(for: provider, settingsURL: settingsURL(provider), policy: .none) == .orphaned {
+                    lines.append("\(name): \(TeeError.missingRecord(path))")
+                    failed = true
+                } else {
+                    lines.append("\(name): no status line tee installed")
+                }
+            } catch {
+                lines.append("\(name): \(error)")
+                failed = true
+            }
+        }
+        return (lines, failed)
     }
 
     public func uninstall(_ provider: Provider, settingsURL: URL? = nil) throws -> UninstallResult {

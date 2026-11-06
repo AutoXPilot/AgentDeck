@@ -64,10 +64,7 @@ public struct ProviderSpec: Sendable {
         .codex: ProviderSpec(
             provider: .codex, displayName: "Codex", badge: "CX", tint: .teal,
             hooks: HookConfigSpec(
-                fileURL: {
-                    FileManager.default.homeDirectoryForCurrentUser
-                        .appendingPathComponent(".codex/hooks.json")
-                },
+                fileURL: { CodexHome.current.appendingPathComponent("hooks.json") },
                 format: .codexHooks,
                 // Verified against codex-cli 0.145.0: SessionStart/
                 // UserPromptSubmit/Stop/SessionEnd all fire (SessionEnd's
@@ -78,7 +75,7 @@ public struct ProviderSpec: Sendable {
                 events: ["SessionStart", "UserPromptSubmit", "PermissionRequest", "Stop", "SessionEnd"],
                 policyGated: false,
                 installNote: "codex will ask to trust the changed hooks on next launch"),
-            applicability: .requiresHomeDirectory(".codex"),
+            applicability: .requiresCodexHome,
             eventNameOnArgv: false,
             executableMatch: .codex,
             sessionIdIsUUID: true,
@@ -179,6 +176,8 @@ public enum Applicability: Sendable, Equatable {
     case always
     /// Applicable only if this directory under the home folder exists.
     case requiresHomeDirectory(String)
+    /// Applicable only if Codex's folder (`CodexHome`) exists.
+    case requiresCodexHome
 
     public func isApplicable(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
         switch self {
@@ -187,6 +186,8 @@ public enum Applicability: Sendable, Equatable {
         case .requiresHomeDirectory(let relative):
             return FileManager.default.fileExists(
                 atPath: home.appendingPathComponent(relative).path)
+        case .requiresCodexHome:
+            return FileManager.default.fileExists(atPath: CodexHome.directory(home: home).path)
         }
     }
 }

@@ -22,6 +22,23 @@
 
 ### Fixed
 
+- **Usage lines on a managed Mac, or when a source stops reporting.** A
+  line no longer outlives its source: Claude's and agy's show only while
+  their tee is installed and running, any line goes once every window on
+  it has reset or its figures haven't moved for a week, and turning a tee
+  off deletes AgentDeck's saved figures. With the Claude account
+  unreadable, figures filed under an account (possibly a personal one) are
+  no longer shown; Codex shows nothing when its newest record has no
+  subscription figures, instead of an older one. A tee whose account has
+  passed no figures for 30 minutes stops showing the old ones. A Claude policy that sets
+  its own `statusLine` now counts as blocking, and a tee installed before
+  a blocking policy shows as overridden, not installed, unless it has
+  run in the last 10 minutes. The Usage menu
+  says when an installed tee hasn't run since setup or the account reports
+  no figures. Setup says when the Mac won't run the helper rather than
+  calling it too old, and turning the tee off no longer needs the helper.
+  "Show Claude usage…" is hidden when Claude's settings folder doesn't
+  exist. `CODEX_HOME` is honoured when the app can see it.
 - **Codex threads run by Codex's shared app-server daemon (0.166+)** no
   longer point at a dead iTerm pane ("That iTerm2 pane no longer exists").
   Their hooks carry the daemon's pid and the pane it was started from, so

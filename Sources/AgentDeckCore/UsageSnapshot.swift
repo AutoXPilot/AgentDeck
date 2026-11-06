@@ -81,6 +81,21 @@ public struct ProviderUsage: Codable, Equatable, Sendable {
         now.timeIntervalSince(changedAt) > Self.staleAfter
     }
 
+    /// Past this, figures that never moved say nothing about now: the
+    /// longest window (weekly) has turned over at least once since.
+    public static let expireAfter: TimeInterval = 8 * 86400
+
+    /// The figures can no longer describe the current windows: every
+    /// window on the line has reset since they were taken, or they haven't
+    /// moved for over a week. A source that stopped reporting (a tee
+    /// removed or blocked, an account with no limits) would otherwise
+    /// leave its last line up for good.
+    public func isExpired(now: Date) -> Bool {
+        if now.timeIntervalSince(changedAt) > Self.expireAfter { return true }
+        let windows = groups.filter { $0.inLine }.flatMap { [$0.session, $0.weekly] }.compactMap { $0 }
+        return !windows.isEmpty && windows.allSatisfy { $0.resetPassed(now: now) }
+    }
+
     /// Reset times that identify this account's windows.
     var accountResets: Set<Date> {
         var all = Set(recentResets ?? [])
@@ -164,17 +179,40 @@ public struct UsageStore: Sendable {
     /// The record to show and the other accounts' records, for the tooltip.
     /// With a known signed-in account only its record is shown; an
     /// account-less record (written before accounts were tracked) is then
-    /// dropped as unattributable. Without one, the newest record is shown.
+    /// dropped as unattributable. Without one (an API key, or a
+    /// `.claude.json` AgentDeck can't read), only an account-less record
+    /// is shown: one filed under an account might be another person's
+    /// login on this Mac, such as a personal one on a work laptop.
     public static func pick(_ records: [ProviderUsage], signedIn: String?)
         -> (shown: ProviderUsage?, others: [ProviderUsage]) {
-        if let signedIn {
-            let shown = records.first { $0.account == signedIn }
-            let others = records.filter { $0.account != nil && $0.account != signedIn }
-                .sorted { $0.observedAt > $1.observedAt }
-            return (shown, others)
+        guard let signedIn else { return (records.first { $0.account == nil }, []) }
+        let shown = records.first { $0.account == signedIn }
+        let others = records.filter { $0.account != nil && $0.account != signedIn }
+            .sorted { $0.observedAt > $1.observedAt }
+        return (shown, others)
+    }
+
+    /// Deletes every saved record for `provider`, for when its source is
+    /// turned off. They are AgentDeck's own copies of the figures and come
+    /// back on the next report.
+    public func removeAll(_ provider: Provider) throws {
+        try withLock(provider) { removeAllLocked(provider) }
+    }
+
+    func removeAllLocked(_ provider: Provider) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+        else { return }
+        for name in names where name == "\(provider.rawValue).json"
+            || (name.hasPrefix("\(provider.rawValue)-") && name.hasSuffix(".json")) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
         }
-        let sorted = records.sorted { $0.observedAt > $1.observedAt }
-        return (sorted.first, Array(sorted.dropFirst()))
+    }
+
+    /// Runs `body` holding `provider`'s lock, the one every write of its
+    /// figures takes. The tee's heartbeat uses it too, so uninstall can
+    /// delete figures and heartbeat with no tee writing in between.
+    public func locked<T>(_ provider: Provider, _ body: () throws -> T) throws -> T {
+        try withLock(provider, body)
     }
 
     /// Saves `usage` unless it is another account's figures echoed back.
@@ -184,10 +222,14 @@ public struct UsageStore: Sendable {
     /// current one or a recent one), which no other account shares, so
     /// they're dropped rather than filed under the new account. Serialized
     /// per provider: tees run concurrently, one per open session. Returns
-    /// whether anything was written.
+    /// whether anything was written. `allowed` = the tee is still
+    /// installed.
     @discardableResult
-    public func recordUnlessEcho(_ usage: ProviderUsage) throws -> Bool {
+    public func recordUnlessEcho(_ usage: ProviderUsage, onlyIf allowed: () -> Bool = { true }) throws -> Bool {
         try withLock(usage.provider) {
+            // checked under the lock: uninstall retires the tee, then
+            // deletes the figures under this same lock
+            guard allowed() else { return false }
             if usage.account != nil, isEcho(usage, among: loadAll(usage.provider)) { return false }
             let written = try recordLocked(usage)
             if usage.account != nil {

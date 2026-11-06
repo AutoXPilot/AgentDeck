@@ -29,7 +29,7 @@ Sources it understands:
 | Source | How it's seen | Badge |
 |---|---|---|
 | Claude Code CLI | lifecycle hooks in `~/.claude/settings.json` **and** Claude's own registry `~/.claude/sessions/<pid>.json` (hookless discovery) | CL |
-| Codex CLI | hooks in `~/.codex/hooks.json`; `~/.codex/state_5.sqlite` (read-only) for model/effort/tokens | CX |
+| Codex CLI | hooks in `~/.codex/hooks.json`; `~/.codex/state_5.sqlite` (read-only) for model/effort/tokens; `~/.codex` is `$CODEX_HOME` when set (`CodexHome`) | CX |
 | Antigravity CLI (`agy`) | hook set `agentdeck` in `~/.gemini/config/hooks.json`; held `flock` on `~/.gemini/antigravity-cli/presence/<id>.lock` (hookless discovery) | AG |
 | Claude Code in Claude Desktop | same as Claude CLI; host = `/Applications/Claude.app` | CL + "Desktop" |
 | Codex in ChatGPT.app | same Codex hooks fire; host = `/Applications/ChatGPT.app` | CX |
@@ -151,16 +151,24 @@ Usage lines
   only fields stored) and `UsageStore` (`…/AgentDeck/usage/<provider>[-<account>].json`,
   0600; `changedAt` moves only when a figure does; `recordUnlessEcho` drops
   another account's figures re-sent by an idle session; `pick` shows the
-  signed-in account). `ClaudeAccount` (in `ClaudeEnvironment.swift`) reads
-  only `oauthAccount.accountUuid`.
+  signed-in account, or only account-less figures when it's unknown;
+  `isExpired` once every window reset or a week without change;
+  `removeAll` on tee uninstall). `ClaudeAccount` (in
+  `ClaudeEnvironment.swift`) reads only `oauthAccount.accountUuid`.
 - `CodexUsage.swift` — newest `token_count` record across rollouts (exact
-  envelope, `limit_id` `codex`, windows by minutes, tail grows to 8 MB).
+  envelope, `limit_id` `codex`, windows by minutes, tail grows to 8 MB); a
+  newer record with null `rate_limits` or another `limit_id` means not
+  reporting, so nothing shows. `CodexHome.swift` resolves `CODEX_HOME`.
 - `StatusLineCapture.swift` — allow-listed figures from Claude's and agy's
   status line payloads.
 - `StatusLineTee.swift` — tee install/uninstall/status and chain records
-  (`…/AgentDeck/statusline-chain/`); `ChainRunner.swift` runs the user's
-  original command (own process group, stderr kept out, stdin on a thread).
-- `UsageFormat.swift` — line, tooltip and accessibility text.
+  (`…/AgentDeck/statusline-chain/`), plus the heartbeat (`<record>.ran`)
+  each run writes, read back as `Activity` (waiting / not running /
+  no figures / reporting); `uninstallReport` is shared by the helper and
+  the app (in-process). `ChainRunner.swift` runs the user's original
+  command (own process group, stderr kept out, stdin on a thread).
+- `UsageFormat.swift` — line, tooltip and accessibility text; `shows`
+  decides whether a saved record gets a line, `teeNote` the menu note.
 
 Misc: `SnapshotStore.swift` (atomic writes, per-key flock with inode check,
 orphan sweep that keeps files a newer build wrote), `BoundedSubprocess.swift`

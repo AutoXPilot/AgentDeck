@@ -234,7 +234,7 @@ struct SessionListView: View {
     @ViewBuilder
     private var usageSection: some View {
         let now = Date()
-        let lines = Provider.allCases.compactMap { model.usage[$0] }
+        let lines = Provider.allCases.compactMap { model.visibleUsage($0, now: now) }
             .filter { !UsageFormat.lineGroups($0).isEmpty }
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
@@ -351,9 +351,14 @@ struct SessionListView: View {
         Section("Usage") {
             ForEach(StatusLineTee.providers, id: \.self) { provider in
                 let name = UsageFormat.name(provider)
-                switch model.teeStatus[provider] ?? .notApplicable {
-                case .installed:
+                let status = model.teeStatus[provider] ?? .notApplicable
+                switch status {
+                case .installed, .overriddenByPolicy:
                     Button("Stop reading \(name) usage") { model.setUsageTee(provider, on: false) }
+                    if let note = UsageFormat.teeNote(provider, status: status,
+                                                      activity: model.teeActivity[provider]) {
+                        Text(note)
+                    }
                 case .notInstalled:
                     Button("Show \(name) usage (adds to its status line)…") {
                         model.setUsageTee(provider, on: true)

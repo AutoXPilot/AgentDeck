@@ -13,6 +13,9 @@ public struct ClaudePolicy: Equatable, Sendable {
     /// `allowManagedHooksOnly`, or `disableAllHooks` at the managed level:
     /// hooks AgentDeck adds to the user's settings would never run.
     public var hooksBlocked = false
+    /// Policy sets its own `statusLine`. Managed settings outrank the
+    /// user's, so a status line AgentDeck writes there wouldn't run.
+    public var statusLineManaged = false
     /// `permissions.disableBypassPermissionsMode = "disable"`.
     public var bypassPermissionsDisabled = false
     /// `permissions.disableAutoMode = "disable"`.
@@ -81,6 +84,7 @@ public struct ClaudePolicy: Equatable, Sendable {
             if truthy(dict["allowManagedHooksOnly"]) || truthy(dict["disableAllHooks"]) {
                 policy.hooksBlocked = true
             }
+            if let line = dict["statusLine"], !(line is NSNull) { policy.statusLineManaged = true }
             let permissions = dict["permissions"] as? [String: Any] ?? [:]
             if (permissions["disableBypassPermissionsMode"] as? String) == "disable" {
                 policy.bypassPermissionsDisabled = true
@@ -106,6 +110,11 @@ public struct ClaudePolicy: Equatable, Sendable {
         default: return false
         }
     }
+
+    /// A status line in the user's settings wouldn't run: hooks are off
+    /// (managed `disableAllHooks` stops the status line too), only managed
+    /// ones run, or policy brings its own.
+    public var statusLineBlocked: Bool { hooksBlocked || statusLineManaged }
 
     /// Permission modes this policy refuses, so restore never builds a
     /// command Claude Code would reject.

@@ -35,8 +35,7 @@ public struct CodexThread: Equatable, Sendable {
 
 public enum CodexThreads {
     public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/state_5.sqlite")
+        CodexHome.current.appendingPathComponent("state_5.sqlite")
     }
 
     /// `title` is not selected — see the note on `CodexThread`. Keeping it

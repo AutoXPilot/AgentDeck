@@ -219,7 +219,8 @@ buckets.
 Rollouts name no account, and a `premium` record with null windows can
 follow the subscription one, so the reader selects `limit_id == "codex"`
 (or none, for older records) and looks past files without a record. The
-tooltip says the account isn't verified.
+tooltip says the account isn't verified. A newer record that reports no
+subscription figures ends the search (see below).
 
 **Claude figures are filed per account.** (Unreleased)
 Tony switches between two Claude accounts with `/login`, which moves
@@ -231,6 +232,43 @@ drops a record that exactly matches another account's (same percent and
 reset time). The line shows the signed-in account only, others go in
 the tooltip. Codex accounts still aren't told apart: its records carry no
 account.
+
+**A line goes when its source stops, rather than showing what it last
+saw.** (Unreleased)
+Codex Astra and Fable reviewed the corporate-laptop case and found that
+saved figures outlived their source indefinitely (a tee removed or
+overridden, an account with no limits), and that with the account
+unknown the newest record of any account was shown, so a personal login's
+figures could appear on a work laptop. Now:
+- Claude's and agy's lines need the tee installed, not overridden by
+  policy, and a heartbeat the tee writes itself showing it ran and saw
+  figures since setup. The heartbeat is the only evidence that covers
+  what the app can't see: a `CLAUDE_CONFIG_DIR` exported only in a shell,
+  a managed status line, a helper the Mac won't run.
+- Any line expires once every window on it has reset, or after a week
+  without a change.
+- An unknown Claude account shows only account-less figures.
+- Codex: a newer record with `rate_limits` null or without windows, or a
+  `limit_id` other than `codex`/`premium`, means "not reporting" and hides
+  older figures. Showing nothing is preferred to showing a figure that may
+  be another account's. A plain miss (the 20 newest rollouts have no
+  record, as after a run of short `codex exec` threads) still keeps the
+  last figure until it expires.
+- A tee whose runs have carried no figures for 30 minutes counts as "no
+  figures": an account with limits passes its cached figures on every
+  refresh, idle sessions included.
+- A policy reading AgentDeck treats as blocking gives way to evidence: a
+  tee that ran in the last 10 minutes counts as installed, since a
+  managed `statusLine` overriding the user's is assumed, not observed.
+- The tee records nothing once its chain record is retired, checked under
+  the usage store's lock, and uninstall deletes figures and heartbeat
+  under that lock, so a refresh in flight can't put them back.
+- Turning a tee off deletes the saved figures (they're AgentDeck's copies
+  and come back with the next report), and runs in-process so it works
+  when the helper is blocked.
+Rejected: inferring "not running" from session activity, since `claude -p`
+and Desktop sessions fire hooks without running a status line. The menu
+reports "hasn't run in the 10 minutes since setup" instead.
 
 **No pace prediction yet.** (Unreleased)
 "Runs out in…" from one sample is a guess until attribution and

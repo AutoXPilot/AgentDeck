@@ -253,17 +253,36 @@ func teeProviders(_ argument: String?) -> [Provider]? {
     }
 }
 
-/// The stable helper must understand `statusline` before a settings file
-/// points at it, or the status line runs a command that prints usage text.
-func stableHelperSupportsStatusLine() -> Bool {
+/// The stable helper must run, and understand `statusline`, before a
+/// settings file points at it: the status line runs only the helper, and
+/// the user's own command runs behind it. nil = ready, else why not.
+func stableHelperStatusLineProblem() -> String? {
+    let path = stableHelperURL.path
+    guard FileManager.default.isExecutableFile(atPath: path) else {
+        return "the helper at \(path) is missing; run `agentdeck-hook install` first"
+    }
     let process = Process()
     process.executableURL = stableHelperURL
     process.arguments = ["statusline-supported"]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
-    guard (try? process.run()) != nil else { return false }
+    do {
+        try process.run()
+    } catch {
+        return "this Mac won't run the helper at \(path) (\(error.localizedDescription)); "
+            + "if it's managed, its security settings may block unsigned tools, and your status "
+            + "line would stop with it — nothing was changed"
+    }
     process.waitUntilExit()
-    return process.terminationStatus == 0
+    if process.terminationReason == .uncaughtSignal {
+        return "the helper at \(path) was stopped by signal \(process.terminationStatus) "
+            + "when started; a security tool may be blocking it, and your status line would "
+            + "stop with it — nothing was changed"
+    }
+    guard process.terminationStatus == 0 else {
+        return "the helper at \(path) is too old for this; run `agentdeck-hook install` first"
+    }
+    return nil
 }
 
 func runStatusLineInstall(_ argument: String?) -> Never {
@@ -271,9 +290,8 @@ func runStatusLineInstall(_ argument: String?) -> Never {
         print("usage: agentdeck-hook statusline-install <claude|antigravity|all>")
         exit(64)
     }
-    guard stableHelperSupportsStatusLine() else {
-        print("the helper at \(stableHelperURL.path) is missing or too old; "
-            + "run `agentdeck-hook install` first")
+    if let problem = stableHelperStatusLineProblem() {
+        print(problem)
         exit(1)
     }
     let tee = StatusLineTee(helperPath: stableHelperURL.path)
@@ -284,7 +302,7 @@ func runStatusLineInstall(_ argument: String?) -> Never {
         case .notApplicable:
             print("\(name): not set up on this Mac — skipped")
             continue
-        case .blockedByPolicy:
+        case .blockedByPolicy, .overriddenByPolicy:
             print("\(name): \(StatusLineTee.TeeError.blockedByPolicy)")
             continue
         default: break
@@ -306,27 +324,9 @@ func runStatusLineUninstall(_ argument: String?) -> Never {
         exit(64)
     }
     let tee = StatusLineTee(helperPath: stableHelperURL.path)
-    var failed = false
-    for provider in providers {
-        let name = provider.spec.displayName
-        do {
-            switch try tee.uninstall(provider) {
-            case .restored: print("\(name): original status line restored")
-            case .leftUserChange: print("\(name): status line was changed since; left as it is")
-            }
-        } catch StatusLineTee.TeeError.missingRecord(let path) {
-            if tee.status(for: provider, policy: .none) == .orphaned {
-                print("\(name): \(StatusLineTee.TeeError.missingRecord(path))")
-                failed = true
-            } else {
-                print("\(name): no status line tee installed")
-            }
-        } catch {
-            print("\(name): \(error)")
-            failed = true
-        }
-    }
-    exit(failed ? 1 : 0)
+    let report = tee.uninstallReport(providers, store: UsageStore(directory: UsageStore.productionDirectory))
+    report.lines.forEach { print($0) }
+    exit(report.failed ? 1 : 0)
 }
 
 func runStatusLineStatus() -> Never {

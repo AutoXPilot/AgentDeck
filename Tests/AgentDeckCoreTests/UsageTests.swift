@@ -104,14 +104,19 @@ struct CodexUsageTests {
         #expect(reader.load()?.groups.first?.session?.usedPercent == 70)
     }
 
-    @Test func aMissKeepsThePreviousObservation() throws {
+    @Test func aMissKeepsTheLastFigureUntilARecordSaysNotReporting() throws {
         let dir = try temporaryDirectory()
         let url = dir.appendingPathComponent("rollout-a.jsonl")
         try Data((tokenCount() + "\n").utf8).write(to: url)
         let reader = CodexUsage.Reader(directory: dir)
         #expect(reader.load() != nil)
+        // newest files without a record (short exec threads): keep it
         try Data((userMessage + "\n").utf8).write(to: url)
         #expect(reader.load()?.groups.first?.weekly?.usedPercent == 91)
+        // a newer record from an account that reports nothing: drop it
+        let notReporting = #"{"timestamp":"2026-11-03T02:00:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":null}}"#
+        try Data((notReporting + "\n").utf8).write(to: dir.appendingPathComponent("rollout-b.jsonl"))
+        #expect(reader.load() == nil)
     }
 }
 
@@ -260,8 +265,12 @@ struct UsageAccountTests {
         #expect(picked.others == [b])
         // signed in to an account with no record yet: no line, not the other's
         #expect(UsageStore.pick([a], signedIn: "cccc3333").shown == nil)
-        // account unknown: the newest record
-        #expect(UsageStore.pick([a, b], signedIn: nil).shown == b)
+        // account unknown: never a record filed under an account, which
+        // could be another login's (a personal one on a work Mac)
+        #expect(UsageStore.pick([a, b], signedIn: nil).shown == nil)
+        #expect(UsageStore.pick([a, b], signedIn: nil).others.isEmpty)
+        // only a record that couldn't name its account either
+        #expect(UsageStore.pick([a, b, legacy], signedIn: nil).shown == legacy)
     }
 
     @Test func anAttributedRecordRetiresTheAccountlessFile() throws {

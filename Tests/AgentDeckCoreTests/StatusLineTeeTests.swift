@@ -326,7 +326,12 @@ struct StatusLineTeeReviewTests {
         try tee.install(.claude, settingsURL: url, policy: .none)
         var blocked = ClaudePolicy()
         blocked.hooksBlocked = true
-        #expect(tee.status(for: .claude, settingsURL: url, policy: blocked, applicable: true) == .installed)
+        // not "installed": the policy means it no longer runs
+        #expect(tee.status(for: .claude, settingsURL: url, policy: blocked, applicable: true)
+                == .overriddenByPolicy)
+        #expect(try tee.uninstall(.claude, settingsURL: url) == .restored)
+        #expect((try HookInstaller.readJSONObject(at: url)["statusLine"] as? [String: Any])?["command"]
+                as? String == "echo mine")
     }
 
     @Test func aTeeRunRecordsUnderTheAccountAndPrintsTheUsersLine() throws {
