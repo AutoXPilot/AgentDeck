@@ -97,6 +97,7 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | An ad-hoc-signed app can't use `UNUserNotificationCenter` (it needs a real signing identity), so AgentDeck falls back to `osascript display notification`. | observed |
 | Automation and notification grants are keyed to the app's identity: keep a stable `--identifier` so grants survive rebuilds. | observed |
 | Gatekeeper rejects the ad-hoc build when downloaded (quarantined); a local build runs because it was never quarantined. | observed (`spctl --assess` → rejected) |
+| `syspolicyd` can segfault in its scan when an executable has been deleted, and repeated crashes take it down for up to about 20 minutes. Tests keep their executables for this reason; see `ProcessFixtures`. | observed on macOS 26.6 (25G72), 2026-11-06: 21 crashes in `SecStaticCode` validation, clustered with test runs that deleted temporary executables; restart gaps grew 72s, 156s, 311s, 598s, then about 1,200s; all 54 hook runs over 5s started during a gap. The deleted-file trigger and why launches wait on it are inferred. |
 
 ## Live checks still owed
 
