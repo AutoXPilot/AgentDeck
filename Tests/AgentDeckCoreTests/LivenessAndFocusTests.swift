@@ -417,7 +417,11 @@ struct LivenessAndFocusTests {
         #expect(ProcessTree.launchPath(of: 0) == nil)
     }
 
-    @Test func executablePathSurvivesTheBinaryBeingDeleted() throws {
+    // Opt-in: deleting an executable that just ran is the pattern that
+    // crashed syspolicyd (see platform-facts.md). AGENTDECK_RISKY_TESTS=1
+    // runs it; do that alone, not in a loop.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["AGENTDECK_RISKY_TESTS"] == "1"))
+    func executablePathSurvivesTheBinaryBeingDeleted() throws {
         // The real condition, not a hypothetical: Claude Code installs each
         // release as `versions/<version>` and prunes old ones on update, so
         // a long-running session executes a binary that no longer exists

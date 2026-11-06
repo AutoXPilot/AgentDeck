@@ -22,6 +22,10 @@ invariants, how to verify a change, how to release. It links to
 macOS actually do). README's "How it works" describes the same design as
 users see it.
 
+A test that runs an executable it created must not delete it: use
+`ProcessFixtures`, which keeps them. Deleting one soon after it ran is
+suspected of crashing `syspolicyd`, which hung launches across the machine.
+
 Ground rules learned the hard way (each has a regression test — keep them
 passing):
 
