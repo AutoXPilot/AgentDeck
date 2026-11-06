@@ -285,3 +285,69 @@ struct SessionPipelineTests {
         #expect(row?.hostKind == nil && row?.hostBundlePath == nil)
     }
 }
+
+/// Claude Code 2.1.319 keeps a pre-warmed worker ready for background jobs.
+/// It fires SessionStart, so it has a snapshot, but no conversation or pane.
+struct SpareWorkerTests {
+    let now = Date(timeIntervalSince1970: 1_785_000_000)
+    let id = "a5ad250a-3c0f-4a92-8fe8-dda14e391026"
+
+    private func snapshot(_ provider: Provider = .claude, state: SessionState = .ready) -> SessionSnapshot {
+        SessionSnapshot(provider: provider, sessionId: id, projectPath: "/p", state: state,
+                        event: "SessionStart", updatedAt: now, agentPid: 18733)
+    }
+
+    private func entry(spare: Bool) -> ClaudeSessionRegistry.Entry {
+        ClaudeSessionRegistry.Entry(pid: 18733, sessionId: id, status: "idle", name: "a5ad250a",
+                                    kind: "bg", isSpare: spare, cwd: "/p", statusUpdatedAt: now)
+    }
+
+    private func run(_ snapshots: [SessionSnapshot], registry: [Int32: ClaudeSessionRegistry.Entry] = [:],
+                     live: [String: ClaudeSessionRegistry.Entry] = [:]) -> SessionPipeline.Output {
+        SessionPipeline.run(snapshots: snapshots, registry: registry, liveSessions: live,
+                            acks: [:], frozenOrder: nil, popoverVisible: false, now: now)
+    }
+
+    @Test func parsesTheSpareFlag() throws {
+        let json = #"{"pid":18733,"sessionId":"x","status":"idle","kind":"bg","spare":true}"#
+        #expect(try #require(ClaudeSessionRegistry.parse(Data(json.utf8))).isSpare)
+        let plain = #"{"pid":18733,"sessionId":"x","status":"idle","kind":"bg"}"#
+        #expect(try #require(ClaudeSessionRegistry.parse(Data(plain.utf8))).isSpare == false)
+    }
+
+    @Test func aSpareHasNoRowFromItsSnapshotOrFromDiscovery() {
+        let e = entry(spare: true)
+        #expect(run([snapshot()], live: [id: e]).rows.isEmpty)
+        #expect(run([snapshot()], registry: [18733: e]).rows.isEmpty)
+        #expect(run([], live: [id: e]).rows.isEmpty)
+    }
+
+    @Test func aSpareIsNotCounted() {
+        let out = run([snapshot(state: .done)], live: [id: entry(spare: true)])
+        #expect(out.doneCount == 0)
+        #expect(out.alertCount == 0)
+    }
+
+    @Test func aWorkerThatTookAJobGetsItsRowBack() {
+        #expect(run([snapshot()], live: [id: entry(spare: false)]).rows.count == 1)
+    }
+
+    @Test func aStaleSpareFileDoesNotHideALiveSession() {
+        // the worker's old file survives; the session now runs elsewhere
+        let stale = entry(spare: true)
+        var current = entry(spare: false)
+        current.pid = 20000
+        var moved = snapshot(state: .done)
+        moved.agentPid = 20000
+        moved.terminalSessionId = "w0t0p0:ABC"
+        let row = run([moved], registry: [18733: stale, 20000: current], live: [id: current]).rows.first
+        #expect(row?.state == .done)
+        #expect(row?.terminalSessionId == "w0t0p0:ABC")
+        // and with no live entry, a file at another pid says nothing
+        #expect(run([moved], registry: [18733: stale]).rows.count == 1)
+    }
+
+    @Test func anotherProvidersIdIsNotHidden() {
+        #expect(run([snapshot(.codex)], live: [id: entry(spare: true)]).rows.map(\.provider) == [.codex])
+    }
+}

@@ -22,6 +22,14 @@
 
 ### Fixed
 
+- **Claude's spare background workers no longer get a row.** Claude keeps a
+  pre-warmed worker ready for background jobs, and it showed up as an
+  unclickable row named after its id.
+- **agy rows show the conversation's name** (a `/rename`, or the title agy
+  generated) instead of the pane's "agy". Read from agy's annotation file
+  at launch, on popover open and every 15 seconds; it's kept in memory for
+  the row only, so
+  notifications still use the pane title or folder.
 - **Usage lines on a managed Mac, or when a source stops reporting.** A
   line no longer outlives its source: Claude's and agy's show only while
   their tee is installed and running, any line goes once every window on

@@ -89,7 +89,12 @@ kept; the row shows a category taken from `terminationReason`
 (`~/.gemini/antigravity-cli/`) AgentDeck reads only the names of
 `presence/*.lock` and whether a process holds each one, the workspace →
 conversation map in `cache/last_conversations.json`, and whether
-`conversations/<id>.db` exists and when it last changed (never opened). It never reads
+`conversations/<id>.db` exists and when it last changed (never opened), and
+the `title` field of `annotations/<id>.pbtxt` for the row's name. That title
+is what you set with `/rename`, or otherwise one agy generated from the
+conversation, and nothing in the file says which, so it can summarise your
+prompts. AgentDeck keeps it in memory for the row on screen only: it isn't
+saved, logged, or put in a notification. AgentDeck never reads
 `history.jsonl` (your prompts), the conversation databases,
 `conversation_summaries.db`, `brain/` or agy's logs.
 
@@ -280,6 +285,10 @@ preferring whichever observation is newer. That registry also supplies the
 session name and the reason a session is blocked. Codex rows read
 `~/.codex/session_index.jsonl` and `~/.codex/state_5.sqlite` (read-only) for
 names, model, effort, token totals, branch and approval mode.
+
+Claude also keeps a spare worker ready for background jobs. It registers
+like a session but has no conversation or pane, so it gets no row until a
+job takes it.
 
 Two kinds of session have no such second source, so their `waiting` clears
 only on the next hook event and can read stale in between: Codex sessions

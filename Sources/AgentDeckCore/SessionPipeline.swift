@@ -29,7 +29,19 @@ public enum SessionPipeline {
         now: Date = Date()
     ) -> Output {
         var reasons: [String: String] = [:]
-        let normalized: [SessionSnapshot] = snapshots.map { snapshot in
+        // A spare worker still fires SessionStart, so it has a snapshot as
+        // well as a registry entry, but there's nothing behind it to show
+        // or focus. Only Claude's: a Codex id can collide with one. The live
+        // entry decides; registry files outlive their processes, so another
+        // counts only for the pid this snapshot names and with no live entry.
+        func isSpare(_ snapshot: SessionSnapshot) -> Bool {
+            guard snapshot.provider == .claude else { return false }
+            if let live = liveSessions[snapshot.sessionId] { return live.isSpare }
+            guard let pid = snapshot.agentPid, let entry = registry[pid],
+                  entry.sessionId == snapshot.sessionId else { return false }
+            return entry.isSpare
+        }
+        let normalized: [SessionSnapshot] = snapshots.filter { !isSpare($0) }.map { snapshot in
             // A snapshot whose ancestor walk
             // failed has no pid at all, and one resumed into a new process
             // has a stale one; either way a pid-only lookup missed the
@@ -85,6 +97,7 @@ public enum SessionPipeline {
         // added only where no row exists for that session id.
         let known = Set(normalized.map(\.key))
         let discovered: [SessionSnapshot] = liveSessions.values
+            .filter { !$0.isSpare }
             .map(StateReconciler.discoveredSnapshot(from:))
             .filter { !known.contains($0.key) }
             .map { row in

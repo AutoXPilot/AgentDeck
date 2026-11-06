@@ -22,6 +22,10 @@ public enum ClaudeSessionRegistry {
         public var nameSource: String?
         /// "interactive" | "bg" | "daemon" | "daemon-worker"
         public var kind: String?
+        /// A pre-warmed worker Claude's background supervisor keeps ready
+        /// for its next job: a process and a session id, but no conversation
+        /// and no pane. The key goes when a job takes the worker.
+        public var isSpare: Bool
         /// The session's working directory. Durable across a reboot and the
         /// only thing besides `sessionId` that resuming needs.
         public var cwd: String?
@@ -38,7 +42,7 @@ public enum ClaudeSessionRegistry {
         public init(
             pid: Int32, sessionId: String, status: String, waitingFor: String? = nil,
             name: String? = nil, nameSource: String? = nil, kind: String? = nil,
-            cwd: String? = nil, startedAt: Date? = nil,
+            isSpare: Bool = false, cwd: String? = nil, startedAt: Date? = nil,
             statusUpdatedAt: Date? = nil, fileModifiedAt: Date? = nil
         ) {
             self.pid = pid
@@ -48,6 +52,7 @@ public enum ClaudeSessionRegistry {
             self.name = name
             self.nameSource = nameSource
             self.kind = kind
+            self.isSpare = isSpare
             self.cwd = cwd
             self.startedAt = startedAt
             self.statusUpdatedAt = statusUpdatedAt
@@ -88,6 +93,7 @@ public enum ClaudeSessionRegistry {
             name: dict["name"] as? String,
             nameSource: dict["nameSource"] as? String,
             kind: dict["kind"] as? String,
+            isSpare: dict["spare"] as? Bool == true,
             cwd: (dict["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             startedAt: started.map { Date(timeIntervalSince1970: $0 / 1000) },
             statusUpdatedAt: stamp.map { Date(timeIntervalSince1970: $0 / 1000) },

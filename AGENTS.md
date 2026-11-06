@@ -99,9 +99,11 @@ Providers and payloads
 Discovery, liveness, state
 - `ClaudeSessionRegistry.swift` — reads `~/.claude/sessions/*.json`,
   live-filters (start time + looks-like-claude), `StateReconciler` (registry
-  vs hook, newer wins; a newer registry wait is a new wait).
+  vs hook, newer wins; a newer registry wait is a new wait). `isSpare` marks
+  a pre-warmed background worker, which `SessionPipeline` gives no row.
 - `AntigravityState.swift` — non-blocking `flock` probe of presence locks,
-  `last_conversations.json` for an unambiguous cwd.
+  `last_conversations.json` for an unambiguous cwd, and the `title` of
+  `annotations/<id>.pbtxt` (on-screen only; see Invariants).
 - `Liveness.swift` — what to delete: dead/reused pids, superseded after
   `/clear`, 24 h idle for pid-less or app-hosted-Codex rows, 7 days idle
   only where a live pid's start time can't be read; confirmed-live keys
@@ -181,6 +183,10 @@ orphan sweep that keeps files a newer build wrote), `BoundedSubprocess.swift`
   prompts, responses, tool arguments (`lastUserInput`, `toolCall.args`,
   Codex `threads.title`, agy `history.jsonl`, Desktop `local_*.json` titles).
   Tests plant marker strings and assert they never reach a snapshot or log.
+  One exception: agy's `annotations/<id>.pbtxt` `title` (a `/rename`, or a
+  title agy generated) is shown on the row, held in memory only. Never
+  store, log or notify it; a render includes it only with
+  `AGENTDECK_RENDER_AGY_TITLES=1`.
 - **User configs:** only `HookInstaller` writes `~/.claude/settings.json`,
   `~/.codex/hooks.json`, `~/.gemini/config/hooks.json`, always with a backup
   and only AgentDeck's own entries/set. Never write a managed policy.

@@ -44,6 +44,9 @@ final class SessionsModel: ObservableObject {
     private var paneByTTY: [String: String] = [:]
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
+    /// agy conversation titles, for the row on screen only: see
+    /// `AntigravityState.conversationTitles`.
+    @Published private(set) var agyTitles: [String: String] = [:]
     @Published private(set) var codexThreads: [String: CodexThread] = [:]
     /// thread id → the client that started it (`codex-tui`, `Codex Desktop`).
     private var codexOriginators: [String: String] = [:]
@@ -191,6 +194,10 @@ final class SessionsModel: ObservableObject {
         loadAcks()
         if forRendering {
             readOnly = true
+            // off by default: a render is a file, and these stay on screen
+            if ProcessInfo.processInfo.environment["AGENTDECK_RENDER_AGY_TITLES"] != nil {
+                agyTitles = AntigravityState.conversationTitles()
+            }
             // twice: the first applies auto-acknowledgements, the second
             // sorts with them, as consecutive reloads do in the app
             reload()
@@ -299,9 +306,13 @@ final class SessionsModel: ObservableObject {
         }
     }
 
+    /// Usage, and agy's titles: both are small reads wanted on the same
+    /// beat (launch, popover open, each sweep), kept off the main thread.
     private func loadUsageAsync() {
         let reader = codexUsage
+        let wantsTitles = !readOnly
         usageQueue.async {
+            let titles = wantsTitles ? AntigravityState.conversationTitles() : nil
             var loaded: [Provider: ProviderUsage] = [:]
             var others: [Provider: [ProviderUsage]] = [:]
             if let codex = reader.load() { loaded[.codex] = codex }
@@ -316,6 +327,7 @@ final class SessionsModel: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.usage != loaded { self.usage = loaded }
+                if let titles, titles != self.agyTitles { self.agyTitles = titles }
                 if self.otherAccountUsage != others { self.otherAccountUsage = others }
             }
         }
@@ -618,8 +630,10 @@ final class SessionsModel: ObservableObject {
 
     /// Row title, best available. Claude publishes a session name in its
     /// registry (cleaner than the tab title and available outside iTerm);
-    /// Codex publishes one in its session index.
-    func title(for snapshot: SessionSnapshot) -> String {
+    /// Codex publishes one in its session index; agy keeps one per
+    /// conversation. `onScreen: false` leaves agy's out, for text that
+    /// leaves this process: it may be generated from prompts.
+    func title(for snapshot: SessionSnapshot, onScreen: Bool = true) -> String {
         if let desktop = desktopLabel(for: snapshot) { return desktop.title }
         if snapshot.provider == .claude, let pid = snapshot.agentPid,
            let entry = claudeRegistry[pid], entry.sessionId == snapshot.sessionId,
@@ -630,6 +644,9 @@ final class SessionsModel: ObservableObject {
            let name = codexNames[snapshot.sessionId], !name.isEmpty {
             // only `/rename` — the sqlite title is the first user message
             // when a thread was never renamed, so it is never consulted
+            return name
+        }
+        if onScreen, snapshot.provider == .antigravity, let name = agyTitles[snapshot.sessionId] {
             return name
         }
         if let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId),
@@ -1140,7 +1157,7 @@ final class SessionsModel: ObservableObject {
             // A dismissal is "I know, leave me alone" — respect it.
             guard needsAttention(snapshot) else { continue }
             let heading = "\(snapshot.provider.displayName) is waiting on you"
-            var body = title(for: snapshot)
+            var body = title(for: snapshot, onScreen: false)
             if let reason = waitingReasons[key] { body += " — \(reason)" }
             post(title: heading, body: body, key: key)
             posted.append(key)

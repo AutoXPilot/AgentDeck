@@ -572,3 +572,108 @@ struct AntigravityLivenessTests {
         #expect(capture(noFolder) == nil)
     }
 }
+
+struct AntigravityTitleTests {
+    let id = "c3f378f8-90e1-43ea-875a-a49794f32b55"
+
+    private func folder() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentdeck-agy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("annotations"), withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func title(_ text: String) -> String? {
+        AntigravityState.title(fromAnnotation: Data(text.utf8))
+    }
+
+    /// Shapes from agy 1.4.12–1.5.2 annotations; values synthetic.
+    @Test func readsTheTitleAndNothingElse() {
+        #expect(title(#"title:"trip planning""#) == "trip planning")
+        #expect(title("title:\"trip planning\"\nlast_user_view_time:{seconds:1793767480 nanos:5}\n") == "trip planning")
+        #expect(title(#"last_user_view_time:{seconds:1} title:"after""#) == "after")
+        #expect(title("last_user_view_time:{seconds:1}\n") == nil)
+    }
+
+    @Test func onlyTheTopLevelTitleCounts() {
+        #expect(title(#"nested:{title:"SECRET-INNER"}"#) == nil)
+        #expect(title(#"subtitle:"SECRET-OTHER""#) == nil)
+        #expect(title(#"note:"title:\"SECRET-QUOTED\"""#) == nil)
+        #expect(title(#"note:'title:"SECRET-QUOTED"'"#) == nil)
+        #expect(title(#"nested:{title:"SECRET-INNER"} title:"real""#) == "real")
+    }
+
+    @Test func undoesEscapesAndKeepsTheRowOneLine() {
+        #expect(title(#"title:"say \"hi\" \\ there""#) == #"say "hi" \ there"#)
+        #expect(title(#"title:"caf\303\251""#) == "café")
+        #expect(title("title:\"café\"") == "café")
+        #expect(title(#"title:"one\ntwo\tthree""#) == "one two three")
+        #expect(title(#"title:"\033[31mred""#) == "[31mred")
+        #expect(title(#"title:"   ""#) == nil)
+        #expect(title(#"title:"\377""#) == nil)   // not UTF-8
+        #expect(title("title:\"" + String(repeating: "x", count: 500) + "\"")?.count == AntigravityState.maxTitleLength)
+    }
+
+    @Test func decodesEveryTextFormatEscape() {
+        #expect(title(#"title:"caf\xC3\xA9""#) == "café")
+        #expect(title(#"title:"caf\u00e9""#) == "café")
+        #expect(title(#"title:"\U0001F600 ok""#) == "😀 ok")
+        #expect(title(#"title:"a\ab\bc\fd\ve""#) == "a b c d e")
+        #expect(title(#"title:"\uD800x""#) == "\u{FFFD}x")   // a lone surrogate
+    }
+
+    @Test func joinsFragmentsAndSkipsComments() {
+        #expect(title(#"title:"trip " 'plan'"#) == "trip plan")
+        #expect(title("title: # a comment\n \"after\"") == "after")
+        #expect(title("title # a comment\n : \"after\"") == "after")
+    }
+
+    @Test func malformedInputGivesNoTitle() {
+        #expect(title(#"} nested:{title:"SECRET-INNER"}"#) == nil)
+        #expect(title(#"} title:"SECRET-STRAY""#) == nil)
+        #expect(title(#"title:"SECRET-HALF"#) == nil)
+        #expect(title(#"title:"whole" "SECRET-HALF"#) == nil)
+        #expect(title(#"note:"never closes title:"x""#) == nil)
+    }
+
+    @Test func directionOverridesCannotReorderTheRow() {
+        #expect(title("title:\"a\u{202E}b\u{2066}c\"") == "abc")
+    }
+
+    @Test func readsOnlyConversationAnnotationFiles() throws {
+        let dir = try folder()
+        let annotations = dir.appendingPathComponent("annotations")
+        try Data(#"title:"mine""#.utf8).write(to: annotations.appendingPathComponent("\(id.uppercased()).pbtxt"))
+        try Data(#"title:"no""#.utf8).write(to: annotations.appendingPathComponent("not-a-uuid.pbtxt"))
+        try Data(#"title:"no""#.utf8).write(to: annotations.appendingPathComponent("5b9afd2c-1029-42c8-971d-db7e6213cac0.txt"))
+        #expect(AntigravityState.conversationTitles(directory: dir) == [id: "mine"])
+    }
+
+    @Test func aLinkOrAnOversizedFileIsNotRead() throws {
+        let dir = try folder()
+        let annotations = dir.appendingPathComponent("annotations")
+        let elsewhere = dir.appendingPathComponent("elsewhere")
+        try Data(#"title:"SECRET-LINKED""#.utf8).write(to: elsewhere)
+        try FileManager.default.createSymbolicLink(
+            at: annotations.appendingPathComponent("\(id).pbtxt"), withDestinationURL: elsewhere)
+        let big = #"title:"SECRET-BIG""# + String(repeating: " ", count: AntigravityState.maxAnnotationBytes)
+        try Data(big.utf8).write(to: annotations.appendingPathComponent("5b9afd2c-1029-42c8-971d-db7e6213cac0.pbtxt"))
+        #expect(AntigravityState.conversationTitles(directory: dir).isEmpty)
+    }
+
+    @Test func noAnnotationsFolderMeansNoTitles() {
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("agentdeck-none-\(UUID().uuidString)")
+        #expect(AntigravityState.conversationTitles(directory: missing).isEmpty)
+    }
+
+    /// A title may be generated from prompts, so a name passed in for an
+    /// agy row must not reach the saved workspace.
+    @Test func aWorkspaceEntryNeverCarriesAName() throws {
+        let row = SessionSnapshot(provider: .antigravity, sessionId: id, projectPath: "/Users/me/Code",
+                                  state: .ready, event: "Stop", updatedAt: Date())
+        let entry = try #require(WorkspaceCapture.entry(
+            for: row, registry: nil, transcriptSessionKind: nil, codexName: "SECRET-TITLE", terminal: .iTerm, now: Date()))
+        #expect(entry.displayName == nil)
+    }
+}

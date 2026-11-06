@@ -191,6 +191,15 @@ AgentDeck more careful. Only Claude's hooks are gated by Claude's policy;
 Codex and agy are unaffected and the installer continues past a blocked
 Claude.
 
+**agy rows show the annotation title, generated or not.** (Unreleased)
+agy saves `/rename` to `annotations/<id>.pbtxt`, the same field it writes
+its own generated title to, with nothing to tell them apart; the only
+record of renames is `history.jsonl`, which holds prompts. Tony chose to
+show the field so renames work and every row has a name, accepting that a
+generated title summarises prompts. It stays on screen: in memory only,
+never in a snapshot, workspace, log or notification (Notification Center
+keeps what it's given). Restore therefore has no agy names.
+
 ## Usage lines
 
 **Local only.** (Unreleased)
