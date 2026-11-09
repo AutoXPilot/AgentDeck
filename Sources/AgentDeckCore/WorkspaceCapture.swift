@@ -32,6 +32,7 @@ public enum WorkspaceCapture {
         transcriptSessionKind: String?,
         transcriptEntrypoint: String? = nil,
         codexName: String?,
+        parkedWindow: ClaudeSessionRegistry.Entry? = nil,
         terminal: Terminal,
         now: Date,
         home: String = NSHomeDirectory()
@@ -40,8 +41,11 @@ public enum WorkspaceCapture {
         switch s.provider {
         case .claude:
             let kind = registry?.kind ?? transcriptSessionKind
-            if FocusResolver.isBackground(sessionKind: kind) { return nil }
-            guard registry?.kind == "interactive" || s.terminalSessionId != nil else { return nil }
+            // a background job counts only with a window: then it's the
+            // session someone was working in, under its current id
+            if parkedWindow == nil, FocusResolver.isBackground(sessionKind: kind) { return nil }
+            guard parkedWindow != nil || registry?.kind == "interactive"
+                    || s.terminalSessionId != nil else { return nil }
             let cwd = registry?.cwd ?? s.projectPath
             guard !cwd.isEmpty else { return nil }
             if ClaudeDesktop.effectiveHost(
@@ -54,7 +58,8 @@ public enum WorkspaceCapture {
                 // Explicitly user-set only. Claude builds before about
                 // 2.1.248 record no source at all, though they already
                 // generated names — so a missing source isn't a user's.
-                displayName: registry?.nameSource == "user" ? registry?.name : nil,
+                // A job doesn't inherit the source, only the window has it.
+                displayName: (parkedWindow ?? registry).flatMap { $0.nameSource == "user" ? $0.name : nil },
                 permissionMode: s.permissionMode, lastSeen: now
             )
         case .codex:

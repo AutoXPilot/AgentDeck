@@ -219,6 +219,17 @@ struct ReservationTests {
         #expect(x == 1 && y == 1, "x granted \(x) times, y \(y) times")
     }
 
+    @Test func anUnreadableReservationFileIsKeptAndNothingIsGranted() throws {
+        let d = dir()
+        let store = WorkspaceStore(directory: d)
+        try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        let junk = Data(#"{"schemaVersion":9,"reservations":"a newer shape"}"#.utf8)
+        try junk.write(to: store.reservationsURL)
+        #expect(throws: (any Error).self) { try store.reserve(["claude-a"]) }
+        #expect(throws: (any Error).self) { try store.releaseReservations(["claude-a"]) }
+        #expect(try Data(contentsOf: store.reservationsURL) == junk)
+    }
+
     @Test func releasingEndsAReservation() throws {
         let store = WorkspaceStore(directory: dir())
         try store.reserve(["claude-a", "claude-b"])

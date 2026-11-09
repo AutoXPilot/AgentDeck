@@ -523,7 +523,10 @@ public final class WorkspaceStore {
     @discardableResult
     public func reserve(_ keys: [String], at now: Date = Date()) throws -> Set<String> {
         try withLock {
-            var file = read(ReservationFile.self, from: reservationsURL) ?? ReservationFile()
+            // a file this build can't read (a newer build's, or damaged) is kept:
+            // overwriting it would drop reservations and allow a second launch
+            var file = try readExisting(ReservationFile.self, from: reservationsURL)
+                ?? ReservationFile()
             let granted = Set(keys).subtracting(file.reservations.keys)
             guard !granted.isEmpty else { return [] }
             for key in granted { file.reservations[key] = now }
@@ -535,7 +538,10 @@ public final class WorkspaceStore {
     public func releaseReservations(_ keys: Set<String>) throws {
         guard !keys.isEmpty else { return }
         try withLock {
-            var file = read(ReservationFile.self, from: reservationsURL) ?? ReservationFile()
+            // a file this build can't read (a newer build's, or damaged) is kept:
+            // overwriting it would drop reservations and allow a second launch
+            var file = try readExisting(ReservationFile.self, from: reservationsURL)
+                ?? ReservationFile()
             let before = file.reservations.count
             for key in keys { file.reservations[key] = nil }
             if file.reservations.count != before { try write(file, to: reservationsURL) }

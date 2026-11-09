@@ -71,6 +71,9 @@ public enum WorkspaceRestore {
         /// session can be captured while its host is still unknown. The
         /// default uses the evidence an entry carries itself (its folder).
         public var appHosted: (WorkspaceEntry) -> Bool
+        /// The session this one continued in, if any (see
+        /// `ClaudeTranscript.continuedIn`).
+        public var successor: (WorkspaceEntry) -> String?
 
         public init(
             live: Set<String>, inFlight: Set<String> = [],
@@ -79,9 +82,11 @@ public enum WorkspaceRestore {
             refusedPermissionModes: Set<String> = [],
             appHosted: @escaping (WorkspaceEntry) -> Bool = {
                 ClaudeDesktop.isAppHosted($0, liveHost: nil, transcriptEntrypoint: nil)
-            }
+            },
+            successor: @escaping (WorkspaceEntry) -> String? = { _ in nil }
         ) {
             self.appHosted = appHosted
+            self.successor = successor
             self.refusedPermissionModes = refusedPermissionModes
             self.live = live
             self.inFlight = inFlight
@@ -90,13 +95,44 @@ public enum WorkspaceRestore {
         }
     }
 
+    static let maxContinuations = 8
+
+    /// The newest session `entry`'s conversation continued in, or `entry`.
+    /// A session moved to the background leaves its old id behind in every
+    /// saved set; following the link here covers them all with nothing
+    /// stored. The chain comes from files, so it's bounded and can't loop.
+    public static func latest(_ entry: WorkspaceEntry,
+                              successor: (WorkspaceEntry) -> String?) -> WorkspaceEntry {
+        guard entry.provider == .claude else { return entry }
+        var current = entry
+        var seen: Set<String> = [entry.sessionId]
+        for _ in 0..<maxContinuations {
+            guard let next = successor(current), seen.insert(next).inserted else { break }
+            current.sessionId = next
+        }
+        return current
+    }
+
+    /// `entry` isn't worth offering: its conversation is still running
+    /// under a newer id.
+    public static func continuesInRunningSession(_ entry: WorkspaceEntry, live: Set<String>,
+                                                 successor: (WorkspaceEntry) -> String?) -> Bool {
+        let newest = latest(entry, successor: successor)
+        return newest.sessionId != entry.sessionId && live.contains(newest.key)
+    }
+
     public static func plan(_ entries: [WorkspaceEntry], facts: Facts) -> Plan {
         var plan = Plan()
         var seen = Set<String>()
         // canonical ids before any lookup: "ABC…" and "abc…" resume the
         // same conversation, so they must not pass dedupe or the live
         // check as two different sessions
-        for entry in entries.map(canonical) where seen.insert(entry.key).inserted {
+        let current = entries.map(canonical).map { requested -> (WorkspaceEntry, WorkspaceEntry) in
+            let newest = latest(requested, successor: facts.successor)
+            // the link is only worth following to a conversation that's there
+            return (requested, facts.conversationExists(newest) == false ? requested : newest)
+        }
+        for (requested, entry) in current where seen.insert(entry.key).inserted {
             let reason: SkipReason?
             if UUID(uuidString: entry.sessionId) == nil {
                 reason = .invalidSessionId
@@ -116,12 +152,14 @@ public enum WorkspaceRestore {
                 reason = nil
             }
             if let reason {
-                plan.skipped.append((entry, reason))
+                // as requested, not as followed: a skip is reported against
+                // the saved set, and Locate… rewrites the entry stored there
+                plan.skipped.append((requested, reason))
             } else if let line = commandLine(
                 for: entry, refusedPermissionModes: facts.refusedPermissionModes) {
                 plan.launches.append(Launch(entry: entry, commandLine: line))
             } else {
-                plan.skipped.append((entry, .invalidSessionId))
+                plan.skipped.append((requested, .invalidSessionId))
             }
         }
         return plan

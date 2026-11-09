@@ -68,7 +68,8 @@ public enum HookPayload {
             permissionMode: payload["permission_mode"] as? String,
             model: payload["model"] as? String,
             effort: effort,
-            errorKind: payload["error"] as? String,
+            // a category like "rate_limit"; anything else is stored as "error"
+            errorKind: (payload["error"] as? String).map { errorCategory(terminationReason: $0) },
             endReason: payload["reason"] as? String)
     }
 
@@ -112,12 +113,16 @@ public enum HookPayload {
     /// — an enum-like token (`NO_TOOL_CALL`) — never from the free-text
     /// `error`. Anything that doesn't look like such a token is "error".
     static func errorCategory(terminationReason: String?) -> String {
-        guard let reason = terminationReason, !reason.isEmpty, reason.count <= 40,
-              reason.unicodeScalars.allSatisfy({
-                  ("A"..."Z").contains($0) || ("a"..."z").contains($0)
-                      || ("0"..."9").contains($0) || $0 == "_"
-              })
-        else { return "error" }
+        guard let reason = terminationReason, isShortToken(reason) else { return "error" }
         return reason.lowercased()
+    }
+
+    /// Whether `s` looks like an enum-like category (ASCII letters, digits,
+    /// `_`, at most 40 characters) rather than free text.
+    static func isShortToken(_ s: String, allowingSpaces: Bool = false) -> Bool {
+        !s.isEmpty && s.count <= 40 && s.unicodeScalars.allSatisfy {
+            ("A"..."Z").contains($0) || ("a"..."z").contains($0)
+                || ("0"..."9").contains($0) || $0 == "_" || (allowingSpaces && $0 == " ")
+        }
     }
 }

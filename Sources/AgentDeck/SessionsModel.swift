@@ -76,6 +76,16 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var usage: [Provider: ProviderUsage] = [:]
     /// Other accounts' last figures (Claude), for the tooltip.
     @Published private(set) var otherAccountUsage: [Provider: [ProviderUsage]] = [:]
+    /// Row key of a background job → the window it moved out of.
+    private(set) var parkedWindows: [String: ParkedWindow] = [:]
+    /// Remembered sessions that continued under another id.
+    private var claudeContinuations = ClaudeContinuations()
+    private var isLoadingContinuations = false
+    /// The latest entries asked for while a load was running.
+    private var queuedContinuationEntries: [WorkspaceEntry]?
+    /// What the last restore launched: a continued session runs under a
+    /// new id no offer knows, and the pending list still needs its label.
+    private var launchedRestoreEntries: [WorkspaceEntry] = []
     /// Whether each status line tee (Claude, agy) is installed.
     @Published private(set) var teeStatus: [Provider: StatusLineTee.Status] = [:]
     /// Whether each installed tee has run and passed figures since setup.
@@ -557,6 +567,7 @@ final class SessionsModel: ObservableObject {
         }
 
         sessions = output.rows
+        parkedWindows = output.parkedWindows
         frozenOrder = popoverVisible ? output.frozenOrder : nil
         waitingReasons = output.waitingReasons
         alertCount = output.alertCount
@@ -631,9 +642,9 @@ final class SessionsModel: ObservableObject {
     /// Row title, best available. Claude publishes a session name in its
     /// registry (cleaner than the tab title and available outside iTerm);
     /// Codex publishes one in its session index; agy keeps one per
-    /// conversation. `onScreen: false` leaves agy's out, for text that
-    /// leaves this process: it may be generated from prompts.
-    func title(for snapshot: SessionSnapshot, onScreen: Bool = true) -> String {
+    /// conversation. For the screen only: a notification uses
+    /// `notificationLabel(for:)`.
+    func title(for snapshot: SessionSnapshot) -> String {
         if let desktop = desktopLabel(for: snapshot) { return desktop.title }
         if snapshot.provider == .claude, let pid = snapshot.agentPid,
            let entry = claudeRegistry[pid], entry.sessionId == snapshot.sessionId,
@@ -646,7 +657,7 @@ final class SessionsModel: ObservableObject {
             // when a thread was never renamed, so it is never consulted
             return name
         }
-        if onScreen, snapshot.provider == .antigravity, let name = agyTitles[snapshot.sessionId] {
+        if snapshot.provider == .antigravity, let name = agyTitles[snapshot.sessionId] {
             return name
         }
         if let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId),
@@ -668,6 +679,15 @@ final class SessionsModel: ObservableObject {
     }
 
     /// The registry entry describing this row's own session, if any.
+    /// The name for text that leaves this process; see `NotificationLabel`.
+    private func notificationLabel(for snapshot: SessionSnapshot) -> String {
+        NotificationLabel.text(
+            desktopTitle: desktopLabel(for: snapshot)?.title,
+            claudeEntry: registryEntry(for: snapshot),
+            codexName: snapshot.provider == .codex ? codexNames[snapshot.sessionId] : nil,
+            folder: snapshot.projectName, sessionId: snapshot.sessionId)
+    }
+
     private func registryEntry(for snapshot: SessionSnapshot) -> ClaudeSessionRegistry.Entry? {
         guard snapshot.provider == .claude else { return nil }
         if let live = claudeLiveSessions[snapshot.sessionId] { return live }
@@ -734,17 +754,17 @@ final class SessionsModel: ObservableObject {
     /// "Bring ChatGPT to the front" / an explanation when neither applies.
     func focusDescription(for snapshot: SessionSnapshot) -> String {
         FocusResolver.describe(
-            focusTarget(for: snapshot), sessionKind: sessionKind(for: snapshot)
+            focusTarget(for: snapshot), sessionKind: sessionKind(for: snapshot),
+            inAgentsView: parkedWindows[snapshot.key] != nil
         )
     }
 
     /// How Claude launched this session ("bg" for a daemonized background
-    /// session). Read from the transcript, which is the only place that
-    /// records it — background sessions write no entry in
-    /// `~/.claude/sessions/`.
+    /// session). From its live registry entry, else the transcript: older
+    /// background sessions write no entry in `~/.claude/sessions/`.
     func sessionKind(for snapshot: SessionSnapshot) -> String? {
         guard snapshot.provider == .claude else { return nil }
-        return claudeSessionKinds[snapshot.sessionId]
+        return registryEntry(for: snapshot)?.kind ?? claudeSessionKinds[snapshot.sessionId]
     }
 
     func isBackgroundSession(_ snapshot: SessionSnapshot) -> Bool {
@@ -820,13 +840,22 @@ final class SessionsModel: ObservableObject {
     }
 
     func focusTarget(for snapshot: SessionSnapshot) -> FocusTarget {
+        // the job's own process, tty and host say nothing about the window
+        if let window = parkedWindows[snapshot.key] {
+            return FocusResolver.resolve(
+                terminalSessionId: window.pane ?? paneByControllingTTY(snapshot),
+                owningAppBundlePath: owningAppBundle(ofPid: window.entry.pid),
+                provider: snapshot.provider, sessionId: snapshot.sessionId
+            )
+        }
         // a daemon-run thread's recorded pane is the daemon's, not its own
         let recordedPane = isRunByCodexDaemon(snapshot) ? nil : snapshot.terminalSessionId
         return FocusResolver.resolve(
             terminalSessionId: recordedPane ?? paneByControllingTTY(snapshot),
             owningAppBundlePath: owningAppBundle(for: snapshot),
             host: effectiveHost(for: snapshot),
-            provider: snapshot.provider, sessionId: snapshot.sessionId
+            provider: snapshot.provider, sessionId: snapshot.sessionId,
+            isBackground: isBackgroundSession(snapshot)
         )
     }
 
@@ -850,6 +879,13 @@ final class SessionsModel: ObservableObject {
     }
 
     private func paneByControllingTTY(_ snapshot: SessionSnapshot) -> String? {
+        if parkedWindows[snapshot.key] != nil {
+            guard let pid = SessionPipeline.terminalPid(
+                    for: snapshot, registryPid: nil, parkedWindows: parkedWindows),
+                  ProcessTree.looksLikeAgent(pid, provider: .claude),
+                  let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
+            return paneByTTY[tty]
+        }
         if isRunByCodexDaemon(snapshot) {
             return codexDaemonPane(snapshot)?.guid
         }
@@ -872,7 +908,10 @@ final class SessionsModel: ObservableObject {
     /// Walking the process tree per row per render is wasteful; the answer
     /// can't change for a given pid.
     private func owningAppBundle(for snapshot: SessionSnapshot) -> String? {
-        guard let pid = snapshot.agentPid else { return nil }
+        snapshot.agentPid.flatMap(owningAppBundle(ofPid:))
+    }
+
+    private func owningAppBundle(ofPid pid: pid_t) -> String? {
         if let cached = owningAppCache[pid] { return cached }
         let bundle = ProcessTree.owningApplicationBundle(of: pid)
         owningAppCache[pid] = .some(bundle)
@@ -951,7 +990,10 @@ final class SessionsModel: ObservableObject {
             return
         }
         let guessedPane = isRunByCodexDaemon(snapshot) && codexDaemonPane(snapshot)?.byName != true
-        let fallbackURL = ITermFocus.revealURL(terminalSessionId: snapshot.terminalSessionId)
+        let proves = !guessedPane
+            && SessionPipeline.focusAcknowledges(snapshot, parkedWindows: parkedWindows)
+        let fallbackURL = ITermFocus.revealURL(
+            terminalSessionId: parkedWindows[snapshot.key]?.pane ?? snapshot.terminalSessionId)
         Self.appLog("activate key=\(snapshot.key) guid=\(guid)")
         pendingFocus = { [weak self] in
             // The osascript call blocks, so it runs detached — capturing only
@@ -965,9 +1007,9 @@ final class SessionsModel: ObservableObject {
                 if result == "focused" {
                     self.focusProblem = nil
                     // a pane picked only for being the one Codex pane may
-                    // be another thread's: focusing it doesn't prove this
-                    // session was seen
-                    if !guessedPane { self.acknowledge(snapshot) }
+                    // be another thread's, and a parked window may be on
+                    // another job: focusing doesn't prove this session was seen
+                    if proves { self.acknowledge(snapshot) }
                 } else {
                     self.focusProblem = SessionsModel.describeFocusFailure(result)
                     if let fallbackURL { NSWorkspace.shared.open(fallbackURL) }
@@ -1091,23 +1133,14 @@ final class SessionsModel: ObservableObject {
         installMessage = busy
         let command = arguments.first ?? "install"
         Task.detached {
-            var text: String
-            do {
-                let process = Process()
-                process.executableURL = bundled
-                process.arguments = arguments
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-                try process.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                text = String(decoding: data, as: UTF8.self)
-                if process.terminationStatus != 0 {
-                    text = "\(command) failed (exit \(process.terminationStatus)): \(text)"
-                }
-            } catch {
-                text = "\(command) failed: \(error.localizedDescription)"
+            // bounded: a helper stalled at launch left the button dead
+            // until relaunch
+            let result = BoundedSubprocess.run(bundled.path, arguments: arguments, timeout: 60)
+            var text = String(decoding: result.output, as: UTF8.self)
+            if result.timedOut {
+                text = "\(command) didn't finish within a minute and was stopped: \(text)"
+            } else if result.status != 0 {
+                text = "\(command) failed (exit \(result.status)): \(text)"
             }
             let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
             await MainActor.run { [weak self] in
@@ -1157,7 +1190,7 @@ final class SessionsModel: ObservableObject {
             // A dismissal is "I know, leave me alone" — respect it.
             guard needsAttention(snapshot) else { continue }
             let heading = "\(snapshot.provider.displayName) is waiting on you"
-            var body = title(for: snapshot, onScreen: false)
+            var body = notificationLabel(for: snapshot)
             if let reason = waitingReasons[key] { body += " — \(reason)" }
             post(title: heading, body: body, key: key)
             posted.append(key)
@@ -1467,6 +1500,7 @@ extension SessionsModel {
             transcriptSessionKind: claudeSessionKinds[s.sessionId],
             transcriptEntrypoint: claudeEntrypoints[s.sessionId],
             codexName: codexNames[s.sessionId],
+            parkedWindow: parkedWindows[s.key]?.entry,
             terminal: terminalLocation(of: s),
             now: now)
     }
@@ -1475,12 +1509,13 @@ extension SessionsModel {
     /// iTerm's; elsewhere only when iTerm's panes are known and the tty
     /// isn't among them.
     private func terminalLocation(of s: SessionSnapshot) -> WorkspaceCapture.Terminal {
-        if s.terminalSessionId != nil { return .iTerm }
+        if s.terminalSessionId != nil || parkedWindows[s.key]?.pane != nil { return .iTerm }
         // the registry pid only for a Claude row: it describes Claude
         // sessions, and a Codex id can collide with one
         let registryPid = s.provider == .claude ? claudeLiveSessions[s.sessionId]?.pid : nil
         guard !paneByTTY.isEmpty,
-              let pid = registryPid ?? s.agentPid,
+              let pid = SessionPipeline.terminalPid(
+                for: s, registryPid: registryPid, parkedWindows: parkedWindows),
               let tty = ProcessTree.controllingTTY(of: pid) else { return .unknown }
         return paneByTTY[tty] != nil ? .iTerm : .elsewhere
     }
@@ -1532,10 +1567,16 @@ extension SessionsModel {
     /// that restoring part of a set and rebooting again hid the rest.
     func refreshWorkspaces() {
         let live = runningKeys(sessions)
-        let appHosted = appHostedCheck(readingTranscripts: false)
+        let hosted = appHostedCheck(readingTranscripts: false)
+        let successors = claudeContinuations.successors
+        let appHosted: (WorkspaceEntry) -> Bool = { entry in
+            hosted(entry) || WorkspaceRestore.continuesInRunningSession(
+                entry, live: live, successor: { successors[$0.sessionId] })
+        }
         var offers: [RestoreOffer] = []
         var banner: RestoreOffer?
         let generations = workspaceStore.generations()
+        loadContinuationsAsync(generations.flatMap(\.entries))
         let ordered = generations.filter { $0.bootID == bootID }
             + generations.filter { $0.bootID != bootID }
         for generation in ordered {
@@ -1559,6 +1600,33 @@ extension SessionsModel {
         if banner != bannerOffer { bannerOffer = banner }
         let named = workspaceStore.named()
         if named != namedWorkspaces { namedWorkspaces = named }
+    }
+
+    /// Transcript reads, so off the main thread; refreshes the offers when
+    /// they found something new.
+    private func loadContinuationsAsync(_ entries: [WorkspaceEntry]) {
+        guard !readOnly else { return }
+        guard !isLoadingContinuations else {
+            queuedContinuationEntries = entries
+            return
+        }
+        isLoadingContinuations = true
+        var continuations = claudeContinuations
+        Task.detached {
+            continuations.update(entries)
+            let result = continuations
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.isLoadingContinuations = false
+                let changed = result.successors != self.claudeContinuations.successors
+                self.claudeContinuations = result
+                if changed { self.refreshWorkspaces() }
+                if let queued = self.queuedContinuationEntries {
+                    self.queuedContinuationEntries = nil
+                    self.loadContinuationsAsync(queued)
+                }
+            }
+        }
     }
 
     /// The largest set from the most recent earlier boot, offered at the
@@ -1660,6 +1728,7 @@ extension SessionsModel {
     /// Labels for the pending keys, from whatever offer or workspace knows them.
     var pendingRestoreLabels: [String] {
         let known = restoreOffers.flatMap(\.entries) + namedWorkspaces.flatMap(\.entries)
+            + launchedRestoreEntries
         return pendingRestores.map { key in
             known.first { WorkspaceRestore.canonical($0).key == key }?.label ?? key
         }
@@ -1687,9 +1756,14 @@ extension SessionsModel {
                 return entry.provider.spec.conversationExists(entry)
             },
             refusedPermissionModes: claudePolicy.refusedPermissionModes,
-            appHosted: appHostedCheck(readingTranscripts: true)
+            appHosted: appHostedCheck(readingTranscripts: true),
+            successor: { entry in
+                ClaudeTranscript.url(sessionId: entry.sessionId, projectPath: entry.cwd)
+                    .flatMap { ClaudeTranscript.continuedIn(at: $0) }
+            }
         )
         let plan = WorkspaceRestore.plan(entries, facts: facts)
+        if !plan.launches.isEmpty { launchedRestoreEntries = plan.launches.map(\.entry) }
         // each missing folder remembers which named workspace it came from,
         // so locating it later saves into that workspace and no other
         let requested = Set(entries.map { WorkspaceRestore.canonical($0).key })

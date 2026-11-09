@@ -100,7 +100,11 @@ Discovery, liveness, state
 - `ClaudeSessionRegistry.swift` — reads `~/.claude/sessions/*.json`,
   live-filters (start time + looks-like-claude), `StateReconciler` (registry
   vs hook, newer wins; a newer registry wait is a new wait). `isSpare` marks
-  a pre-warmed background worker, which `SessionPipeline` gives no row.
+  a pre-warmed background worker, which `SessionPipeline` gives no row;
+  `jobId`/`parkedJobId` pair a job with the window it moved out of, and
+  `SessionPipeline` keeps the job's row with `parkedWindows` as the way to
+  it. `ClaudeTranscript.continuedIn` reads the matching `continued-in` link,
+  which `WorkspaceRestore.latest` follows.
 - `AntigravityState.swift` — non-blocking `flock` probe of presence locks,
   `last_conversations.json` for an unambiguous cwd, and the `title` of
   `annotations/<id>.pbtxt` (on-screen only; see Invariants).

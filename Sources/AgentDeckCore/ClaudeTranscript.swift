@@ -53,6 +53,38 @@ public enum ClaudeTranscript {
         return "\(mtime)-\(size)"
     }
 
+    /// The session this conversation continued in, when it moved to a
+    /// background job: Claude ends the old transcript with a `continued-in`
+    /// record, and its own `/resume` follows it. nil once the conversation
+    /// went on here afterwards. The same tail holds message text, so only
+    /// that exact record type is believed and only its id kept.
+    public static func continuedIn(at url: URL, tailBytes: Int = 64 * 1024) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let start = size > UInt64(tailBytes) ? size - UInt64(tailBytes) : 0
+        guard (try? handle.seek(toOffset: start)) != nil,
+              let data = try? handle.readToEnd(),
+              data.range(of: Data("continued-in".utf8)) != nil
+        else { return nil }
+        // a line cut off by the tail doesn't parse, so it's skipped here too
+        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
+            guard let record = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
+            else { continue }
+            switch record["type"] as? String {
+            case "continued-in":
+                guard let id = record["continuedInSessionId"] as? String,
+                      let uuid = UUID(uuidString: id) else { return nil }
+                return uuid.uuidString.lowercased()
+            case "user", "assistant":
+                return nil
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
     public struct Reading: Sendable, Equatable {
         public let model: String
         /// Claude's own word for how the session was launched. "bg" is a
@@ -140,5 +172,47 @@ public enum ClaudeTranscript {
                            entrypoint: field("entrypoint"))
         }
         return nil
+    }
+}
+
+/// Which remembered Claude sessions continued elsewhere, read from their
+/// transcripts. Each is read again only when its transcript changes, so a
+/// long restore history costs a stat per session.
+public struct ClaudeContinuations: Sendable, Equatable {
+    public private(set) var successors: [String: String] = [:]
+    private var fingerprints: [String: String] = [:]
+
+    public init() {}
+
+    /// Follows each link too: a session between two saved ones is in no
+    /// saved set, and the chain must not stop at it. A transcript that's
+    /// gone takes its link with it, as a fresh restore wouldn't find it.
+    public mutating func update(_ entries: [WorkspaceEntry],
+                                projectsDirectory: URL = ClaudeTranscript.defaultProjectsDirectory) {
+        var seen = Set<String>()
+        for entry in entries where entry.provider == .claude {
+            var current = entry
+            for _ in 0..<WorkspaceRestore.maxContinuations {
+                guard seen.insert(current.sessionId).inserted else { break }
+                refresh(current, projectsDirectory: projectsDirectory)
+                guard let next = successors[current.sessionId] else { break }
+                current.sessionId = next
+            }
+        }
+    }
+
+    private mutating func refresh(_ entry: WorkspaceEntry, projectsDirectory: URL) {
+        let id = entry.sessionId
+        guard let url = ClaudeTranscript.url(sessionId: id, projectPath: entry.cwd,
+                                             projectsDirectory: projectsDirectory),
+              let fingerprint = ClaudeTranscript.fingerprint(of: url).map({ "\(url.path)-\($0)" })
+        else {
+            fingerprints[id] = nil
+            successors[id] = nil
+            return
+        }
+        guard fingerprints[id] != fingerprint else { return }
+        fingerprints[id] = fingerprint
+        successors[id] = ClaudeTranscript.continuedIn(at: url)
     }
 }

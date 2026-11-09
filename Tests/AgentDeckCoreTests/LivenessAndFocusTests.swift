@@ -289,6 +289,24 @@ struct LivenessAndFocusTests {
         #expect(ITermFocus.humanizeReason("elicitation_dialog") == "needs input")
         #expect(ITermFocus.humanizeReason("sandbox request") == "sandbox request")
         #expect(ITermFocus.humanizeReason("something_new") == "something new")
+        #expect(ITermFocus.humanizeReason("Allow edits to /Users/a/secret.txt?") == "waiting",
+                "free text never reaches the screen or a notification")
+    }
+
+    @Test func sanitizeTitleDropsControlCharacters() {
+        #expect(ITermFocus.sanitizeTitle("build\u{7}\u{1B}done") == "builddone")
+    }
+
+    @Test func procArgumentsStopAtTheEndOfTheBuffer() {
+        func buffer(argc: Int32, _ body: String) -> [UInt8] {
+            withUnsafeBytes(of: argc.littleEndian) { Array($0) } + Array(body.utf8)
+        }
+        let full = ProcessTree.procArguments(buffer(argc: 2, "/bin/x\0\0\0a\0bc\0ENV=1\0"))
+        #expect(full.map { String(decoding: $0, as: UTF8.self) } == ["a", "bc"])
+        // the last argument runs to the end, and argc claims more than exist
+        let cut = ProcessTree.procArguments(buffer(argc: 5, "/bin/x\0\0a\0bc"))
+        #expect(cut.map { String(decoding: $0, as: UTF8.self) } == ["a", "bc"])
+        #expect(ProcessTree.procArguments([1, 0]).isEmpty)
     }
 
     @Test func agysTabSuffixIsStrippedLikeTheOthers() {

@@ -134,7 +134,10 @@ public enum ITermFocus {
     /// leaving deliberately quoted titles (`run "make test"`) intact.
     /// Then strip the decoration that duplicates the row's own badges.
     public static func sanitizeTitle(_ raw: String) -> String {
-        var title = raw.trimmingCharacters(in: .whitespaces)
+        var title = String(String.UnicodeScalarView(
+            // a tab is kept: titles can contain one
+            raw.unicodeScalars.filter { $0 == "\t" || !CharacterSet.controlCharacters.contains($0) }
+        )).trimmingCharacters(in: .whitespaces)
         if title.filter({ $0 == "\"" }).count % 2 == 1 {
             title = title.replacingOccurrences(of: "\"", with: "")
         }
@@ -160,7 +163,10 @@ public enum ITermFocus {
         case let s where s.contains("sandbox"): return "sandbox request"
         case let s where s.contains("dialog"): return "dialog open"
         case "ask question": return "asked you a question"
-        case let s: return s
+        // shown and notified, so only something shaped like a category
+        // passes; free text could carry detail from the session
+        case let s where HookPayload.isShortToken(s, allowingSpaces: true): return s
+        default: return "waiting"
         }
     }
 

@@ -26,6 +26,11 @@ public enum ClaudeSessionRegistry {
         /// for its next job: a process and a session id, but no conversation
         /// and no pane. The key goes when a job takes the worker.
         public var isSpare: Bool
+        /// The background job this `bg` entry runs.
+        public var jobId: String?
+        /// Set on an `interactive` entry whose conversation moved to that
+        /// background job (see `ParkedWindow`).
+        public var parkedJobId: String?
         /// The session's working directory. Durable across a reboot and the
         /// only thing besides `sessionId` that resuming needs.
         public var cwd: String?
@@ -42,7 +47,8 @@ public enum ClaudeSessionRegistry {
         public init(
             pid: Int32, sessionId: String, status: String, waitingFor: String? = nil,
             name: String? = nil, nameSource: String? = nil, kind: String? = nil,
-            isSpare: Bool = false, cwd: String? = nil, startedAt: Date? = nil,
+            isSpare: Bool = false, jobId: String? = nil, parkedJobId: String? = nil,
+            cwd: String? = nil, startedAt: Date? = nil,
             statusUpdatedAt: Date? = nil, fileModifiedAt: Date? = nil
         ) {
             self.pid = pid
@@ -53,6 +59,8 @@ public enum ClaudeSessionRegistry {
             self.nameSource = nameSource
             self.kind = kind
             self.isSpare = isSpare
+            self.jobId = jobId
+            self.parkedJobId = parkedJobId
             self.cwd = cwd
             self.startedAt = startedAt
             self.statusUpdatedAt = statusUpdatedAt
@@ -94,6 +102,8 @@ public enum ClaudeSessionRegistry {
             nameSource: dict["nameSource"] as? String,
             kind: dict["kind"] as? String,
             isSpare: dict["spare"] as? Bool == true,
+            jobId: dict["jobId"] as? String,
+            parkedJobId: dict["parkedJobId"] as? String,
             cwd: (dict["cwd"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             startedAt: started.map { Date(timeIntervalSince1970: $0 / 1000) },
             statusUpdatedAt: stamp.map { Date(timeIntervalSince1970: $0 / 1000) },

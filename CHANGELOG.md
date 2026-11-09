@@ -22,6 +22,19 @@
 
 ### Fixed
 
+- **A notification no longer names a session by its tab title or a
+  generated name**, either of which can repeat the conversation. It uses a
+  name you set, or the folder.
+
+- **A session moved to the background is one row, and clicking it gets you
+  there.** Claude keeps the window and the background job as two sessions,
+  and AgentDeck listed both: one reached the window but its state had
+  stopped, the other was live but only raised iTerm. The row now shows the
+  job's state and opens the window's agents view. A waiting row stays
+  flagged after the click, since the window may be on another job. A
+  background session with no window now says so instead of raising iTerm.
+  Restore follows Claude's link to the newest conversation, in old saved
+  sets too, and doesn't offer one that's still running under its new id.
 - **Claude's spare background workers no longer get a row.** Claude keeps a
   pre-warmed worker ready for background jobs, and it showed up as an
   unclickable row named after its id.

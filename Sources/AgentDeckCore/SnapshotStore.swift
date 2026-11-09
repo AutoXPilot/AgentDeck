@@ -232,10 +232,20 @@ public struct SnapshotStore: Sendable {
             } else if url.lastPathComponent.hasSuffix(".tmp") {
                 try? FileManager.default.removeItem(at: url)
             } else if url.pathExtension == "json" {
-                guard let data = try? Data(contentsOf: url) else { continue }
-                let decodable = (try? decoder.decode(SessionSnapshot.self, from: data)) != nil
-                if !decodable && !Self.looksLikeSnapshot(data) {
-                    try? FileManager.default.removeItem(at: url)
+                // Under the key's lock, like every writer: unlocked, a helper
+                // could replace the file between the read and the unlink, and
+                // the sweep would delete the fresh snapshot.
+                let key = url.deletingPathExtension().lastPathComponent
+                _ = try? withKeyLock(key) {
+                    guard let data = try? Data(contentsOf: url) else { return }
+                    let decodable = (try? decoder.decode(SessionSnapshot.self, from: data)) != nil
+                    if !decodable && !Self.looksLikeSnapshot(data) {
+                        try? FileManager.default.removeItem(at: url)
+                        // and the lock taken for it: a waiter on this file
+                        // finds it unlinked and retries on a new one
+                        try? FileManager.default.removeItem(
+                            at: directory.appendingPathComponent(".\(key).lock"))
+                    }
                 }
             }
         }

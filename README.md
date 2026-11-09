@@ -290,16 +290,24 @@ Claude also keeps a spare worker ready for background jobs. It registers
 like a session but has no conversation or pane, so it gets no row until a
 job takes it.
 
+When you move a session to the background, Claude runs the conversation in
+a background job and your window drops to its agents view. AgentDeck shows
+one row with the job's state, and clicking it opens that window (or, if
+its pane can't be found, brings that window's app forward). The click can't
+tell which job the agents view is on, so a row that's waiting on you
+stays flagged until the prompt is answered. Restore resumes the job's
+conversation, not the window's older one, following the link Claude leaves
+at the end of the old transcript.
+
 Two kinds of session have no such second source, so their `waiting` clears
 only on the next hook event and can read stale in between: Codex sessions
 (no registry exists), and Claude **background** sessions — `claude
 --bg-pty-host`, started from a slash command and reparented to launchd,
-which write no `~/.claude/sessions/<pid>.json` entry at all. Background
-sessions also have no terminal pane and no window, so they can't be
-focused; their rows say where the prompt is actually answered (the agents
+which on older builds write no `~/.claude/sessions/<pid>.json` entry at
+all. Background sessions with no window of their own can't be focused; their rows say where the prompt is actually answered (the agents
 panel of the session that spawned them) instead of just reporting the dead
-end. AgentDeck spots them by the `sessionKind` Claude records in the
-session transcript.
+end. AgentDeck spots them by their registry `kind`, or the `sessionKind`
+Claude records in the session transcript.
 
 Row titles come from the best available source, refreshed on popover open.
 Claude rows prefer the session's own name from its registry (available even
@@ -591,7 +599,8 @@ sessions need you.
 A session that stays blocked longer than `waitAlertMinutes` (default 5) posts
 a local notification. To avoid pestering, a given session notifies at most
 once per hour even across separate blocks. macOS will ask for permission the
-first time the app runs. To change or disable:
+first time the app runs. It names the session by a name you set, or else its
+folder, never a tab title or a generated name. To change or disable:
 
 ```sh
 defaults write com.tonyhoang.agentdeck waitAlertMinutes -int 10   # or 0 to disable

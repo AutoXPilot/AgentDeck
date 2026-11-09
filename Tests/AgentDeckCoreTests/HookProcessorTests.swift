@@ -195,6 +195,17 @@ final class HookProcessorTests {
         #expect(snap?.errorKind == "rate_limit")
     }
 
+    @Test func aFreeTextErrorIsStoredOnlyAsACategory() {
+        _ = process(.claude, [
+            "hook_event_name": "SessionStart", "session_id": "e2", "cwd": "/p",
+        ])
+        _ = process(.claude, [
+            "hook_event_name": "StopFailure", "session_id": "e2",
+            "error": "Request failed: SECRET-DETAIL in /Users/a/project",
+        ])
+        #expect(store.load(key: "claude-e2")?.errorKind == "error")
+    }
+
     @Test func sessionEndKeepsRowAliveOnClearAndResume() {
         // on /clear and resume the process keeps running — removing the row
         // would drop a live session off the deck

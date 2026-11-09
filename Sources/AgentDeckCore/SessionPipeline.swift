@@ -5,6 +5,23 @@ import Foundation
 /// as untested app-target glue), so it lives in the core where every hop is
 /// under test. The app's reload() should contain no decisions: read files,
 /// call this, assign the output, perform the removals it was told about.
+/// The terminal window a background job's conversation moved out of. When
+/// a session goes to the background Claude keeps both: the job carries on
+/// the conversation in a private pty, and the window drops to the agents
+/// view with that job selected. So the job is the session and the window is
+/// the way to it, but only a way: the agents view is a list, and nothing
+/// shows it's still on this job.
+public struct ParkedWindow: Equatable, Sendable {
+    public var entry: ClaudeSessionRegistry.Entry
+    /// The pane its last hook recorded, if that's still its process's.
+    public var pane: String?
+
+    public init(entry: ClaudeSessionRegistry.Entry, pane: String? = nil) {
+        self.entry = entry
+        self.pane = pane
+    }
+}
+
 public enum SessionPipeline {
     public static let inferredWaitingReason = "may need you (no hook reports this prompt)"
 
@@ -15,6 +32,41 @@ public enum SessionPipeline {
         public var doneCount: Int
         public var mostUrgent: SessionState?
         public var waitingReasons: [String: String]
+        /// Row key of a background job → the window it moved out of.
+        public var parkedWindows: [String: ParkedWindow] = [:]
+    }
+
+    /// Job session id → the live window parked on it. Live entries only:
+    /// their identity is checked, and a file can outlive its process.
+    static func parkedPairs(
+        _ liveSessions: [String: ClaudeSessionRegistry.Entry]
+    ) -> [String: ClaudeSessionRegistry.Entry] {
+        var pairs: [String: ClaudeSessionRegistry.Entry] = [:]
+        let windows = liveSessions.values.filter { $0.kind == "interactive" && $0.parkedJobId != nil }
+        for job in liveSessions.values where job.kind == "bg" && !job.isSpare {
+            guard let id = job.jobId else { continue }
+            let parked = windows.filter { $0.parkedJobId == id }
+                .max { ($0.startedAt ?? .distantPast) < ($1.startedAt ?? .distantPast) }
+            if let parked { pairs[job.sessionId] = parked }
+        }
+        return pairs
+    }
+
+    /// Whose controlling terminal locates this row: the parked window's for
+    /// a job, whose own tty is a private pty. Else the registry's current
+    /// process, else the snapshot's.
+    public static func terminalPid(
+        for row: SessionSnapshot, registryPid: Int32?, parkedWindows: [String: ParkedWindow]
+    ) -> Int32? {
+        parkedWindows[row.key]?.entry.pid ?? registryPid ?? row.agentPid
+    }
+
+    /// A click that reached the pane counts as seeing the session, except
+    /// a parked job waiting on you: the window may be on another job, and
+    /// clearing the badge there would lose the one alert that matters.
+    public static func focusAcknowledges(_ row: SessionSnapshot,
+                                         parkedWindows: [String: ParkedWindow]) -> Bool {
+        !(parkedWindows[row.key] != nil && row.state == .waiting)
     }
 
     public static func run(
@@ -116,7 +168,22 @@ public enum SessionPipeline {
         // (Antigravity's presence locks); the same rule — a snapshot wins.
         let seen = known.union(discovered.map(\.key))
         let others = extra.filter { !seen.contains($0.key) }
-        let all = RowOrdering.deduplicated(normalized + discovered + others)
+
+        // One row per parked pair. The job's: its state is the current one,
+        // and the window's stopped when the conversation left it. After
+        // pane clearing, so a stale pane isn't carried over; before dedupe
+        // and counts, so the pair counts once.
+        let pairs = parkedPairs(liveSessions)
+        let windowIds = Set(pairs.values.map(\.sessionId))
+        var parkedWindows: [String: ParkedWindow] = [:]
+        for (jobId, window) in pairs {
+            let row = normalized.first { $0.provider == .claude && $0.sessionId == window.sessionId }
+            parkedWindows[SessionKey.make(.claude, jobId)] =
+                ParkedWindow(entry: window, pane: row?.terminalSessionId)
+        }
+        let all = RowOrdering.deduplicated(normalized + discovered + others).filter {
+            !($0.provider == .claude && windowIds.contains($0.sessionId))
+        }
         let sorted = Attention.sorted(all, acks: acks)
         var rows = sorted
         var order: [String]?
@@ -131,7 +198,8 @@ public enum SessionPipeline {
             alertCount: Attention.alertCount(all, acks: acks),
             doneCount: Attention.doneCount(all, acks: acks),
             mostUrgent: Attention.mostUrgent(all, acks: acks),
-            waitingReasons: reasons
+            waitingReasons: reasons,
+            parkedWindows: parkedWindows
         )
     }
 }

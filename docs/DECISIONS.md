@@ -191,6 +191,37 @@ AgentDeck more careful. Only Claude's hooks are gated by Claude's policy;
 Codex and agy are unaffected and the installer continues past a blocked
 Claude.
 
+**A session moved to the background is one row: the job's.** (Unreleased)
+Claude keeps two live entries for it, and AgentDeck showed both: a stale
+row that reached the window and a live row that reached nothing. The job is
+the identity (Claude's own lists skip the parked window, and `/resume`
+follows `continued-in`), so its row, key and state stand and the window's
+goes. The window is the destination, kept as an association
+(`parkedWindows`) rather than a pane written onto the job. Pairing uses live
+registry entries only, so either side ending separates them by itself.
+
+A focus doesn't prove the job was reached: the window is an agents view the
+user can move around in. So a waiting row stays unacknowledged after the
+click, and the hover says where it leads.
+
+Rejected: finding the window by process ancestry. Every worker descends
+from one daemon whose parent is whichever window started it, so ancestry
+names the wrong window. For the same reason a windowless background session
+resolves to no target, ahead of its recorded host and owning app: raising
+iTerm looked like a click that did nothing.
+
+**Restore follows `continued-in` rather than remembering successors.**
+(Unreleased)
+A parked session's old id sits in every saved generation and named
+workspace. Reading Claude's link at offer and restore time covers them all
+with no stored state; rewriting saved sets would not reach the older ones,
+and resuming the old id would bring back the conversation as it was before
+it moved. So a saved entry whose window is still open but whose job has
+ended launches the job's conversation, the newer one. A skip still names the
+entry as saved, since that's what Locate… rewrites. The read at restore time
+is on the main thread, like the entrypoint read beside it: one 64 KB tail
+per entry.
+
 **agy rows show the annotation title, generated or not.** (Unreleased)
 agy saves `/rename` to `annotations/<id>.pbtxt`, the same field it writes
 its own generated title to, with nothing to tell them apart; the only

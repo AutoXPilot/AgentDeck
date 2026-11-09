@@ -32,8 +32,12 @@ public enum FocusResolver {
     /// to the owning GUI app.
     public static func resolve(
         terminalSessionId: String?, owningAppBundlePath: String?, host: SessionHost = .unknown,
-        provider: Provider? = nil, sessionId: String? = nil
+        provider: Provider? = nil, sessionId: String? = nil, isBackground: Bool = false
     ) -> FocusTarget {
+        // Nothing to reach, whatever the process tree says: every background
+        // worker descends from one daemon, itself a child of whichever
+        // window started it, so its owning app and host are that window's.
+        if isBackground { return .none }
         if host.kind == .app,
            let path = host.bundlePath ?? owningAppBundlePath, let name = appName(fromBundlePath: path) {
             if let provider, let sessionId,
@@ -77,8 +81,11 @@ public enum FocusResolver {
     /// we can focus" is true of a background session but leaves you stuck
     /// in front of a permission prompt with nowhere to go — the prompt is
     /// answered in the agents panel of whichever session spawned it.
-    public static func describe(_ target: FocusTarget, sessionKind: String? = nil) -> String {
+    public static func describe(_ target: FocusTarget, sessionKind: String? = nil,
+                                inAgentsView: Bool = false) -> String {
         switch target {
+        case .itermPane where inAgentsView:
+            return "Click to open this session in its agents view"
         case .itermPane:
             return "Click to focus this iTerm pane"
         case .application(_, let name):

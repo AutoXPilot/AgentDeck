@@ -100,10 +100,14 @@ func runInstall() {
             print("helper: already running from \(stableHelperURL.path)")
         }
         // A crash between an earlier copy and its rename can strand a
-        // .helper-*.tmp here; sweepOrphans only scans the sessions dir.
+        // .helper-*.tmp here; sweepOrphans only scans the sessions dir. Only
+        // old ones: a fresh one may be another copy's sync in progress.
         if let debris = try? fm.contentsOfDirectory(atPath: binDirectory.path) {
             for name in debris where name.hasPrefix(".helper-") && name.hasSuffix(".tmp") {
-                try? fm.removeItem(at: binDirectory.appendingPathComponent(name))
+                let url = binDirectory.appendingPathComponent(name)
+                let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+                guard let modified, Date().timeIntervalSince(modified) > 600 else { continue }
+                try? fm.removeItem(at: url)
             }
         }
 
@@ -266,6 +270,8 @@ func stableHelperStatusLineProblem() -> String? {
     process.arguments = ["statusline-supported"]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
+    let exited = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in exited.signal() }
     do {
         try process.run()
     } catch {
@@ -273,7 +279,13 @@ func stableHelperStatusLineProblem() -> String? {
             + "if it's managed, its security settings may block unsigned tools, and your status "
             + "line would stop with it — nothing was changed"
     }
-    process.waitUntilExit()
+    // a helper stalled at launch is the case this probe exists for
+    if exited.wait(timeout: .now() + 10) == .timedOut {
+        process.terminate()
+        _ = exited.wait(timeout: .now() + 2)
+        return "the helper at \(path) didn't answer within 10 seconds; a security tool may be "
+            + "holding it, and your status line would stop with it — nothing was changed"
+    }
     if process.terminationReason == .uncaughtSignal {
         return "the helper at \(path) was stopped by signal \(process.terminationStatus) "
             + "when started; a security tool may be blocking it, and your status line would "

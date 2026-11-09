@@ -174,25 +174,37 @@ public enum ProcessTree {
         var buffer = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0,
               size > MemoryLayout<Int32>.size else { return false }
-        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
-        // layout: argc, exec path, NUL padding, then argc NUL-terminated args
-        var i = MemoryLayout<Int32>.size
-        while i < size, buffer[i] != 0 { i += 1 }        // exec path
-        while i < size, buffer[i] == 0 { i += 1 }        // padding
         let target = Array(needle.lowercased().utf8)
-        for _ in 0..<max(0, Int(argc)) {
-            let start = i
-            while i < size, buffer[i] != 0 { i += 1 }
-            let arg = buffer[start..<i].map { $0 >= 65 && $0 <= 90 ? $0 + 32 : $0 }
+        for raw in procArguments(Array(buffer.prefix(size))) {
+            let arg = raw.map { $0 >= 65 && $0 <= 90 ? $0 + 32 : $0 }
             if arg.count >= target.count,
                (0...(arg.count - target.count)).contains(where: {
                    Array(arg[$0..<($0 + target.count)]) == target
                }) {
                 return true
             }
-            i += 1
         }
         return false
+    }
+
+    /// The arguments in a `KERN_PROCARGS2` buffer: argc, the exec path, NUL
+    /// padding, then up to argc NUL-terminated arguments. Stops at the end
+    /// of the buffer whatever argc says.
+    static func procArguments(_ buffer: [UInt8]) -> [ArraySlice<UInt8>] {
+        let size = buffer.count
+        guard size > MemoryLayout<Int32>.size else { return [] }
+        let argc = Int(buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) })
+        var i = MemoryLayout<Int32>.size
+        while i < size, buffer[i] != 0 { i += 1 }        // exec path
+        while i < size, buffer[i] == 0 { i += 1 }        // padding
+        var arguments: [ArraySlice<UInt8>] = []
+        while arguments.count < argc, i < size {
+            let start = i
+            while i < size, buffer[i] != 0 { i += 1 }
+            arguments.append(buffer[start..<i])
+            i += 1
+        }
+        return arguments
     }
 
     /// Every process id on the machine.
@@ -253,18 +265,9 @@ public enum ProcessTree {
         var buffer = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0,
               size > MemoryLayout<Int32>.size else { return nil }
-        let argc = Int(buffer.withUnsafeBytes { $0.load(as: Int32.self) })
-        guard index < argc else { return nil }
-        var i = MemoryLayout<Int32>.size
-        while i < size, buffer[i] != 0 { i += 1 }        // exec path
-        while i < size, buffer[i] == 0 { i += 1 }        // padding
-        for n in 0...index {
-            let start = i
-            while i < size, buffer[i] != 0 { i += 1 }
-            if n == index { return String(decoding: buffer[start..<i], as: UTF8.self) }
-            i += 1
-        }
-        return nil
+        let arguments = procArguments(Array(buffer.prefix(size)))
+        guard index >= 0, index < arguments.count else { return nil }
+        return String(decoding: arguments[index], as: UTF8.self)
     }
 
     /// Codex thread ids whose rollout a Codex app-server daemon holds open.
