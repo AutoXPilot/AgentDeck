@@ -102,4 +102,17 @@ final class HelperSyncTests {
         #expect(try HelperSync.sync(bundled: bundled, stable: stable))
         #expect(HelperSync.sha256(of: stable) == HelperSync.sha256(of: bundled))
     }
+
+    @Test func strandedTempsGoOnlyWhenNoSyncHoldsTheLock() throws {
+        let stranded = try file(".helper-1234.tmp", "half a copy")
+        let other = try file("agentdeck-hook", "the helper")
+        // a sync in progress: its temp file may still be being written
+        let busy = try #require(HelperSync.syncLock(in: dir, wait: false))
+        HelperSync.removeStrandedTemps(in: dir)
+        #expect(FileManager.default.fileExists(atPath: stranded.path))
+        flock(busy, LOCK_UN); close(busy)
+        HelperSync.removeStrandedTemps(in: dir)
+        #expect(!FileManager.default.fileExists(atPath: stranded.path))
+        #expect(FileManager.default.fileExists(atPath: other.path))
+    }
 }

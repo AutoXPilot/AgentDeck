@@ -406,7 +406,9 @@ final class AntigravityPresenceTests {
     /// Holds an exclusive flock as agy does; a separate open file, so the
     /// probe's lock conflicts with it even in this process.
     func hold(_ url: URL) -> Int32 {
-        let fd = open(url.path, O_RDONLY)
+        // CLOEXEC: a child spawned meanwhile by a parallel test would
+        // otherwise inherit the lock and keep holding it after close
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC)
         precondition(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0)
         return fd
     }

@@ -288,9 +288,10 @@ struct LivenessAndFocusTests {
         #expect(ITermFocus.humanizeReason("agent_needs_input") == "subagent needs input")
         #expect(ITermFocus.humanizeReason("elicitation_dialog") == "needs input")
         #expect(ITermFocus.humanizeReason("sandbox request") == "sandbox request")
-        #expect(ITermFocus.humanizeReason("something_new") == "something new")
-        #expect(ITermFocus.humanizeReason("Allow edits to /Users/a/secret.txt?") == "waiting",
-                "free text never reaches the screen or a notification")
+        // anything unrecognised is a fixed word: it may be free text
+        #expect(ITermFocus.humanizeReason("something_new") == "waiting")
+        #expect(ITermFocus.humanizeReason("transfer funds to Alice") == "waiting")
+        #expect(ITermFocus.humanizeReason("Allow edits to /Users/a/secret.txt?") == "waiting")
     }
 
     @Test func sanitizeTitleDropsControlCharacters() {

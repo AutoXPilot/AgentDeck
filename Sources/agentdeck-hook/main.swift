@@ -100,16 +100,8 @@ func runInstall() {
             print("helper: already running from \(stableHelperURL.path)")
         }
         // A crash between an earlier copy and its rename can strand a
-        // .helper-*.tmp here; sweepOrphans only scans the sessions dir. Only
-        // old ones: a fresh one may be another copy's sync in progress.
-        if let debris = try? fm.contentsOfDirectory(atPath: binDirectory.path) {
-            for name in debris where name.hasPrefix(".helper-") && name.hasSuffix(".tmp") {
-                let url = binDirectory.appendingPathComponent(name)
-                let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-                guard let modified, Date().timeIntervalSince(modified) > 600 else { continue }
-                try? fm.removeItem(at: url)
-            }
-        }
+        // .helper-*.tmp here; sweepOrphans only scans the sessions dir.
+        HelperSync.removeStrandedTemps(in: binDirectory)
 
         let installer = HookInstaller(helperPath: stableHelperURL.path)
         let plan = HookInstaller.installPlan(

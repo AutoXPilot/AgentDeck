@@ -42,6 +42,8 @@ public enum ChainRunner {
         posix_spawn_file_actions_adddup2(&actions, outPipe[1], 1)
         posix_spawn_file_actions_addclose(&actions, inPipe[0])
         posix_spawn_file_actions_addclose(&actions, outPipe[1])
+        // with CLOEXEC_DEFAULT below, stderr must be passed on by name
+        posix_spawn_file_actions_addinherit_np(&actions, 2)
 
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
@@ -56,8 +58,11 @@ public enum ChainRunner {
         var emptyMask = sigset_t()
         sigemptyset(&emptyMask)
         posix_spawnattr_setsigmask(&attributes, &emptyMask)
+        // CLOEXEC_DEFAULT: the user's command gets stdin, stdout and stderr
+        // only, not whatever else the helper has open (a held lock among them)
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF
-                                                     | POSIX_SPAWN_SETSIGMASK))
+                                                     | POSIX_SPAWN_SETSIGMASK
+                                                     | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attributes, 0)
 
         let argv: [UnsafeMutablePointer<CChar>?] = [

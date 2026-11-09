@@ -660,7 +660,7 @@ final class SessionsModel: ObservableObject {
         if snapshot.provider == .antigravity, let name = agyTitles[snapshot.sessionId] {
             return name
         }
-        if let guid = ITermFocus.sessionGUID(from: snapshot.terminalSessionId),
+        if let guid = ITermFocus.sessionGUID(from: ownPane(of: snapshot)),
            let name = terminalTitles[guid], !name.isEmpty {
             return name
         }
@@ -683,7 +683,8 @@ final class SessionsModel: ObservableObject {
     private func notificationLabel(for snapshot: SessionSnapshot) -> String {
         NotificationLabel.text(
             desktopTitle: desktopLabel(for: snapshot)?.title,
-            claudeEntry: registryEntry(for: snapshot),
+            // a parked job doesn't inherit its window's name or its source
+            claudeEntry: parkedWindows[snapshot.key]?.entry ?? registryEntry(for: snapshot),
             codexName: snapshot.provider == .codex ? codexNames[snapshot.sessionId] : nil,
             folder: snapshot.projectName, sessionId: snapshot.sessionId)
     }
@@ -765,6 +766,14 @@ final class SessionsModel: ObservableObject {
     func sessionKind(for snapshot: SessionSnapshot) -> String? {
         guard snapshot.provider == .claude else { return nil }
         return registryEntry(for: snapshot)?.kind ?? claudeSessionKinds[snapshot.sessionId]
+    }
+
+    /// The pane that is this row's own. A background job's hooks run with the
+    /// environment of whichever window started the daemon, so the pane they
+    /// record says nothing about it; a parked job uses its window's.
+    func ownPane(of snapshot: SessionSnapshot) -> String? {
+        if let window = parkedWindows[snapshot.key] { return window.pane }
+        return isBackgroundSession(snapshot) ? nil : snapshot.terminalSessionId
     }
 
     func isBackgroundSession(_ snapshot: SessionSnapshot) -> Bool {
@@ -993,7 +1002,7 @@ final class SessionsModel: ObservableObject {
         let proves = !guessedPane
             && SessionPipeline.focusAcknowledges(snapshot, parkedWindows: parkedWindows)
         let fallbackURL = ITermFocus.revealURL(
-            terminalSessionId: parkedWindows[snapshot.key]?.pane ?? snapshot.terminalSessionId)
+            terminalSessionId: ownPane(of: snapshot))
         Self.appLog("activate key=\(snapshot.key) guid=\(guid)")
         pendingFocus = { [weak self] in
             // The osascript call blocks, so it runs detached — capturing only
@@ -1509,7 +1518,7 @@ extension SessionsModel {
     /// iTerm's; elsewhere only when iTerm's panes are known and the tty
     /// isn't among them.
     private func terminalLocation(of s: SessionSnapshot) -> WorkspaceCapture.Terminal {
-        if s.terminalSessionId != nil || parkedWindows[s.key]?.pane != nil { return .iTerm }
+        if ownPane(of: s) != nil { return .iTerm }
         // the registry pid only for a Claude row: it describes Claude
         // sessions, and a Codex id can collide with one
         let registryPid = s.provider == .claude ? claudeLiveSessions[s.sessionId]?.pid : nil

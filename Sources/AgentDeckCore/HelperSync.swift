@@ -103,6 +103,12 @@ public enum HelperSync {
         try fm.createDirectory(
             at: stable.deletingLastPathComponent(), withIntermediateDirectories: true
         )
+        // held across copy and rename, so removeStrandedTemps can't take a
+        // temp file that is still being written
+        guard let lock = syncLock(in: stable.deletingLastPathComponent(), wait: true) else {
+            throw CocoaError(.fileLocking)
+        }
+        defer { flock(lock, LOCK_UN); close(lock) }
         let tmp = stable.deletingLastPathComponent()
             .appendingPathComponent(".helper-\(UUID().uuidString).tmp")
         try fm.copyItem(at: bundled, to: tmp)
@@ -119,5 +125,34 @@ public enum HelperSync {
         // onto the replacement, which would drop the executable bit
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stable.path)
         return true
+    }
+
+    /// Removes `.helper-*.tmp` files a crash left between copy and rename.
+    /// Only while holding the sync lock, when none can be in progress; if
+    /// another copy is syncing, does nothing and leaves them for next time.
+    /// A file's age can't stand in for this: a copy keeps the source's
+    /// modification date.
+    public static func removeStrandedTemps(in directory: URL) {
+        guard let lock = syncLock(in: directory, wait: false) else { return }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: directory.path) else { return }
+        for name in names where name.hasPrefix(".helper-") && name.hasSuffix(".tmp") {
+            try? fm.removeItem(at: directory.appendingPathComponent(name))
+        }
+    }
+
+    static let syncLockName = ".helper-sync.lock"
+
+    /// An open, flocked descriptor for `directory`'s sync lock, or nil.
+    static func syncLock(in directory: URL, wait: Bool) -> Int32? {
+        let path = directory.appendingPathComponent(syncLockName).path
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return nil }
+        let operation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
+        var locked = flock(fd, operation)
+        while locked != 0 && errno == EINTR { locked = flock(fd, operation) }
+        guard locked == 0 else { close(fd); return nil }
+        return fd
     }
 }

@@ -22,6 +22,17 @@
 
 ### Fixed
 
+- **Edge cases from review.** A waiting reason or Claude error that isn't a
+  known category shows as `waiting` or `error`, since it could be text from
+  the session. A reservations file that isn't JSON is moved aside instead of
+  blocking every restore; one a newer build wrote is still left alone. The
+  orphan sweep deletes a damaged snapshot only under its lock and never
+  waits for one. `install` removes a stranded helper copy only when no sync
+  is running. Your status line command no longer inherits the helper's open
+  files. Status line setup gives up on a helper that doesn't answer in 10
+  seconds, and Install in the app after a minute. Reading a process's
+  arguments can no longer run past the end of the buffer.
+
 - **A notification no longer names a session by its tab title or a
   generated name**, either of which can repeat the conversation. It uses a
   name you set, or the folder.

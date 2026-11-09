@@ -159,6 +159,25 @@ final class SnapshotStoreTests {
         #expect(!url.path.contains(".."))
     }
 
+    @Test func theSweepSkipsADamagedSnapshotWhoseLockIsHeld() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let corrupt = dir.appendingPathComponent("claude-busy.json")
+        try Data("{broken".utf8).write(to: corrupt)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-7200)], ofItemAtPath: corrupt.path)
+        // a helper holding the key: the sweep must neither wait nor delete
+        let lock = dir.appendingPathComponent(".claude-busy.lock")
+        let fd = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        #expect(flock(fd, LOCK_EX) == 0)
+        let started = Date()
+        store.sweepOrphans()
+        #expect(Date().timeIntervalSince(started) < 1)
+        #expect(FileManager.default.fileExists(atPath: corrupt.path))
+        flock(fd, LOCK_UN); close(fd)
+        store.sweepOrphans()
+        #expect(!FileManager.default.fileExists(atPath: corrupt.path))
+    }
+
     @Test func orphanSweepRemovesStaleDebris() throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try store.write(makeSnapshot(id: "keep"))

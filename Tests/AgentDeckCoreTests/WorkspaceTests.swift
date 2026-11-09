@@ -230,6 +230,17 @@ struct ReservationTests {
         #expect(try Data(contentsOf: store.reservationsURL) == junk)
     }
 
+    @Test func aDamagedReservationFileIsSetAsideAndRestoreCarriesOn() throws {
+        let d = dir()
+        let store = WorkspaceStore(directory: d)
+        try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        try Data("{trunc".utf8).write(to: store.reservationsURL)
+        #expect(try store.reserve(["claude-a"]) == ["claude-a"])
+        let names = try FileManager.default.contentsOfDirectory(atPath: d.path)
+        #expect(names.contains { $0.hasPrefix("reservations.damaged-") },
+                "the damaged file is kept for inspection, not deleted")
+    }
+
     @Test func releasingEndsAReservation() throws {
         let store = WorkspaceStore(directory: dir())
         try store.reserve(["claude-a", "claude-b"])

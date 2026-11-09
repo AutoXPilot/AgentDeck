@@ -206,6 +206,18 @@ final class HookProcessorTests {
         #expect(store.load(key: "claude-e2")?.errorKind == "error")
     }
 
+    @Test func onlyADocumentedErrorTypeIsKept() throws {
+        func kind(_ error: String) throws -> String? {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "hook_event_name": "StopFailure", "session_id": "k", "error": error,
+            ])
+            return HookPayload.parse(provider: .claude, data: data)?.errorKind
+        }
+        #expect(try kind("overloaded") == "overloaded")
+        #expect(try kind("SECRET_CUSTOMER_NAME") == "error",
+                "token-shaped isn't enough: it could still be content")
+    }
+
     @Test func sessionEndKeepsRowAliveOnClearAndResume() {
         // on /clear and resume the process keeps running — removing the row
         // would drop a live session off the deck

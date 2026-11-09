@@ -92,6 +92,16 @@ struct ChainRunnerTests {
         #expect(!r.timedOut)
     }
 
+    @Test func theCommandInheritsOnlyTheStandardStreams() {
+        // an extra descriptor without CLOEXEC, like a lock some code holds
+        let extra = open("/dev/null", O_RDONLY)
+        defer { close(extra) }
+        let r = ChainRunner.run(
+            command: "[ -e /dev/fd/\(extra) ] && echo leaked || echo clean; "
+                + "[ -e /dev/fd/2 ] && echo has-stderr", input: Data())
+        #expect(String(decoding: r.stdout, as: UTF8.self) == "clean\nhas-stderr\n")
+    }
+
     @Test func stderrNeverReachesTheStatusLine() {
         let r = ChainRunner.run(command: "echo shown; echo hidden >&2", input: Data())
         #expect(String(decoding: r.stdout, as: UTF8.self) == "shown\n")

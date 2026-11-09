@@ -163,9 +163,8 @@ public enum ITermFocus {
         case let s where s.contains("sandbox"): return "sandbox request"
         case let s where s.contains("dialog"): return "dialog open"
         case "ask question": return "asked you a question"
-        // shown and notified, so only something shaped like a category
-        // passes; free text could carry detail from the session
-        case let s where HookPayload.isShortToken(s, allowingSpaces: true): return s
+        // shown and notified: anything not recognised above may be free text
+        // from the session, so it becomes a fixed word
         default: return "waiting"
         }
     }

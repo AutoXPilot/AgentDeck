@@ -121,7 +121,9 @@ public struct SnapshotStore: Sendable {
     /// For the helper that drops one event; running unlocked instead could
     /// resurrect a removed session or erase a fresh one, which is worse and
     /// silent.
-    public func withKeyLock<T>(_ key: String, _ body: () throws -> T) throws -> T {
+    public func withKeyLock<T>(
+        _ key: String, wait: Bool = true, _ body: () throws -> T
+    ) throws -> T {
         let safe = Self.sanitizeKeyComponent(key)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let lockURL = directory.appendingPathComponent(".\(safe).lock")
@@ -133,8 +135,9 @@ public struct SnapshotStore: Sendable {
         for _ in 0..<8 {
             let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o600)
             guard fd >= 0 else { throw LockUnavailable() }
-            var locked = flock(fd, LOCK_EX)
-            while locked != 0 && errno == EINTR { locked = flock(fd, LOCK_EX) }
+            let operation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
+            var locked = flock(fd, operation)
+            while locked != 0 && errno == EINTR { locked = flock(fd, operation) }
             guard locked == 0 else { close(fd); throw LockUnavailable() }
             var held = stat(), atPath = stat()
             guard fstat(fd, &held) == 0, stat(lockURL.path, &atPath) == 0,
@@ -232,14 +235,20 @@ public struct SnapshotStore: Sendable {
             } else if url.lastPathComponent.hasSuffix(".tmp") {
                 try? FileManager.default.removeItem(at: url)
             } else if url.pathExtension == "json" {
-                // Under the key's lock, like every writer: unlocked, a helper
-                // could replace the file between the read and the unlink, and
-                // the sweep would delete the fresh snapshot.
-                let key = url.deletingPathExtension().lastPathComponent
-                _ = try? withKeyLock(key) {
-                    guard let data = try? Data(contentsOf: url) else { return }
+                func removable() -> Bool {
+                    guard let data = try? Data(contentsOf: url) else { return false }
                     let decodable = (try? decoder.decode(SessionSnapshot.self, from: data)) != nil
-                    if !decodable && !Self.looksLikeSnapshot(data) {
+                    return !decodable && !Self.looksLikeSnapshot(data)
+                }
+                // Checked unlocked first, so a sweep takes no lock for the
+                // usual valid file. A candidate is re-checked under its key's
+                // lock, like every writer: unlocked, a helper could replace
+                // it between the read and the unlink. A busy lock is skipped,
+                // never waited on: this runs on the main thread.
+                guard removable() else { continue }
+                let key = url.deletingPathExtension().lastPathComponent
+                _ = try? withKeyLock(key, wait: false) {
+                    if removable() {
                         try? FileManager.default.removeItem(at: url)
                         // and the lock taken for it: a waiter on this file
                         // finds it unlinked and retries on a new one

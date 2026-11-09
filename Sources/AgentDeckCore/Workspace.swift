@@ -523,10 +523,7 @@ public final class WorkspaceStore {
     @discardableResult
     public func reserve(_ keys: [String], at now: Date = Date()) throws -> Set<String> {
         try withLock {
-            // a file this build can't read (a newer build's, or damaged) is kept:
-            // overwriting it would drop reservations and allow a second launch
-            var file = try readExisting(ReservationFile.self, from: reservationsURL)
-                ?? ReservationFile()
+            var file = try reservationsForUpdate()
             let granted = Set(keys).subtracting(file.reservations.keys)
             guard !granted.isEmpty else { return [] }
             for key in granted { file.reservations[key] = now }
@@ -535,13 +532,35 @@ public final class WorkspaceStore {
         }
     }
 
+    /// The reservations to change. A file that is JSON this build can't
+    /// decode is likely a newer build's: it is kept and this throws, since
+    /// overwriting it would drop reservations and allow a second launch. A
+    /// file that isn't JSON at all is damaged and holds nothing usable: it is
+    /// moved aside, so one bad write can't block every restore for good.
+    private func reservationsForUpdate() throws -> ReservationFile {
+        let fm = FileManager.default
+        guard let data = try? Data(contentsOf: reservationsURL) else {
+            if fm.fileExists(atPath: reservationsURL.path) {
+                throw UnreadableFile(path: reservationsURL.path)
+            }
+            return ReservationFile()
+        }
+        if let file = try? SnapshotStore.decoder().decode(ReservationFile.self, from: data) {
+            return file
+        }
+        if (try? JSONSerialization.jsonObject(with: data)) != nil {
+            throw UnreadableFile(path: reservationsURL.path)
+        }
+        let aside = directory.appendingPathComponent(
+            "reservations.damaged-\(Int(Date().timeIntervalSince1970)).json")
+        try fm.moveItem(at: reservationsURL, to: aside)
+        return ReservationFile()
+    }
+
     public func releaseReservations(_ keys: Set<String>) throws {
         guard !keys.isEmpty else { return }
         try withLock {
-            // a file this build can't read (a newer build's, or damaged) is kept:
-            // overwriting it would drop reservations and allow a second launch
-            var file = try readExisting(ReservationFile.self, from: reservationsURL)
-                ?? ReservationFile()
+            var file = try reservationsForUpdate()
             let before = file.reservations.count
             for key in keys { file.reservations[key] = nil }
             if file.reservations.count != before { try write(file, to: reservationsURL) }

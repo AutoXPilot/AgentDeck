@@ -68,8 +68,10 @@ public enum HookPayload {
             permissionMode: payload["permission_mode"] as? String,
             model: payload["model"] as? String,
             effort: effort,
-            // a category like "rate_limit"; anything else is stored as "error"
-            errorKind: (payload["error"] as? String).map { errorCategory(terminationReason: $0) },
+            // only a documented category; anything else is stored as "error"
+            errorKind: (payload["error"] as? String).map {
+                claudeStopFailureErrors.contains($0) ? $0 : "error"
+            },
             endReason: payload["reason"] as? String)
     }
 
@@ -106,6 +108,15 @@ public enum HookPayload {
             reportedError: reportedError)
     }
 
+    /// The `error` values Claude Code documents for StopFailure. The field is
+    /// stored and shown, so a value outside this list is kept only as
+    /// "error": a character check alone would pass `SOME_CUSTOMER_NAME`.
+    static let claudeStopFailureErrors: Set<String> = [
+        "rate_limit", "overloaded", "authentication_failed", "oauth_org_not_allowed",
+        "account_on_hold", "billing_error", "invalid_request", "model_not_found",
+        "server_error", "max_output_tokens", "cloud_credential_error", "unknown",
+    ]
+
     /// Antigravity's question tool, observed with agy 1.4.7.
     public static let askQuestionTool = "ask_question"
 
@@ -117,12 +128,13 @@ public enum HookPayload {
         return reason.lowercased()
     }
 
-    /// Whether `s` looks like an enum-like category (ASCII letters, digits,
-    /// `_`, at most 40 characters) rather than free text.
-    static func isShortToken(_ s: String, allowingSpaces: Bool = false) -> Bool {
+    /// Whether `s` looks like an enum-like token (ASCII letters, digits, `_`,
+    /// at most 40 characters). Only for agy's `terminationReason`, an enum
+    /// field; a free-text field needs a list of known values instead.
+    static func isShortToken(_ s: String) -> Bool {
         !s.isEmpty && s.count <= 40 && s.unicodeScalars.allSatisfy {
             ("A"..."Z").contains($0) || ("a"..."z").contains($0)
-                || ("0"..."9").contains($0) || $0 == "_" || (allowingSpaces && $0 == " ")
+                || ("0"..."9").contains($0) || $0 == "_"
         }
     }
 }

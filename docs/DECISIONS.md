@@ -40,6 +40,15 @@ minimum for running mixed versions.
 the same or newer. Before this, whichever copy of the app launched last
 won, so an old copy silently ran new hooks through an old helper.
 
+**Tests never delete an executable they ran.** (Unreleased)
+Each test process is a sleeper compiled once into a fixed temp folder and
+kept (`ProcessFixtures`). Deleting temporary executables soon after running
+them is the suspected trigger for syspolicyd crashing and staying down for up
+to 20 minutes, which hung launches across the machine (platform-facts.md).
+The one test whose subject is a deleted binary is opt-in with
+`AGENTDECK_RISKY_TESTS=1` rather than removed, because the behaviour it
+covers is real.
+
 ## Sessions and state
 
 **Hooks plus discovery, not hooks alone.** (0.5.0)
@@ -220,7 +229,16 @@ it moved. So a saved entry whose window is still open but whose job has
 ended launches the job's conversation, the newer one. A skip still names the
 entry as saved, since that's what Locate… rewrites. The read at restore time
 is on the main thread, like the entrypoint read beside it: one 64 KB tail
-per entry.
+per hop, up to eight per entry.
+
+**A damaged reservations file is set aside; a newer build's is kept.**
+(Unreleased)
+Overwriting a reservations file this build can't read would drop its
+reservations and allow a second launch, so a file that is JSON in another
+shape stops the restore with an error naming it. A file that isn't JSON at
+all holds nothing usable, and refusing it would block restore until someone
+found and deleted it, so it is renamed `reservations.damaged-<time>.json`
+and restore carries on.
 
 **agy rows show the annotation title, generated or not.** (Unreleased)
 agy saves `/rename` to `annotations/<id>.pbtxt`, the same field it writes
@@ -230,6 +248,15 @@ show the field so renames work and every row has a name, accepting that a
 generated title summarises prompts. It stays on screen: in memory only,
 never in a snapshot, workspace, log or notification (Notification Center
 keeps what it's given). Restore therefore has no agy names.
+
+**Free text that is shown or notified passes only as a known value.**
+(Unreleased)
+Claude's StopFailure `error` is kept only if it is one of the documented
+types, and a waiting reason only if it maps to one of the fixed phrases;
+anything else becomes `error` or `waiting`. A character check (letters,
+digits, `_`) was tried first and rejected in review: `SOME_CUSTOMER_NAME`
+passes it. agy's `terminationReason` keeps the character check, as it is an
+enum field rather than free text.
 
 ## Usage lines
 
