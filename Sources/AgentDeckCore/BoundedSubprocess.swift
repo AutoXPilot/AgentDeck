@@ -18,6 +18,18 @@ public enum BoundedSubprocess {
         stdin: Data? = nil,
         timeout: TimeInterval
     ) -> Result {
+        run(executable, arguments: arguments, stdin: stdin, timeout: timeout, afterRead: nil)
+    }
+
+    /// `afterRead` runs between taking a chunk off the pipe and storing it,
+    /// so a test can widen that window.
+    static func run(
+        _ executable: String,
+        arguments: [String],
+        stdin: Data? = nil,
+        timeout: TimeInterval,
+        afterRead: (@Sendable () -> Void)?
+    ) -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -29,11 +41,17 @@ public enum BoundedSubprocess {
         // Concurrent drain: accumulate as data arrives so the child never
         // blocks on a full pipe.
         let collected = DrainBox()
+        // Signalled once the handler has seen end of file, which it reaches
+        // only after storing every earlier chunk (the handler's calls are
+        // serial).
+        let drained = DispatchSemaphore(value: 0)
         outPipe.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             if chunk.isEmpty {
                 handle.readabilityHandler = nil
+                drained.signal()
             } else {
+                afterRead?()
                 collected.append(chunk)
             }
         }
@@ -59,6 +77,12 @@ public enum BoundedSubprocess {
                 _ = exited.wait(timeout: .now() + 2)
             }
         }
+        // The child exiting doesn't mean its output is stored: the handler
+        // may have taken the last bytes off the pipe and not yet appended
+        // them, and reading `collected` then lost osascript's whole answer
+        // (status 0, empty output). Wait for end of file, briefly: anything
+        // else still holding the pipe (see below) would keep it from coming.
+        _ = drained.wait(timeout: .now() + 1)
         outPipe.fileHandleForReading.readabilityHandler = nil
         // Take what is already buffered without waiting for EOF. A blocking
         // read-to-end here once had no bound at all: anything still holding
