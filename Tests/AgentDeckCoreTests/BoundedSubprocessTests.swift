@@ -29,7 +29,8 @@ struct BoundedSubprocessTests {
     @Test func aQuickChildsShortOutputIsNeverLost() {
         // osascript's one-word answer ("focused") once came back empty with
         // exit status 0: the read handler had taken the bytes off the pipe
-        // but not yet stored them when the result was collected. The pause
+        // but not yet stored them when the result was collected. Every path
+        // must hold: the run that times out too. The pause
         // widens that window, which is otherwise too narrow to hit on demand.
         var lost = 0
         for _ in 0..<20 {
@@ -38,5 +39,15 @@ struct BoundedSubprocessTests {
             if String(decoding: result.output, as: UTF8.self) != "focused\n" { lost += 1 }
         }
         #expect(lost == 0, "\(lost) of 20 runs lost their output")
+    }
+
+    @Test func outputCaughtMidStoreSurvivesATimeout() {
+        // a child that has written and then outlives the deadline: the
+        // final collection must still wait out a chunk being stored
+        let result = BoundedSubprocess.run(
+            "/bin/sh", arguments: ["-c", "echo focused; exec sleep 20"],
+            timeout: 0.3, afterRead: { usleep(400_000) })
+        #expect(result.timedOut)
+        #expect(String(decoding: result.output, as: UTF8.self) == "focused\n")
     }
 }

@@ -93,8 +93,9 @@ dismissed or until a hook clears it.
 **The provider filter narrows the list, nothing else.** (Unreleased)
 Hiding a provider is a view preference, remembered across restarts. The
 badge, notifications, restore offers and usage lines still cover every
-session, so a filter set weeks ago can't hide a session blocked on you; a
-hidden provider with one gets an orange dot by the badge's own rule
+session, so a filter set weeks ago can't hide that a session is blocked on
+you (its row is hidden, its badge count isn't); a hidden provider with one
+gets an orange dot by the badge's own rule
 (waiting or error, unacknowledged; `done` never). The header counts the
 rows matching the text filter, hidden or not, so a hidden chip says what it
 hides. Empty-state order: "No sessions match" only when the query matches

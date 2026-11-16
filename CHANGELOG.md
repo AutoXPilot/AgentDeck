@@ -34,7 +34,8 @@
   had in fact reached iTerm. The focus script's one-word answer was taken
   off the pipe but not yet stored when AgentDeck read the result, so a
   success came back empty. Every helper command could lose its output this
-  way; AgentDeck now waits for the output to end before reading it.
+  way, a timed-out one too; each chunk is now read and stored in one step
+  that the final collection waits for.
 
 - **Edge cases from review.** A waiting reason or Claude error that isn't a
   known category shows as `waiting` or `error`, since it could be text from

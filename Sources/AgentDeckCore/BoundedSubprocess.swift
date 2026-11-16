@@ -40,19 +40,20 @@ public enum BoundedSubprocess {
 
         // Concurrent drain: accumulate as data arrives so the child never
         // blocks on a full pipe.
+        // Each chunk is read and stored under the box's lock, so the final
+        // collection below can't land between the two: osascript's whole
+        // answer was once taken off the pipe and not yet stored when the
+        // result was read (status 0, empty output).
         let collected = DrainBox()
-        // Signalled once the handler has seen end of file, which it reaches
-        // only after storing every earlier chunk (the handler's calls are
-        // serial).
-        let drained = DispatchSemaphore(value: 0)
         outPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if chunk.isEmpty {
-                handle.readabilityHandler = nil
-                drained.signal()
-            } else {
-                afterRead?()
-                collected.append(chunk)
+            collected.withLock { buffer in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                } else {
+                    afterRead?()
+                    buffer.append(chunk)
+                }
             }
         }
 
@@ -77,22 +78,21 @@ public enum BoundedSubprocess {
                 _ = exited.wait(timeout: .now() + 2)
             }
         }
-        // The child exiting doesn't mean its output is stored: the handler
-        // may have taken the last bytes off the pipe and not yet appended
-        // them, and reading `collected` then lost osascript's whole answer
-        // (status 0, empty output). Wait for end of file, briefly: anything
-        // else still holding the pipe (see below) would keep it from coming.
-        _ = drained.wait(timeout: .now() + 1)
         outPipe.fileHandleForReading.readabilityHandler = nil
         // Take what is already buffered without waiting for EOF. A blocking
         // read-to-end here once had no bound at all: anything still holding
         // the pipe open — the child, if even SIGKILL hadn't landed, or a
         // grandchild that inherited it — parked the caller forever, and a
         // restore waiting on it never finished.
-        collected.append(drainWithoutBlocking(outPipe.fileHandleForReading.fileDescriptor))
+        // Under the lock: a handler call already under way finishes storing
+        // its chunk first, so nothing is lost and the order holds.
+        let output = collected.withLock { buffer in
+            buffer.append(drainWithoutBlocking(outPipe.fileHandleForReading.fileDescriptor))
+            return buffer
+        }
         // terminationStatus raises if the process is somehow still running
         let status = process.isRunning ? -1 : process.terminationStatus
-        return Result(status: status, output: collected.data, timedOut: timedOut)
+        return Result(status: status, output: output, timedOut: timedOut)
     }
 
     static func drainWithoutBlocking(_ fd: Int32) -> Data {
@@ -112,7 +112,9 @@ public enum BoundedSubprocess {
     private final class DrainBox: @unchecked Sendable {
         private let lock = NSLock()
         private var buffer = Data()
-        func append(_ d: Data) { lock.lock(); buffer.append(d); lock.unlock() }
-        var data: Data { lock.lock(); defer { lock.unlock() }; return buffer }
+        func withLock<T>(_ body: (inout Data) -> T) -> T {
+            lock.lock(); defer { lock.unlock() }
+            return body(&buffer)
+        }
     }
 }
