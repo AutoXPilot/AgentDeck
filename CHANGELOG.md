@@ -30,6 +30,11 @@
 
 ### Fixed
 
+- **agy sessions still count as agy after agy updates itself.** The update
+  renames the running program to `agy.<number>.old`, and AgentDeck matched
+  the name exactly, so every agy running across an update failed the
+  identity check.
+
 - **"Couldn't focus the pane:" with nothing after it** after a click that
   had in fact reached iTerm. The focus script's one-word answer was taken
   off the pipe but not yet stored when AgentDeck read the result, so a

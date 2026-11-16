@@ -289,9 +289,21 @@ public enum ExecutableMatch: Sendable, Equatable {
         _ base: String, _ excluded: String?, name: String, path: String?,
         _ argvMentions: (String) -> Bool
     ) -> Bool {
-        guard basename(path) == base || (path == nil && name == base) else { return false }
+        guard basename(path).map({ $0 == base || isSelfUpdateRename($0, of: base) }) == true
+                || (path == nil && name == base) else { return false }
         if let excluded, argvMentions(excluded) { return false }
         return true
+    }
+
+    /// agy updates itself in place by renaming the running binary to
+    /// `agy.<nanoseconds>.old`, and the kernel reports a process's path by
+    /// that new name. Every agy running across an update would otherwise
+    /// stop looking like agy.
+    static func isSelfUpdateRename(_ name: String, of base: String) -> Bool {
+        let prefix = base + ".", suffix = ".old"
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix),
+              name.count > prefix.count + suffix.count else { return false }
+        return name.dropFirst(prefix.count).dropLast(suffix.count).allSatisfy { ("0"..."9").contains($0) }
     }
 
     static func basename(_ path: String?) -> String? {

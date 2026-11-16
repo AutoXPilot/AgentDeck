@@ -115,7 +115,12 @@ struct ProviderSpecTests {
         #expect(m.looksLikeAgent(name: "agy", path: "/Users/x/.local/bin/agy",
                                  argvMentions: { _ in false }))
         #expect(m.matchesAncestor(name: "agy", path: "/Users/x/.local/bin/agy", depth: 0))
-        for path in ["/usr/bin/strategy", "/Users/x/bin/agyx", "/opt/agy-tools/foo"] {
+        // still agy after a self-update renamed the running binary
+        #expect(m.looksLikeAgent(name: "agy", path: "/Users/x/.local/bin/agy.1794858835529269000.old",
+                                 argvMentions: { _ in false }))
+        for path in ["/usr/bin/strategy", "/Users/x/bin/agyx", "/opt/agy-tools/foo",
+                     "/Users/x/bin/agy.old", "/Users/x/bin/agy.12x4.old", "/Users/x/bin/agy.123.bak",
+                     "/Users/x/bin/agyx.123.old"] {
             let name = (path as NSString).lastPathComponent
             #expect(!m.looksLikeAgent(name: name, path: path, argvMentions: { _ in true }))
             #expect(!m.matchesAncestor(name: name, path: path, depth: 3))
