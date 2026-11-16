@@ -318,17 +318,17 @@ struct LivenessAndFocusTests {
     }
 
     @Test func parseSessionNamesSanitizesTitles() {
-        let names = ITermFocus.parseSessionNames("GUID-1\t/dev/ttys001\tCode (codex\")")
+        let names = ITermFocus.parseSessionNames("GUID-1\t/dev/ttys001\t1\t1\tCode (codex\")")
         #expect(names["GUID-1"] == "Code")
     }
 
     @Test func parseSessionNamesHandlesRealAndMalformedLines() {
         let output = """
-        C4EB7622-AAAA\t/dev/ttys000\t✳ infra (claude)
-        B4F41D67-BBBB\t/dev/ttys001\t⠂ Claude-session-watcher (caffeinate)
+        C4EB7622-AAAA\t/dev/ttys000\t7\t1\t✳ infra (claude)
+        B4F41D67-BBBB\t/dev/ttys001\t7\t2\t⠂ Claude-session-watcher (caffeinate)
         no-tab-in-this-line
-        \t/dev/ttys002\tname-without-guid
-        GUID-ONLY\t\t
+        \t/dev/ttys002\t7\t3\tname-without-guid
+        GUID-ONLY\t\t\t\t
         """
         let names = ITermFocus.parseSessionNames(output)
         #expect(names == [
@@ -341,12 +341,27 @@ struct LivenessAndFocusTests {
     @Test func sessionListMapsTTYsToPanes() {
         // a title containing a tab must not shift the fields
         let list = ITermFocus.parseSessionList(
-            "G-1\t/dev/ttys018\twith\ttab\nG-2\t/dev/ttys030\t\nG-3\t\tno tty\n"
+            "G-1\t/dev/ttys018\t109\t2\twith\ttab\nG-2\t/dev/ttys030\t109\t3\t\nG-3\t\t365\t1\tno tty\n"
         )
         #expect(list.guidByTTY == ["ttys018": "G-1", "ttys030": "G-2"])
         #expect(list.names["G-1"] == "with\ttab")
         #expect(list.names["G-2"] == nil, "an empty title is still a pane")
         #expect(list.names["G-3"] == "no tty")
+    }
+
+    @Test func sessionListRecordsEachPanesWindowAndTab() {
+        let list = ITermFocus.parseSessionList(
+            "G-1\tttys1\t109\t2\tweb\tapp\nG-2\tttys2\t365\t1\t\n"
+            + "G-3\tttys3\tw9\t1\tbad window\nG-4\tttys4\t109\tx\tbad tab\n"
+            + "G-5\tttys5\t109\t0\ttab zero\nG-6\tttys6\told three-field line\n")
+        #expect(list.placeByGUID["G-1"] == ITermFocus.Place(window: "109", tab: 2))
+        #expect(list.placeByGUID["G-2"] == ITermFocus.Place(window: "365", tab: 1))
+        #expect(list.names["G-1"] == "web\tapp", "a title with a tab stays whole")
+        for guid in ["G-3", "G-4", "G-5"] {
+            #expect(list.placeByGUID[guid] == nil, "\(guid): no place, still a pane")
+            #expect(list.guidByTTY.values.contains(guid))
+        }
+        #expect(!list.guidByTTY.values.contains("G-6"), "fewer fields are rejected")
     }
 
     @Test func argumentsAreSearchedButNotTheEnvironment() throws {

@@ -34,6 +34,7 @@ public enum WorkspaceCapture {
         codexName: String?,
         parkedWindow: ClaudeSessionRegistry.Entry? = nil,
         terminal: Terminal,
+        place: (window: String, tab: Int)? = nil,
         now: Date,
         home: String = NSHomeDirectory()
     ) -> WorkspaceEntry? {
@@ -60,7 +61,8 @@ public enum WorkspaceCapture {
                 // generated names — so a missing source isn't a user's.
                 // A job doesn't inherit the source, only the window has it.
                 displayName: (parkedWindow ?? registry).flatMap { $0.nameSource == "user" ? $0.name : nil },
-                permissionMode: s.permissionMode, lastSeen: now
+                permissionMode: s.permissionMode, lastSeen: now,
+                window: place?.window, tab: place?.tab
             )
         case .codex:
             if s.host.kind == .app { return nil }
@@ -68,7 +70,8 @@ public enum WorkspaceCapture {
             return WorkspaceEntry(
                 provider: .codex, sessionId: s.sessionId, cwd: s.projectPath,
                 displayName: (codexName?.isEmpty == false) ? codexName : nil,
-                permissionMode: s.permissionMode, lastSeen: now
+                permissionMode: s.permissionMode, lastSeen: now,
+                window: place?.window, tab: place?.tab
             )
         case .antigravity:
             // A row found only by its presence lock has a folder only when
@@ -80,7 +83,8 @@ public enum WorkspaceCapture {
             guard !s.projectPath.isEmpty else { return nil }
             return WorkspaceEntry(
                 provider: .antigravity, sessionId: s.sessionId, cwd: s.projectPath,
-                displayName: nil, permissionMode: nil, lastSeen: now
+                displayName: nil, permissionMode: nil, lastSeen: now,
+                window: place?.window, tab: place?.tab
             )
         }
     }

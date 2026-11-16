@@ -84,8 +84,11 @@ public enum ITermFocus {
         }
     }
 
-    /// Enumerates every iTerm session as "GUID<TAB>tty<TAB>title" lines.
-    /// The title goes last because it is the only free-text field.
+    /// Enumerates every iTerm session as
+    /// "GUID<TAB>tty<TAB>window id<TAB>tab number<TAB>title" lines. The title
+    /// goes last because it is the only free-text field. The tab number
+    /// counts every tab of the window, including one whose sessions failed
+    /// to read, so positions stay true.
     /// Delimiters are computed OUTSIDE the tell block: inside it, `tab`
     /// resolves to iTerm's tab CLASS (dictionary shadowing), which silently
     /// produced unparseable output.
@@ -97,10 +100,13 @@ public enum ITermFocus {
         tell application "iTerm2"
             repeat with w in windows
                 try
+                    set wid to (id of w) as text
+                    set tabNo to 0
                     repeat with t in tabs of w
+                        set tabNo to tabNo + 1
                         try
                             repeat with s in sessions of t
-                                set out to out & (id of s) & d & (tty of s) & d & (name of s) & nl
+                                set out to out & (id of s) & d & (tty of s) & d & wid & d & tabNo & d & (name of s) & nl
                             end repeat
                         end try
                     end repeat
@@ -169,11 +175,26 @@ public enum ITermFocus {
         }
     }
 
+    /// Where a pane sits: iTerm's window id (as text) and the tab's
+    /// position in it, from 1.
+    public struct Place: Equatable, Sendable {
+        public var window: String
+        public var tab: Int
+
+        public init?(window: String, tab: Int) {
+            guard !window.isEmpty, tab >= 1 else { return nil }
+            self.window = window
+            self.tab = tab
+        }
+    }
+
     public struct SessionList: Equatable, Sendable {
         /// GUID → sanitized tab title
         public var names: [String: String] = [:]
         /// "ttys018" → GUID
         public var guidByTTY: [String: String] = [:]
+        /// GUID → window and tab
+        public var placeByGUID: [String: Place] = [:]
     }
 
     /// The tty is how a session with no recorded pane id finds its pane:
@@ -182,12 +203,16 @@ public enum ITermFocus {
     public static func parseSessionList(_ output: String) -> SessionList {
         var list = SessionList()
         for line in output.split(separator: "\n") {
-            let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
-            guard fields.count == 3 else { continue }
+            let fields = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
+            guard fields.count == 5 else { continue }
             let guid = String(fields[0])
             guard !guid.isEmpty else { continue }
             if let tty = normalizedTTY(String(fields[1])) { list.guidByTTY[tty] = guid }
-            let name = sanitizeTitle(String(fields[2]))
+            if Int(fields[2]) != nil, let tab = Int(fields[3]),
+               let place = Place(window: String(fields[2]), tab: tab) {
+                list.placeByGUID[guid] = place
+            }
+            let name = sanitizeTitle(String(fields[4]))
             if !name.isEmpty { list.names[guid] = name }
         }
         return list

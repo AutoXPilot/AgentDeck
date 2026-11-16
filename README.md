@@ -421,8 +421,11 @@ Rebooting, or quitting iTerm to update it, closes every agent session.
 AgentDeck remembers them and can resume each conversation in its folder.
 
 - **After a restart**, the popover offers the sessions that were open
-  before it. **Restore** reopens them as tabs in a new iTerm window,
-  starting iTerm first if it isn't running. Dismissed, it stays in the
+  before it. **Restore** reopens them as tabs in new iTerm windows, one
+  per window they were in and in their tab order, starting iTerm first
+  if it isn't running. Sessions recorded before AgentDeck kept windows
+  share one window. Split panes come back as adjacent tabs, and window
+  size and position aren't kept. Dismissed, it stays in the
   footer menu (⋯ → Restore), along with each earlier boot AgentDeck
   still remembers.
 - **Closed <time>** in the same menu covers quitting iTerm without a
@@ -464,8 +467,9 @@ isn't launched again until it shows up as running. That is recorded on
 disk, so it holds across relaunching AgentDeck and between two running
 copies. Nothing expires it on a timer, since a tab waiting at a prompt
 will still start the conversation once answered; the footer lists any
-that haven't appeared, with a **Clear** for when you've checked iTerm and
-they aren't there.
+that haven't appeared, with **Show** to bring the first waiting tab
+forward and a **Clear** for when you've checked iTerm and they aren't
+there.
 
 Sessions known to be running outside iTerm (Terminal.app, an editor's
 terminal) aren't captured, since restoring them would move them into

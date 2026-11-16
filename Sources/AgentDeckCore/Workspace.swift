@@ -23,10 +23,17 @@ public struct WorkspaceEntry: Codable, Equatable, Sendable {
     public var permissionMode: String?
     /// Last time the session was seen running.
     public var lastSeen: Date
+    /// Which iTerm window it was in (`ITermRun.windowKey`) and the tab's
+    /// position there, so a restore can put it back beside the same
+    /// sessions. A grouping key only, never used to address a window. Set
+    /// together or not at all.
+    public private(set) var window: String?
+    public private(set) var tab: Int?
 
     public init(
         provider: Provider, sessionId: String, cwd: String,
-        displayName: String? = nil, permissionMode: String? = nil, lastSeen: Date
+        displayName: String? = nil, permissionMode: String? = nil, lastSeen: Date,
+        window: String? = nil, tab: Int? = nil
     ) {
         self.provider = provider
         self.sessionId = sessionId
@@ -34,6 +41,48 @@ public struct WorkspaceEntry: Codable, Equatable, Sendable {
         self.displayName = displayName
         self.permissionMode = permissionMode
         self.lastSeen = lastSeen
+        setPlace(window: window, tab: tab)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider, sessionId, cwd, displayName, permissionMode, lastSeen, window, tab
+    }
+
+    /// Everything as strict as before, except the place: a damaged or
+    /// foreign value there must cost the place, not the entry.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decode(Provider.self, forKey: .provider)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+        lastSeen = try c.decode(Date.self, forKey: .lastSeen)
+        setPlace(window: (try? c.decodeIfPresent(String.self, forKey: .window)) ?? nil,
+                 tab: (try? c.decodeIfPresent(Int.self, forKey: .tab)) ?? nil)
+    }
+
+    /// Both valid or neither: a window without its tab (or the reverse)
+    /// would order a restore by half a fact.
+    public mutating func setPlace(window: String?, tab: Int?) {
+        if let window, !window.isEmpty, let tab, tab >= 1 {
+            self.window = window
+            self.tab = tab
+        } else {
+            self.window = nil
+            self.tab = nil
+        }
+    }
+
+    /// `self` (the newer sighting) with a place: its own, else `older`'s.
+    /// The place comes from iTerm's pane listing, which is refreshed less
+    /// often than sessions are recorded, so a sighting without one mustn't
+    /// erase a known place.
+    public func keepingPlace(of older: WorkspaceEntry) -> WorkspaceEntry {
+        guard window == nil, older.window != nil else { return self }
+        var result = self
+        result.setPlace(window: older.window, tab: older.tab)
+        return result
     }
 
     public var key: String { SessionKey.make(provider, sessionId) }
@@ -232,7 +281,11 @@ public struct WorkspaceGeneration: Codable, Equatable, Sendable {
         var result = self
         for entry in other.entries {
             if let i = result.entries.firstIndex(where: { $0.key == entry.key }) {
-                if entry.lastSeen > result.entries[i].lastSeen { result.entries[i] = entry }
+                let mine = result.entries[i]
+                // the newer sighting wins, keeping the other's place if it
+                // has none; a tie keeps this copy
+                result.entries[i] = entry.lastSeen > mine.lastSeen
+                    ? entry.keepingPlace(of: mine) : mine.keepingPlace(of: entry)
             } else {
                 result.entries.append(entry)
             }
@@ -441,6 +494,9 @@ public final class WorkspaceStore {
             entry.lastSeen = now
             if let i = generation.entries.firstIndex(where: { $0.key == entry.key }) {
                 let old = generation.entries[i]
+                // before comparing, or a sighting the listing hasn't placed
+                // yet would differ from the stored entry on every reload
+                entry = entry.keepingPlace(of: old)
                 if !old.sameFacts(as: entry)
                     || now.timeIntervalSince(old.lastSeen) >= refreshInterval {
                     generation.entries[i] = entry
@@ -608,7 +664,13 @@ public final class WorkspaceStore {
     public func updateNamed(id: String, _ change: (inout NamedWorkspace) -> Void) throws -> Bool {
         try withLock {
             guard var workspace = read(NamedWorkspace.self, from: namedURL(id)) else { return false }
+            let before = Dictionary(workspace.entries.map { ($0.key, $0) },
+                                    uniquingKeysWith: { first, _ in first })
             change(&workspace)
+            // an edit wins, but one that leaves out the place mustn't lose it
+            workspace.entries = workspace.entries.map { entry in
+                before[entry.key].map { entry.keepingPlace(of: $0) } ?? entry
+            }
             try write(workspace, to: namedURL(id))
             return true
         }

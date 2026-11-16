@@ -92,6 +92,8 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | The `command` parameter of `create window`/`create tab` runs the program without a shell; restore uses `write text` into a login shell instead. | 3.7.0, 0.5.0 work | observed |
 | The `iterm2:///reveal` URL can stop working without an error, so it is only a fallback. | before 0.4 | observed |
 | Inside `tell application` blocks, constants like `tab` can be shadowed by the app's dictionary. | before 0.4 | observed |
+| AppleScript `id of w` (read as text inside the window loop) gives a per-window integer, and `tabs of w` iterates in the window's visual tab order (checked against the selected tab-bar button, and again after a tab closed); split panes are several sessions of one tab, so they share a tab number. Windows list newest first. | 3.7.0, 2026-11-16 | observed in a scratch window |
+| Tabs can't be reordered from AppleScript: `move` of a tab errors (-10008) or does nothing, and the sdef marks a window's tabs read-only. Plain `index of tab` fails (-1728); `«property Indx»` works and is 0-based. | 3.7.0, 2026-11-16 | observed |
 | With oh-my-zsh's auto-title (the default), a typed line titles the tab after its first word and the window after the whole line, so a restored `cd -- … && command agy …` tab read "cd (agy)". Claude replaces the title; agy doesn't. | 3.7.0, oh-my-zsh, 2026-11-16 | observed + `termsupport.zsh` |
 | A Claude session resumed in a folder whose trust was never accepted (the home folder, here) waits at the trust prompt and writes no registry entry until answered. | Claude 2.1.325, 2026-11-16 | observed |
 
@@ -129,6 +131,7 @@ row (date, version, result) when one is done.
 | A restored agy row, before its first prompt, clicks through to its tab | done 2026-11-16 (after an agy self-update renamed the binary): two rows focused their tabs |
 | A restored agy tab is titled with its folder, not "cd" | pending (next restore) |
 | **Show** in the pending-restore note brings a tab waiting at a startup prompt forward | pending (needs a pending restore) |
+| A restore of a two-window set opens two windows, tabs in the original order; listed tab numbers match iTerm's visual order | partly done 2026-11-16: the launch script driven as `execute` does (group A, group B, one unplaced) opened three windows with each group's tabs in order, and tab numbers matched the tab bar, in scratch windows with `echo` commands. Not yet: a real restore through the app, the listing after a dragged tab, and an iTerm restart while AgentDeck runs |
 | Work Mac: Codex rollouts under an organization plan carry `rate_limits` (and which `limit_id` / `plan_type`) | not run |
 | A Claude policy `statusLine` overrides the user's `statusLine` | not observed (assumed from managed-settings precedence; AgentDeck treats it as blocking) |
 | A Claude session without subscription limits (API key) omits `rate_limits` from the status line payload | not observed |

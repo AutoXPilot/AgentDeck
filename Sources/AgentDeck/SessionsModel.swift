@@ -42,6 +42,12 @@ final class SessionsModel: ObservableObject {
     @Published private(set) var terminalTitles: [String: String] = [:]
     /// "ttys018" → iTerm session GUID, from the same fetch as the titles.
     private var paneByTTY: [String: String] = [:]
+    /// iTerm session GUID → its window key and tab, from the same fetch:
+    /// what a workspace entry records so a restore can rebuild windows.
+    private var placeByGUID: [String: (window: String, tab: Int)] = [:]
+    /// The iTerm run the pane maps above came from.
+    private var iTermRun: ITermRun?
+    private var listingSchedule = ListingSchedule()
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
     /// agy conversation titles, for the row on screen only: see
@@ -580,6 +586,14 @@ final class SessionsModel: ObservableObject {
         }
 
         sessions = output.rows
+        // a session that started since the last listing needs its pane's
+        // window and tab before it can be recorded with them
+        // and an iTerm restarted with nothing new in it still needs listing,
+        // or its places would stay void until a session starts
+        if !readOnly, listingSchedule.liveKeysChanged(runningKeys(output.rows))
+            || (iTermRun != nil && Self.currentITermRun() != iTermRun && listingSchedule.request()) {
+            startListing()
+        }
         // agy rows no hook has reported (a restored one, before its first
         // prompt) have no pid; `agy --conversation <id>` names its process
         let unreported = Set(output.rows.filter {
@@ -1438,37 +1452,85 @@ final class SessionsModel: ObservableObject {
         return installed
     }
 
+    /// The running iTerm, by bundle id: its pid and launch time say which
+    /// run a window id belongs to.
+    private static func currentITermRun() -> ITermRun? {
+        NSWorkspace.shared.runningApplications
+            .first { $0.bundleIdentifier == "com.googlecode.iterm2" }
+            .map { ITermRun(pid: $0.processIdentifier, launched: $0.launchDate) }
+    }
+
+    /// Lists iTerm's panes again, unless a listing is already running, in
+    /// which case one follow-up runs after it.
     private func refreshTerminalTitles() {
-        guard iTermRunning || NSWorkspace.shared.runningApplications
-            .contains(where: { $0.bundleIdentifier == "com.googlecode.iterm2" }) else {
+        if listingSchedule.request() { startListing() }
+    }
+
+    private func startListing() {
+        guard let run = Self.currentITermRun() else {
             Self.appLog("titles: iTerm not running; skipping fetch")
+            forgetPlaces(ifNot: nil)
+            if listingSchedule.finished() { startListing() }
             return
         }
+        // a restarted iTerm reuses window ids: places from the old run must
+        // not answer for the new one
+        forgetPlaces(ifNot: run)
         titleFetchGeneration += 1
         let generation = titleFetchGeneration
         Task.detached {
             let outcome = ITermFocus.fetchSessionNames()
             let codexTTYs = ProcessTree.codexCLITTYs()
-            let list: ITermFocus.SessionList
+            let list: ITermFocus.SessionList?
             switch outcome {
             case .success(let raw):
                 list = ITermFocus.parseSessionList(raw)
-                Self.appLog("titles: fetched \(list.names.count) session titles, "
-                            + "\(list.guidByTTY.count) ttys")
+                Self.appLog("titles: fetched \(list?.names.count ?? 0) session titles, "
+                            + "\(list?.guidByTTY.count ?? 0) ttys, \(list?.placeByGUID.count ?? 0) places")
             case .failure(let err):
                 Self.appLog("titles: fetch FAILED: \(err)")
-                return  // keep prior titles on failure
+                list = nil  // keep prior titles on failure
             }
-            // A SUCCESSFUL empty fetch is authoritative — those sessions are
-            // gone — so apply it rather than leaving stale titles/lock icons.
             Task { @MainActor [weak self] in
-                guard let self, generation == self.titleFetchGeneration else { return }
+                guard let self else { return }
+                defer { if self.listingSchedule.finished() { self.startListing() } }
+                // the same iTerm before and after: a listing taken across a
+                // restart can't be told apart from the new run's
+                let now = Self.currentITermRun()
+                guard now == run else {
+                    // iTerm quit or restarted during the listing: its places
+                    // are void, and the new run needs a listing of its own
+                    self.forgetPlaces(ifNot: now)
+                    if now != nil { _ = self.listingSchedule.request() }
+                    return
+                }
+                guard let list, generation == self.titleFetchGeneration else { return }
+                // A SUCCESSFUL empty fetch is authoritative — those sessions
+                // are gone — so apply it rather than leaving stale titles.
                 self.terminalTitles = list.names
                 self.paneByTTY = list.guidByTTY
+                self.placeByGUID = self.bootID.map {
+                    run.places(list.placeByGUID, bootID: $0)
+                } ?? [:]
                 self.codexCLITTYs = codexTTYs
-                self.onChange?()
+                // a session opened since the last listing gets its place
+                // now, not at the next reload it may not live to see. A
+                // reload, not a re-record of the last one's rows: the record
+                // counts a session missing twice as closed, and replaying the
+                // same view would be a second miss nobody observed.
+                self.reload()
             }
         }
+    }
+
+    /// Only the places: window ids mean nothing in another iTerm run. The
+    /// tty map and titles stay until a listing replaces them, as before:
+    /// emptying `paneByTTY` would turn a session known to run outside iTerm
+    /// into an unknown one, which restore would then open in iTerm.
+    private func forgetPlaces(ifNot run: ITermRun?) {
+        guard iTermRun != run else { return }
+        iTermRun = run
+        placeByGUID = [:]
     }
 
     private func watchDirectory() {
@@ -1570,7 +1632,26 @@ extension SessionsModel {
             codexName: codexNames[s.sessionId],
             parkedWindow: parkedWindows[s.key]?.entry,
             terminal: terminalLocation(of: s),
+            place: paneGUID(of: s).flatMap { placeByGUID[$0] },
             now: now)
+    }
+
+    /// The row's own iTerm pane: the one a hook recorded, else the pane on
+    /// its agent's terminal. Not `focusTarget`, which also guesses (a
+    /// daemon-run Codex thread matched by title). The pid isn't re-checked
+    /// the way a click re-checks it: a place only groups tabs, so a reused
+    /// pid costs a wrong grouping, never a wrong focus.
+    private func paneGUID(of s: SessionSnapshot) -> String? {
+        // the daemon's recorded pane and pid are the daemon's, not the thread's
+        if isRunByCodexDaemon(s) { return nil }
+        if let recorded = ITermFocus.sessionGUID(from: ownPane(of: s)) { return recorded }
+        let registryPid = s.provider == .claude ? claudeLiveSessions[s.sessionId]?.pid : nil
+        let argumentPid = s.provider == .antigravity && s.agentPid == nil
+            ? agyArgumentPids.pids[s.sessionId] : nil
+        guard let pid = argumentPid ?? SessionPipeline.terminalPid(
+                for: s, registryPid: registryPid, parkedWindows: parkedWindows),
+              let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
+        return paneByTTY[tty]
     }
 
     /// iTerm if a hook recorded a pane or the agent's tty is one of
@@ -1602,8 +1683,13 @@ extension SessionsModel {
     var liveWorkspaceEntries: [WorkspaceEntry] {
         let now = Date()
         let running = runningKeys(sessions)
+        // a place this boot already recorded fills in for one the latest
+        // listing hasn't given (it failed, or iTerm restarted since)
+        let known = bootID.flatMap { workspaceStore.loadGeneration(bootID: $0) }
+            .map { Dictionary($0.entries.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a }) } ?? [:]
         return sessions.filter { running.contains($0.key) }
             .compactMap { workspaceEntry(for: $0, now: now) }
+            .map { entry in known[entry.key].map { entry.keepingPlace(of: $0) } ?? entry }
     }
 
     /// Called on every reload; the store writes only when something changed

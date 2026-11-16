@@ -130,8 +130,8 @@ Discovery, liveness, state
 - `HostClassifier.swift`, `ClaudeDesktop.swift`, `FocusTarget.swift` — terminal
   vs app host (outermost bundle wins; unknown ≠ app), Desktop specifics, where
   a click goes.
-- `ITermFocus.swift` — AppleScript (focus by GUID, list sessions with tty),
-  title cleanup.
+- `ITermFocus.swift` — AppleScript (focus by GUID, list sessions with tty,
+  window id and tab number), title cleanup.
 - `ClaudeEnvironment.swift` — managed policy (`managed-settings.json`, MDM
   plist) and `CLAUDE_CONFIG_DIR` resolution.
 - `CodexStall.swift` — a Codex thread stuck on a prompt no hook reports
@@ -151,8 +151,14 @@ Restore
   unknown entries kept as opaque JSON (`OpaqueJSON.swift`).
 - `WorkspaceCapture.swift` — which rows are remembered (never app-hosted,
   names only if user-set).
-- `WorkspaceRestore.swift` — pure plan (skip reasons) + executor (AppleScript
-  launch script that reports typed/untyped, batches of 5, readiness check).
+- `WorkspaceRestore.swift` — pure plan (skip reasons; launches grouped by
+  recorded window, tabs in order) + executor (AppleScript launch script that
+  reports typed/untyped, a new window per group, batches of 5, readiness
+  check).
+- `ITermPlaces.swift` — `ITermRun` (pid + launch time) makes a window key
+  that can't match a window of another iTerm run or boot;
+  `ListingSchedule` keeps pane listings to one at a time plus one
+  follow-up, and asks for one when a session starts.
 - `RestoreReport.swift` — what the footer says after a restore.
 
 Usage lines

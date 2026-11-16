@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Restore puts sessions back in the windows they were in.** Each session
+  records its iTerm window and tab, and a restore opens one new window per
+  recorded window, tabs in order, where it used to put everything in one.
+  Sessions recorded before this share one window as before. Split panes
+  come back as adjacent tabs; window size and position aren't kept.
+
 - **Filter the list by provider.** The header counts (`3 CL · 1 CX · 2 AG`)
   are now buttons that hide or show that provider's sessions, in any
   combination, and the choice is remembered. Hiding narrows the list only:

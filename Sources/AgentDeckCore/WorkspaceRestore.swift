@@ -170,7 +170,34 @@ public enum WorkspaceRestore {
                 plan.skipped.append((requested, .invalidSessionId))
             }
         }
+        // after dedupe, so grouping can't change which duplicate is kept
+        plan.launches = groupedByWindow(plan.launches)
         return plan
+    }
+
+    /// Sessions that shared a window launch together, windows in the order
+    /// they first appear and the unplaced ones last, as one group. In a
+    /// group: known tabs in order, then unknown, ties by position. With no
+    /// places at all this is the order given.
+    static func groupedByWindow(_ launches: [Launch]) -> [Launch] {
+        var order: [String] = []
+        var groups: [String: [(position: Int, launch: Launch)]] = [:]
+        var unplaced: [Launch] = []
+        for (position, launch) in launches.enumerated() {
+            guard let window = launch.entry.window else {
+                unplaced.append(launch)
+                continue
+            }
+            if groups[window] == nil { order.append(window) }
+            groups[window, default: []].append((position, launch))
+        }
+        let placed = order.flatMap { window in
+            groups[window, default: []].sorted {
+                let (a, b) = ($0.launch.entry.tab ?? .max, $1.launch.entry.tab ?? .max)
+                return a != b ? a < b : $0.position < $1.position
+            }.map(\.launch)
+        }
+        return placed + unplaced
     }
 
     /// "Skipped: knowledge-86, research (folder missing); Home-value
@@ -385,7 +412,8 @@ public enum WorkspaceRestore {
     tell application "iTerm2" to count windows
     """
 
-    /// Launches into a single new window in batches, waiting after each
+    /// Launches into a new window per recorded window (see
+    /// `groupedByWindow`), in batches, waiting after each
     /// batch (via `awaitBatch`) so thirty sessions don't start in the same
     /// few seconds and slow every AppleScript round-trip past its timeout.
     /// Each entry is re-checked immediately before its launch. Blocking;
@@ -414,9 +442,15 @@ public enum WorkspaceRestore {
             return outcomes
         }
         var window = ""
+        // the group of the last launch attempted, not the last that opened
+        // a window: a group whose first launch failed must still get its
+        // own window, never the previous group's
+        var group: String?? = .none
         var batch: [WorkspaceEntry] = []
         for (i, launch) in launches.enumerated() {
             guard stillWanted(launch.entry) else { continue }
+            if let previous = group, previous != launch.entry.window { window = "" }
+            group = .some(launch.entry.window)
             if i > 0, stagger > 0 { Thread.sleep(forTimeInterval: stagger) }
             let (outcome, newWindow) = classifyLaunch(
                 run(launchScript, [window, launch.commandLine], 15))

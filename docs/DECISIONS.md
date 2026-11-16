@@ -173,6 +173,28 @@ re-checked (agent executable, id still in its arguments) before each use,
 and an id the scan didn't find isn't scanned again while it stays wanted:
 a session started by hand without its id never will be.
 
+**Restore rebuilds windows from a recorded grouping key.** (Unreleased)
+Each workspace entry keeps the iTerm window it was in, as
+`<boot>:<iTerm pid>:<iTerm launch time>:<window id>`, and its tab number.
+The key is only compared, never used to address a window: window ids
+restart with iTerm and a pid can recur, so the run and boot are part of
+it. The place comes from the pane listing, which runs on popover open and
+whenever a session starts; a sighting the listing hasn't placed keeps the
+stored place (`keepingPlace`), in `record` before the file is compared, in
+`merged`, and through named-workspace edits, so a slower listing can't
+erase it or rewrite the file every reload; saving a named workspace fills
+a missing place from this boot's record. A listing that finishes ends in a
+full reload, never a re-record of the last reload's rows: the record calls
+a session missing twice closed, and replaying one view would be a second
+miss nobody observed. An iTerm restart voids places only; the tty map and
+titles stay until the next listing replaces them, since an empty tty map
+would make a session known to run outside iTerm look unknown, and restore
+would then open it in iTerm. A damaged place decodes as none rather than
+failing the entry. An older build rewrites entries without
+the place. Not kept: split panes (adjacent tabs), window size and
+position; a partial restore opens new windows rather than adding to open
+ones.
+
 **Commands are built, never stored.** (0.5.0)
 The original command line can contain a prompt or a credential, so it is
 never recorded. Restore builds the line from a UUID session id, a
