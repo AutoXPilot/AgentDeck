@@ -331,6 +331,23 @@ struct ClosedSetTests {
         #expect(sets.first?.closedAt == t0, "dated at the last write, when they were last seen")
     }
 
+    @Test func aWindowParkedOnABackgroundJobIsNotRecordedClosed() throws {
+        // its row gives way to the job's, but its process is alive
+        let store = tempStore()
+        try store.record(live: [e("window")], bootID: "B", now: t0)
+        try store.record(live: [e("job")], alsoRunning: ["claude-window"], bootID: "B", now: t0 + 60)
+        try store.record(live: [e("job")], alsoRunning: ["claude-window"], bootID: "B", now: t0 + 120)
+        #expect(store.loadGeneration(bootID: "B")?.closedSets.isEmpty == true)
+        // and once it really closes, that's recorded as usual
+        try store.record(live: [e("job")], bootID: "B", now: t0 + 180)
+        try store.record(live: [e("job")], bootID: "B", now: t0 + 240)
+        #expect(store.loadGeneration(bootID: "B")?.closedSets.map(\.keys) == [["claude-window"]])
+        // a restart while it's parked doesn't count it closed unobserved
+        let restarted = WorkspaceStore(directory: store.directory)
+        try restarted.record(live: [e("job")], alsoRunning: ["claude-other"], bootID: "B", now: t0 + 300)
+        #expect(restarted.loadGeneration(bootID: "B")?.closedSets.count == 1)
+    }
+
     @Test func aRestartWithEverythingStillRunningRecordsNothing() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("ws-\(UUID().uuidString)", isDirectory: true)

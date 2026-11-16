@@ -113,6 +113,14 @@ public enum WorkspaceRestore {
         return current
     }
 
+    /// The entry's conversation is running, under its own id or the newest
+    /// one it continued in (a window whose conversation moved to a
+    /// background job).
+    public static func isOpen(_ entry: WorkspaceEntry, live: Set<String>,
+                              successor: (WorkspaceEntry) -> String?) -> Bool {
+        live.contains(entry.key) || live.contains(latest(entry, successor: successor).key)
+    }
+
     /// `entry` isn't worth offering: its conversation is still running
     /// under a newer id.
     public static func continuesInRunningSession(_ entry: WorkspaceEntry, live: Set<String>,

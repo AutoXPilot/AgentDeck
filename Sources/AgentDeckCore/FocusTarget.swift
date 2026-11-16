@@ -75,6 +75,11 @@ public enum FocusResolver {
         sessionKind?.lowercased() == backgroundSessionKind
     }
 
+    /// A background job whose window is running but can't be located: it
+    /// has a window, so "no window" would be wrong.
+    public static let parkedWindowLost = "Its window couldn't be found in iTerm. "
+        + "Answer it in Claude's agents view (`claude agents`)."
+
     /// What a click will do, in words.
     ///
     /// An unfocusable row still has to be useful. "Not in a terminal or app
@@ -92,6 +97,8 @@ public enum FocusResolver {
             return "Click to bring \(name) to the front"
         case .appURL(_, let name):
             return "Click to open this thread in \(name)"
+        case .none where inAgentsView:
+            return parkedWindowLost
         case .none where isBackground(sessionKind: sessionKind):
             return "Background session — no window to focus. "
                 + "Answer it in the agents panel of the session that started it."

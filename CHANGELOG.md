@@ -58,9 +58,12 @@
   stopped, the other was live but only raised iTerm. The row now shows the
   job's state and opens the window's agents view. A waiting row stays
   flagged after the click, since the window may be on another job. A
-  background session with no window now says so instead of raising iTerm.
+  background session with no window now says so instead of raising iTerm,
+  and one whose window can't be found says that rather than "no window".
   Restore follows Claude's link to the newest conversation, in old saved
   sets too, and doesn't offer one that's still running under its new id.
+  The window isn't recorded as closed while it's open, and a named
+  workspace counts the conversation as open once it moves to a job.
 - **Claude's spare background workers no longer get a row.** Claude keeps a
   pre-warmed worker ready for background jobs, and it showed up as an
   unclickable row named after its id.

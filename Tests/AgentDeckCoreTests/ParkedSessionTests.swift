@@ -191,6 +191,14 @@ struct BackgroundFocusTests {
         #expect(FocusResolver.describe(target, inAgentsView: true).contains("agents view"))
         #expect(!FocusResolver.describe(target).contains("agents view"))
     }
+
+    @Test func aParkedJobWhoseWindowIsLostDoesNotClaimItHasNone() {
+        let message = FocusResolver.describe(.none, sessionKind: "bg", inAgentsView: true)
+        #expect(message == FocusResolver.parkedWindowLost)
+        #expect(!message.contains("no window"))
+        #expect(FocusResolver.describe(.none, sessionKind: "bg").contains("no window"),
+                "a job with no window still says so")
+    }
 }
 
 struct ContinuationTests {
@@ -382,6 +390,14 @@ struct RestoreContinuationTests {
         #expect(WorkspaceRestore.continuesInRunningSession(window, live: [jobEntry.key], successor: link))
         #expect(!WorkspaceRestore.continuesInRunningSession(window, live: [], successor: link))
         #expect(!WorkspaceRestore.continuesInRunningSession(jobEntry, live: [jobEntry.key], successor: link))
+    }
+
+    @Test func aNamedSetCountsAConversationThatMovedToAJobAsOpen() {
+        #expect(WorkspaceRestore.isOpen(window, live: [jobEntry.key], successor: link))
+        #expect(WorkspaceRestore.isOpen(window, live: [window.key], successor: link))
+        #expect(!WorkspaceRestore.isOpen(window, live: [], successor: link))
+        #expect(!WorkspaceRestore.isOpen(window, live: [jobEntry.key], successor: { _ in nil }),
+                "no link, no claim")
     }
 }
 

@@ -386,8 +386,15 @@ public final class WorkspaceStore {
     /// Absence from `live` never removes an entry. A generation file is not
     /// created until it has something in it, so a login that sees no
     /// sessions can't push the previous boot's set out of the ring.
+    ///
+    /// `alsoRunning`: keys of sessions whose process is alive but that
+    /// aren't captured as entries right now. A Claude window whose
+    /// conversation moved to a background job is one: its row gives way to
+    /// the job's, and without this its entry would be noted closed while
+    /// the window was still open.
     @discardableResult
-    public func record(live: [WorkspaceEntry], bootID: String, now: Date = Date()) throws -> Bool {
+    public func record(live: [WorkspaceEntry], alsoRunning: Set<String> = [],
+                       bootID: String, now: Date = Date()) throws -> Bool {
         // A file that exists but can't be read is not a missing one: a
         // fresh generation written over it would erase whatever a newer
         // build (or a damaged write worth recovering) left there.
@@ -401,7 +408,7 @@ public final class WorkspaceStore {
         // the first. One absence can be a registry file caught mid-write;
         // recording it would fold a running session into whatever group
         // closed nearby. Until confirmed, a suspect stays in the baseline.
-        let liveKeys = Set(live.map(\.key))
+        let liveKeys = Set(live.map(\.key)).union(alsoRunning)
         var baseline = liveKeys
         var stillSuspect: [String: Date] = [:]
         if let previous = previousLive, previousLiveBoot == bootID {

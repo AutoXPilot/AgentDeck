@@ -1020,7 +1020,9 @@ final class SessionsModel: ObservableObject {
             if popoverVisible { onRequestClose?() }
             return
         case .none:
-            focusProblem = isBackgroundSession(snapshot)
+            focusProblem = parkedWindows[snapshot.key] != nil
+                ? FocusResolver.parkedWindowLost
+                : isBackgroundSession(snapshot)
                 ? "Background session — it has no window. Answer it in the "
                     + "agents panel of the session that started it."
                 : "This session isn't in a terminal or app we can focus."
@@ -1594,7 +1596,10 @@ extension SessionsModel {
         let live = rows.filter { running.contains($0.key) }
             .compactMap { workspaceEntry(for: $0, now: now) }
         do {
-            if try workspaceStore.record(live: live, bootID: bootID, now: now) {
+            // a window whose conversation moved to a background job has no
+            // row, but it's open: don't record it closed
+            let parked = Set(parkedWindows.values.map { SessionKey.make(.claude, $0.entry.sessionId) })
+            if try workspaceStore.record(live: live, alsoRunning: parked, bootID: bootID, now: now) {
                 refreshWorkspaces()
             }
             lastWorkspaceRecordError = nil
@@ -1623,7 +1628,9 @@ extension SessionsModel {
         var offers: [RestoreOffer] = []
         var banner: RestoreOffer?
         let generations = workspaceStore.generations()
-        loadContinuationsAsync(generations.flatMap(\.entries))
+        let named = workspaceStore.named()
+        // named sets too: their "N open" follows a conversation that moved
+        loadContinuationsAsync(generations.flatMap(\.entries) + named.flatMap(\.entries))
         let ordered = generations.filter { $0.bootID == bootID }
             + generations.filter { $0.bootID != bootID }
         for generation in ordered {
@@ -1645,7 +1652,6 @@ extension SessionsModel {
         }
         if offers != restoreOffers { restoreOffers = offers }
         if banner != bannerOffer { bannerOffer = banner }
-        let named = workspaceStore.named()
         if named != namedWorkspaces { namedWorkspaces = named }
     }
 
@@ -1719,7 +1725,10 @@ extension SessionsModel {
 
     func openCount(of entries: [WorkspaceEntry]) -> Int {
         let live = runningKeys(sessions)
-        return entries.filter { live.contains($0.key) }.count
+        let successors = claudeContinuations.successors
+        return entries.filter {
+            WorkspaceRestore.isOpen($0, live: live, successor: { successors[$0.sessionId] })
+        }.count
     }
 
     /// One entry, read fresh from disk — for use off the main thread, right

@@ -221,6 +221,11 @@ goes. The window is the destination, kept as an association
 (`parkedWindows`) rather than a pane written onto the job. Pairing uses live
 registry entries only, so either side ending separates them by itself.
 
+The window's row goes but the window doesn't close: its key is passed to
+the workspace record as still running (`alsoRunning`), so no closure is
+written for a process that is alive, and a named set counts its entry open
+when the newest conversation it continued in is running.
+
 A focus doesn't prove the job was reached: the window is an agents view the
 user can move around in. So a waiting row stays unacknowledged after the
 click, and the hover says where it leads.
