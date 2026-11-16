@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Filter the list by provider.** The header counts (`3 CL · 1 CX · 2 AG`)
+  are now buttons that hide or show that provider's sessions, in any
+  combination, and the choice is remembered. Hiding narrows the list only:
+  the menu-bar badge and notifications still count every session, and a
+  hidden provider with a session blocked on you shows an orange dot. When
+  everything left is hidden, the popover says so and offers **Show all**
+  rather than "No sessions match" or a hooks message.
+
 - **Clicking a ChatGPT-hosted Codex row opens that exact thread**
   (`codex://threads/<id>`, verified to land on the thread), instead of only
   bringing ChatGPT forward. As with any app target, the click doesn't mark

@@ -90,6 +90,17 @@ Activating an app or opening a `codex://` link can't prove the user
 reached that session, so a session that needs you keeps its badge until
 dismissed or until a hook clears it.
 
+**The provider filter narrows the list, nothing else.** (Unreleased)
+Hiding a provider is a view preference, remembered across restarts. The
+badge, notifications, restore offers and usage lines still cover every
+session, so a filter set weeks ago can't hide a session blocked on you; a
+hidden provider with one gets an orange dot by the badge's own rule
+(waiting or error, unacknowledged; `done` never). The header counts the
+rows matching the text filter, hidden or not, so a hidden chip says what it
+hides. Empty-state order: "No sessions match" only when the query matches
+nothing at all; when matches exist but are all hidden, say which providers
+are hidden and offer Show all; only then the hooks messages.
+
 **agy print mode is not filtered by "no tty".** (0.6.0)
 Lacking a tty isn't evidence of print mode (discovered and background
 sessions have none either). Print mode is filtered only once a payload or

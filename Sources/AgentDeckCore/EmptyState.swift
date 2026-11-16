@@ -5,9 +5,12 @@ import Foundation
 /// filter that their hooks are broken) is a straight-to-user bug, and this
 /// kind of branch selection is exactly what kept escaping in the app target.
 public enum EmptyState: Equatable, Sendable {
-    /// A filter is applied and matches nothing — checked FIRST so it isn't
-    /// masked by a hooks-not-installed message.
+    /// A filter is applied and matches nothing, hidden providers included —
+    /// checked FIRST so it isn't masked by a hooks-not-installed message.
     case noFilterMatch(query: String)
+    /// There are rows (matching the filter, if any), but every one belongs
+    /// to a hidden provider. Names only the hidden providers that have rows.
+    case providersHidden([Provider])
     /// The core pipeline isn't wired: the helper or Claude hooks are missing.
     case coreHooksMissing
     /// Policy runs only the organization's hooks. Claude sessions still
@@ -24,13 +27,20 @@ public enum EmptyState: Equatable, Sendable {
     /// The provider whose hooks the core pipeline depends on.
     static let core: Provider = .claude
 
+    /// `matchCounts`: rows per provider that match the filter, hidden or
+    /// not (`SessionFilter.counts`). Called only when no row is showing.
     public static func determine(
         helperInstalled: Bool,
         statuses: [Provider: HookStatus],
-        filter: String
+        filter: String,
+        matchCounts: [Provider: Int] = [:],
+        hidden: Set<Provider> = []
     ) -> EmptyState {
         let trimmed = filter.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty { return .noFilterMatch(query: trimmed) }
+        let hiding = Provider.allCases.filter { hidden.contains($0) && matchCounts[$0, default: 0] > 0 }
+        // "nothing matches" would be false when the matches are only hidden
+        if !trimmed.isEmpty, hiding.isEmpty { return .noFilterMatch(query: trimmed) }
+        if !hiding.isEmpty { return .providersHidden(hiding) }
         let coreStatus = statuses[core] ?? .missing
         if coreStatus == .blockedByPolicy { return .hooksBlockedByPolicy }
         if !helperInstalled || coreStatus == .missing { return .coreHooksMissing }

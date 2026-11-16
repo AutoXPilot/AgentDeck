@@ -43,6 +43,7 @@ struct SessionListView: View {
         // shift under the highlight).
         .onChange(of: model.openGeneration) { _, _ in selection = -1 }
         .onChange(of: model.filterText) { _, _ in selection = -1 }
+        .onChange(of: model.hiddenProviders) { _, _ in selection = -1 }
         .focusable()
         // Focusable is required for onKeyPress, but macOS then paints a blue
         // focus ring around the container. The popover clips it into stray
@@ -145,13 +146,24 @@ struct SessionListView: View {
         let reason = EmptyState.determine(
             helperInstalled: model.helperInstalled,
             statuses: model.hookStatus,
-            filter: model.filterText
+            filter: model.filterText,
+            matchCounts: SessionFilter.counts(model.textMatches),
+            hidden: model.hiddenProviders
         )
         return VStack(spacing: 6) {
             switch reason {
             case .noFilterMatch(let query):
                 Text("No sessions match “\(query)”")
                     .font(.callout).foregroundStyle(.secondary)
+            case .providersHidden(let providers):
+                let names = ListFormatter.localizedString(byJoining: providers.map(\.displayName))
+                Text(model.filterText.trimmingCharacters(in: .whitespaces).isEmpty
+                     ? "\(names) sessions are hidden"
+                     : "The matching \(names) sessions are hidden")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Show all") { model.showAllProviders() }
+                    .controlSize(.small)
             case .coreHooksMissing:
                 Text("Hooks aren't installed yet").font(.callout)
                 Text("Click “Install hooks” below, then start a session.")
@@ -194,40 +206,97 @@ struct SessionListView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Text("AgentDeck").font(.headline)
-            if !rows.isEmpty {
-                // count what's actually shown, so the CL·CX summary matches
-                // the list while a filter is applied
-                Text(Provider.allCases.map { provider in
-                    "\(rows.filter { $0.provider == provider }.count) \(provider.spec.badge)"
-                }.joined(separator: " · "))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        // shown while hiding anything, even with no sessions, so a hidden
+        // provider can always be shown again
+        let chips = !model.sessions.isEmpty || !model.hiddenProviders.isEmpty
+        // one line when it fits at its natural width; otherwise the chips
+        // take a line of their own rather than squeezing the title
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                Text("AgentDeck").font(.headline).lineLimit(1)
+                if chips { providerChips }
+                Spacer(minLength: 4)
+                headerStatus
             }
-            Spacer()
-            if model.doneCount > 0 {
-                Button {
-                    model.acknowledgeAllDone()
-                } label: {
-                    Text("\(model.doneCount) done")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("AgentDeck").font(.headline).lineLimit(1)
+                    Spacer(minLength: 4)
+                    headerStatus
                 }
-                .buttonStyle(.plain)
-                .help("Clear finished sessions from the attention list")
-            }
-            if model.alertCount > 0 {
-                Text("\(model.alertCount) need you")
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.orange.opacity(0.2)))
-                    .accessibilityLabel("\(model.alertCount) sessions need you")
+                if chips { providerChips }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var headerStatus: some View {
+        if model.doneCount > 0 {
+            Button {
+                model.acknowledgeAllDone()
+            } label: {
+                Text("\(model.doneCount) done")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Clear finished sessions from the attention list")
+        }
+        if model.alertCount > 0 {
+            Text("\(model.alertCount) need you")
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.orange.opacity(0.2)))
+                .accessibilityLabel("\(model.alertCount) sessions need you")
+        }
+    }
+
+    /// One chip per provider: its count of rows matching the text filter,
+    /// click to hide or show it. A hidden provider with a session blocked on
+    /// you carries an orange dot.
+    private var providerChips: some View {
+        let counts = SessionFilter.counts(model.textMatches)
+        let alerting = model.hiddenNeedingYou
+        return HStack(spacing: 3) {
+            ForEach(Provider.allCases, id: \.self) { provider in
+                let hidden = model.hiddenProviders.contains(provider)
+                let count = counts[provider, default: 0]
+                let name = provider.displayName
+                Button {
+                    model.toggleProvider(provider)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("\(count) \(provider.spec.badge)")
+                            .strikethrough(hidden)
+                        if alerting.contains(provider) {
+                            Circle().fill(Color.orange).frame(width: 5, height: 5)
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(hidden ? Color.secondary.opacity(0.6) : Color.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        Capsule().fill(hidden
+                            ? Color.clear
+                            : provider.spec.tint.color.opacity(0.18))
+                    )
+                    .overlay(Capsule().strokeBorder(Color.secondary.opacity(hidden ? 0.35 : 0)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help(hidden ? "Show \(name) sessions" : "Hide \(name) sessions")
+                .accessibilityLabel(
+                    "\(name), \(count) \(count == 1 ? "session" : "sessions"), "
+                    + (hidden ? "hidden" : "shown")
+                    + (alerting.contains(provider) ? ", a hidden session needs you" : "")
+                )
+            }
+        }
     }
 
     /// One line per subscription that has figures, under the header.

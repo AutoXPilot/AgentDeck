@@ -52,4 +52,32 @@ struct EmptyStateTests {
             helperInstalled: false, statuses: [.claude: .blockedByPolicy, .codex: .missing],
             filter: "") == .hooksBlockedByPolicy)
     }
+
+    @Test func matchesThatAreOnlyHiddenAreNotReportedAsNoMatch() {
+        // "nothing matches" would be false: the codex row matches, hidden
+        #expect(EmptyState.determine(
+            helperInstalled: true, statuses: [.claude: .installed], filter: "webapp",
+            matchCounts: [.claude: 0, .codex: 1, .antigravity: 0], hidden: [.codex, .antigravity])
+            == .providersHidden([.codex]), "names only hidden providers with rows")
+        #expect(EmptyState.determine(
+            helperInstalled: true, statuses: [.claude: .installed], filter: "webapp",
+            matchCounts: [.claude: 0, .codex: 0], hidden: [.codex])
+            == .noFilterMatch(query: "webapp"))
+    }
+
+    @Test func everythingHiddenWithoutAQuerySaysSo() {
+        #expect(EmptyState.determine(
+            helperInstalled: false, statuses: [.claude: .missing], filter: "",
+            matchCounts: [.claude: 2, .antigravity: 1], hidden: Set(Provider.allCases))
+            == .providersHidden([.claude, .antigravity]), "before any hook message")
+    }
+
+    @Test func hiddenProvidersWithNoSessionsLeaveTheUsualMessage() {
+        #expect(EmptyState.determine(
+            helperInstalled: true, statuses: [.claude: .installed, .codex: .installed], filter: "",
+            matchCounts: [.claude: 0, .codex: 0], hidden: [.codex]) == .idle)
+        #expect(EmptyState.determine(
+            helperInstalled: false, statuses: [.claude: .installed], filter: "",
+            matchCounts: [:], hidden: [.claude]) == .coreHooksMissing)
+    }
 }

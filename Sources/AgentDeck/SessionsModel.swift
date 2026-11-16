@@ -107,6 +107,9 @@ final class SessionsModel: ObservableObject {
     }
     @Published private(set) var iTermRunning = false
     @Published var filterText = ""
+    /// Providers whose rows the list leaves out (the header chips). A view
+    /// preference, so remembered; the badge and notifications ignore it.
+    @Published private(set) var hiddenProviders: Set<Provider> = []
     /// Bumped on every popover open; the view watches it to reset transient
     /// state (keyboard selection) that must not survive across opens.
     @Published private(set) var openGeneration = 0
@@ -172,6 +175,7 @@ final class SessionsModel: ObservableObject {
     private var pendingFocus: (() -> Void)?
 
     private static let acksDefaultsKey = "acknowledgments"
+    private static let hiddenProvidersKey = "hiddenProviders"
     private static let waitAlertMinutesKey = "waitAlertMinutes"
 
     /// Minutes a session may sit blocked before we interrupt the user.
@@ -202,8 +206,15 @@ final class SessionsModel: ObservableObject {
     /// fought the live app instance for the file.
     func start(forRendering: Bool = false) {
         loadAcks()
+        hiddenProviders = SessionFilter.decode(
+            Self.appDefaults.object(forKey: Self.hiddenProvidersKey))
         if forRendering {
             readOnly = true
+            // `codex,antigravity`: render a hidden state without changing
+            // the live app's preference
+            if let hidden = ProcessInfo.processInfo.environment["AGENTDECK_RENDER_HIDDEN"] {
+                hiddenProviders = SessionFilter.decode(hidden.split(separator: ",").map(String.init))
+            }
             // off by default: a render is a file, and these stay on screen
             if ProcessInfo.processInfo.environment["AGENTDECK_RENDER_AGY_TITLES"] != nil {
                 agyTitles = AntigravityState.conversationTitles()
@@ -623,16 +634,40 @@ final class SessionsModel: ObservableObject {
         onChange?()
     }
 
+    /// Rows matching the text filter, hidden providers included.
+    var textMatches: [SessionSnapshot] {
+        SessionFilter.textMatches(sessions, query: filterText) { title(for: $0) }
+    }
+
     var visibleSessions: [SessionSnapshot] {
-        let query = filterText.trimmingCharacters(in: .whitespaces).lowercased()
-        let matching = query.isEmpty ? sessions : sessions.filter {
-            title(for: $0).lowercased().contains(query)
-                || $0.projectPath.lowercased().contains(query)
-        }
         // `sessions` is already deduplicated by SessionPipeline and filtering
         // can't introduce duplicates, so no dedupe/assert is needed here (the
         // guard lives in the pipeline, which has tests for it).
-        return matching
+        SessionFilter.visible(textMatches, hidden: hiddenProviders)
+    }
+
+    /// Hidden providers with a session the badge counts.
+    var hiddenNeedingYou: Set<Provider> {
+        SessionFilter.hiddenNeedingYou(sessions, hidden: hiddenProviders, acks: acks)
+    }
+
+    func toggleProvider(_ provider: Provider) {
+        if hiddenProviders.contains(provider) {
+            hiddenProviders.remove(provider)
+        } else {
+            hiddenProviders.insert(provider)
+        }
+        saveHiddenProviders()
+    }
+
+    func showAllProviders() {
+        hiddenProviders = []
+        saveHiddenProviders()
+    }
+
+    private func saveHiddenProviders() {
+        guard !readOnly else { return }
+        Self.appDefaults.set(SessionFilter.encode(hiddenProviders), forKey: Self.hiddenProvidersKey)
     }
 
     func needsAttention(_ snapshot: SessionSnapshot) -> Bool {
@@ -1451,15 +1486,18 @@ final class SessionsModel: ObservableObject {
         watchDirectory()
     }
 
-    private func loadAcks() {
-        // Run unbundled — the --render-popover harness from .build — the
-        // standard defaults are a different, stale domain named after the
-        // executable, and renders showed every finished session as
-        // unacknowledged. Read the app's own.
-        let defaults = Bundle.main.bundleIdentifier == nil
+    /// Run unbundled — the --render-popover harness from .build — the
+    /// standard defaults are a different, stale domain named after the
+    /// executable, and renders showed every finished session as
+    /// unacknowledged. Read the app's own.
+    private static var appDefaults: UserDefaults {
+        Bundle.main.bundleIdentifier == nil
             ? (UserDefaults(suiteName: "com.tonyhoang.agentdeck") ?? .standard)
             : .standard
-        guard let stored = defaults.dictionary(forKey: Self.acksDefaultsKey)
+    }
+
+    private func loadAcks() {
+        guard let stored = Self.appDefaults.dictionary(forKey: Self.acksDefaultsKey)
         else { return }
         acks = stored.compactMapValues { value in
             (value as? Double).map { Date(timeIntervalSince1970: $0) }

@@ -118,6 +118,9 @@ Discovery, liveness, state
   their rollout open (`daemonLive`, from `ProcessTree.codexDaemonOpenThreads`);
   the daemon's own pid proves nothing (`Liveness.ProcessProbe.system`).
 - `SessionPipeline.swift` — the whole snapshots→rows derivation.
+- `SessionFilter.swift` — the popover's text and provider filters, the
+  per-provider header counts, the hidden-provider dot and the stored form of
+  the hidden set. List only; badge and notifications never see it.
 - `Attention.swift`, `AutoAck.swift`, `RowOrdering.swift`, `WaitingTracker.swift`,
   `EmptyState.swift` — badge counts, ordering (needs-you first, then newest),
   notification episodes (persisted across relaunch), empty-state text.
@@ -221,6 +224,8 @@ pkill -x AgentDeck; open ~/Applications/AgentDeck.app
 .build/debug/agentdeck-hook debug-usage              # the usage figures the app would show
 # render with sample usage at a given width (fixture = JSON array of ProviderUsage):
 AGENTDECK_USAGE_FIXTURE=u.json AGENTDECK_RENDER_WIDTH=360 .build/debug/AgentDeck --render-popover /tmp/x.png
+# render with providers hidden (comma-separated raw values, no spaces); the live preference is untouched:
+AGENTDECK_RENDER_HIDDEN=codex,antigravity .build/debug/AgentDeck --render-popover /tmp/x.png
 ~/Applications/AgentDeck.app/Contents/MacOS/agentdeck-hook status   # versions, hook health, active count
 tail ~/Library/Application\ Support/AgentDeck/app.log
 ```

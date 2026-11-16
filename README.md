@@ -15,6 +15,11 @@ waiting on you** — then click a row to jump to that exact iTerm2 tab/pane.
   reached it. A blocked session in an app can't be confirmed reached, so
   dismiss it with right-click → Dismiss. ↑/↓ + Return, ⌘1–9, filter field,
   right-click actions
+- Click a provider's count in the header (`3 CL`, `1 CX`, `2 AG`) to hide or
+  show its sessions; app-hosted ones go with their provider (Claude Desktop
+  with Claude, ChatGPT with Codex). Remembered across restarts. The list
+  only: the badge and notifications still count hidden sessions, and a
+  hidden provider with one blocked on you shows an orange dot
 - A marker on sessions running **unsupervised** (approvals off)
 - Event-driven via the CLIs' lifecycle hooks, plus Claude's session registry
   and agy's presence locks; no output scraping. A 15-second sweep checks that
