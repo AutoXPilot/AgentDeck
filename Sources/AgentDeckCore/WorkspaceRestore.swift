@@ -270,7 +270,16 @@ public enum WorkspaceRestore {
         _ entry: WorkspaceEntry, refusedPermissionModes: Set<String>
     ) -> String? {
         guard let (cd, id) = resumePrefix(entry) else { return nil }
-        return "\(cd) && command agy --conversation \(id)"
+        return "\(cd) && \(tabTitle(entry.cwd)) && command agy --conversation \(id)"
+    }
+
+    /// agy sets no terminal title, so a restored tab kept the one the shell
+    /// gave the typed line ("cd", from oh-my-zsh's first-word title). This
+    /// names it after the folder, as an agy started by hand is. The folder
+    /// only: agy's conversation title would end up in shell history.
+    static func tabTitle(_ cwd: String, home: String = NSHomeDirectory()) -> String {
+        let folder = cwd == home ? "~" : (cwd as NSString).lastPathComponent
+        return "printf '\\033]0;%s\\007' \(shellQuote(folder))"
     }
 
     /// POSIX single-quoting: everything literal, `'` written as `'\''`.

@@ -148,6 +148,8 @@ final class SessionsModel: ObservableObject {
     /// Live sessions by session id — the discovery source that makes rows
     /// appear for sessions the hooks never saw.
     private(set) var claudeLiveSessions: [String: ClaudeSessionRegistry.Entry] = [:]
+    /// Processes of agy conversations no hook has reported yet.
+    private var agyArgumentPids = ArgumentPids()
     /// Antigravity conversations whose presence lock a running agy holds.
     private(set) var antigravityPresence: [AntigravityState.Presence] = []
     var presenceLiveKeys: Set<String> {
@@ -578,6 +580,15 @@ final class SessionsModel: ObservableObject {
         }
 
         sessions = output.rows
+        // agy rows no hook has reported (a restored one, before its first
+        // prompt) have no pid; `agy --conversation <id>` names its process
+        let unreported = Set(output.rows.filter {
+            $0.provider == .antigravity && $0.event == AntigravityState.discoveryEvent
+        }.map(\.sessionId))
+        agyArgumentPids.update(
+            wanted: unreported,
+            stillValid: { ProcessTree.isSessionProcess($1, provider: .antigravity, id: $0) },
+            scan: { ProcessTree.sessionPids(provider: .antigravity, ids: $0) })
         parkedWindows = output.parkedWindows
         frozenOrder = popoverVisible ? output.frozenOrder : nil
         waitingReasons = output.waitingReasons
@@ -937,6 +948,14 @@ final class SessionsModel: ObservableObject {
         // the identity check (start time, `agy` executable)
         if snapshot.provider == .antigravity, let pid = snapshot.agentPid,
            Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt, provider: .antigravity),
+           let tty = ProcessTree.controllingTTY(of: pid) {
+            return paneByTTY[tty]
+        }
+        // no hook yet: the process started with this conversation's id,
+        // re-checked now since pids are reused
+        if snapshot.provider == .antigravity, snapshot.agentPid == nil,
+           let pid = agyArgumentPids.pids[snapshot.sessionId],
+           ProcessTree.isSessionProcess(pid, provider: .antigravity, id: snapshot.sessionId),
            let tty = ProcessTree.controllingTTY(of: pid) {
             return paneByTTY[tty]
         }
@@ -1779,6 +1798,42 @@ extension SessionsModel {
         }
         pendingRestores = []
         refreshWorkspaces()
+    }
+
+    /// Brings forward the tab of the first pending session whose process is
+    /// running, which is usually sitting at a prompt (folder trust, sign-in)
+    /// that keeps the session from starting. Its process carries the id
+    /// (`claude --resume <id>`), so it's found before any hook reports it.
+    func showPendingRestore() {
+        let pending = pendingRestores.compactMap(SessionKey.split)
+        let panes = paneByTTY
+        Task { @MainActor in
+            let guid = await Task.detached { () -> String? in
+                let byProvider = Dictionary(grouping: pending, by: \.provider)
+                    .mapValues { Set($0.map { $0.sessionId.lowercased() }) }
+                var pids: [String: pid_t] = [:]
+                for (provider, ids) in byProvider {
+                    for (id, pid) in ProcessTree.sessionPids(provider: provider, ids: ids) {
+                        pids[SessionKey.make(provider, id)] = pid
+                    }
+                }
+                for (provider, id) in pending {
+                    guard let pid = pids[SessionKey.make(provider, id.lowercased())],
+                          let tty = ProcessTree.controllingTTY(of: pid),
+                          let guid = panes[tty] else { continue }
+                    return guid
+                }
+                return nil
+            }.value
+            guard let guid else {
+                installMessage = "None of them is running in an iTerm tab. "
+                    + "Clear them to be able to restore them again."
+                return
+            }
+            onRequestClose?()
+            let result = await Task.detached { ITermFocus.focusViaAppleScript(guid: guid) }.value
+            if result != "focused" { focusProblem = SessionsModel.describeFocusFailure(result) }
+        }
     }
 
     /// Labels for the pending keys, from whatever offer or workspace knows them.

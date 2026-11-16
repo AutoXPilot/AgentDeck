@@ -92,6 +92,8 @@ and allow-listed values only. Payloads carry prompt text (agy's
 | The `command` parameter of `create window`/`create tab` runs the program without a shell; restore uses `write text` into a login shell instead. | 3.7.0, 0.5.0 work | observed |
 | The `iterm2:///reveal` URL can stop working without an error, so it is only a fallback. | before 0.4 | observed |
 | Inside `tell application` blocks, constants like `tab` can be shadowed by the app's dictionary. | before 0.4 | observed |
+| With oh-my-zsh's auto-title (the default), a typed line titles the tab after its first word and the window after the whole line, so a restored `cd -- … && command agy …` tab read "cd (agy)". Claude replaces the title; agy doesn't. | 3.7.0, oh-my-zsh, 2026-11-16 | observed + `termsupport.zsh` |
+| A Claude session resumed in a folder whose trust was never accepted (the home folder, here) waits at the trust prompt and writes no registry entry until answered. | Claude 2.1.325, 2026-11-16 | observed |
 
 ## macOS
 
@@ -124,6 +126,9 @@ row (date, version, result) when one is done.
 | A parked session's row reaches its window, and a job's prompt can be answered from the agents view | pending |
 | Opening a job from the agents view: does the window take the job's `sessionId`? (`liveSessions` would then keep the later-started entry and the window's pane is lost) | not run |
 | `claude --resume <job id>` after a reboot gives an interactive session | not run |
+| A restored agy row, before its first prompt, clicks through to its tab | done 2026-11-16 (after an agy self-update renamed the binary): two rows focused their tabs |
+| A restored agy tab is titled with its folder, not "cd" | pending (next restore) |
+| **Show** in the pending-restore note brings a tab waiting at a startup prompt forward | pending (needs a pending restore) |
 | Work Mac: Codex rollouts under an organization plan carry `rate_limits` (and which `limit_id` / `plan_type`) | not run |
 | A Claude policy `statusLine` overrides the user's `statusLine` | not observed (assumed from managed-settings precedence; AgentDeck treats it as blocking) |
 | A Claude session without subscription limits (API key) omits `rate_limits` from the status line payload | not observed |

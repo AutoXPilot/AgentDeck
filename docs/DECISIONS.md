@@ -163,11 +163,24 @@ A shell alias or function of the same name would otherwise rewrite the
 restored line (an `agy` alias adding `--dangerously-skip-permissions`,
 for instance). `command` runs the real executable.
 
+**A session no hook has reported is found by the id in its arguments.**
+(Unreleased)
+A restored agy runs no hook until its first prompt, and a restored
+session stuck at a startup prompt runs none at all, so neither has a pid
+or a pane. Both were started by restore with the id on the command line,
+so the process is found by that id and its tty gives the pane. The pid is
+re-checked (agent executable, id still in its arguments) before each use,
+and an id the scan didn't find isn't scanned again while it stays wanted:
+a session started by hand without its id never will be.
+
 **Commands are built, never stored.** (0.5.0)
 The original command line can contain a prompt or a credential, so it is
 never recorded. Restore builds the line from a UUID session id, a
 validated absolute cwd and an allow-listed permission mode. agy hooks
-record no mode, so an agy restore carries none.
+record no mode, so an agy restore carries none. An agy line also sets the
+tab title to the folder name, since agy sets none and the shell's title
+for the typed line was "cd"; never agy's conversation title, which would
+land in shell history.
 
 **Per-boot records are append-only.** (0.5.0)
 Shutdown closes sessions one at a time, so a record mirroring the live

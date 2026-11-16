@@ -481,13 +481,23 @@ struct WorkspaceRestoreTests {
               conversationExists: { _ in conversation })
     }
 
+    @Test func aRestoredAgyTabIsNamedAfterItsFolderOnly() {
+        #expect(WorkspaceRestore.tabTitle("/Users/me/Code/web", home: "/Users/me")
+                == "printf '\\033]0;%s\\007' 'web'")
+        #expect(WorkspaceRestore.tabTitle("/Users/me", home: "/Users/me")
+                == "printf '\\033]0;%s\\007' '~'")
+        #expect(WorkspaceRestore.tabTitle("/tmp/it's", home: "/Users/me")
+                == "printf '\\033]0;%s\\007' 'it'\\''s'", "quoted like any argument")
+    }
+
     @Test func alwaysConstructsAResumeFromTheId() {
         #expect(WorkspaceRestore.commandLine(for: entry())
                 == "cd -- '/tmp' && command claude --resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
         #expect(WorkspaceRestore.commandLine(for: entry(provider: .codex))
                 == "cd -- '/tmp' && command codex resume 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
         #expect(WorkspaceRestore.commandLine(for: entry(provider: .antigravity))
-                == "cd -- '/tmp' && command agy --conversation 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
+                == "cd -- '/tmp' && printf '\\033]0;%s\\007' 'tmp' "
+                    + "&& command agy --conversation 0b6b5a5e-6c1b-4b6f-9c55-0b1f2e3d4c5a")
     }
 
     @Test func aNonUUIDIdIsRefusedNotSearched() {

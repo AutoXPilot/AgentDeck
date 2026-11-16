@@ -390,17 +390,27 @@ struct SessionListView: View {
                 missingFoldersPanel
             }
             if !model.pendingRestores.isEmpty, !model.isRestoring {
-                HStack(spacing: 6) {
+                let names = model.pendingRestoreLabels.joined(separator: ", ")
+                let count = model.pendingRestores.count
+                HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "hourglass").foregroundStyle(.secondary)
-                    Text("Not restored again until seen running: "
-                         + model.pendingRestoreLabels.joined(separator: ", ")
-                         + ". If they aren't open in iTerm, clear them.")
+                    // in full: the names are the point, and a list cut off
+                    // at "…" can't be checked against the tabs
+                    Text("\(count) restored \(count == 1 ? "session hasn't" : "sessions haven't") "
+                         + "started: \(names). Usually a prompt in the tab (folder trust, "
+                         + "sign-in) is waiting. They aren't restored again until seen running.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                    Spacer()
-                    Button("Clear") { model.clearPendingRestores() }
-                        .font(.caption2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(names)
+                    Spacer(minLength: 4)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button("Show") { model.showPendingRestore() }
+                            .help("Bring forward the tab of the first one still waiting")
+                        Button("Clear") { model.clearPendingRestores() }
+                            .help("They aren't open in iTerm: allow restoring them again")
+                    }
+                    .font(.caption2)
                 }
             }
             if let message = model.installMessage {

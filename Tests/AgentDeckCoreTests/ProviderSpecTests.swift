@@ -153,13 +153,15 @@ struct ProviderSpecTests {
                                        permissionMode: "bypassPermissions", lastSeen: .distantPast)
             let line = WorkspaceRestore.commandLine(for: entry)
             let want = try #require(expected[provider], "every provider has a pinned line")
-            #expect(line?.hasPrefix("cd -- '/tmp' && " + want) == true, "\(line ?? "nil")")
+            #expect(line?.hasPrefix("cd -- '/tmp' && ") == true, "\(line ?? "nil")")
+            #expect(line?.contains(" && " + want) == true, "\(line ?? "nil")")
         }
         // agy: no mode flags at all — hooks record none
         let agy = WorkspaceEntry(provider: .antigravity, sessionId: id, cwd: "/tmp",
                                  permissionMode: "bypassPermissions", lastSeen: .distantPast)
         #expect(WorkspaceRestore.commandLine(for: agy)
-                == "cd -- '/tmp' && command agy --conversation d047f956-a5ed-4248-8938-92685f0da7f7")
+                == "cd -- '/tmp' && printf '\\033]0;%s\\007' 'tmp' "
+                    + "&& command agy --conversation d047f956-a5ed-4248-8938-92685f0da7f7")
         let named = WorkspaceEntry(provider: .antigravity, sessionId: "my-chat", cwd: "/tmp",
                                    lastSeen: .distantPast)
         #expect(WorkspaceRestore.commandLine(for: named) == nil, "a non-UUID id is refused")

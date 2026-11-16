@@ -34,6 +34,16 @@
   renames the running program to `agy.<number>.old`, and AgentDeck matched
   the name exactly, so every agy running across an update failed the
   identity check.
+- **A restored agy session can be clicked to its tab before its first
+  prompt.** agy reports nothing until you send a message, so a restored
+  row had no pane and a click did nothing. It's now found by its process,
+  which carries the conversation id (`agy --conversation <id>`).
+- **Restored agy tabs are named after their folder,** not "cd": the shell
+  titled the tab after the first word of the typed line and agy sets no
+  title of its own.
+- **The "not restored again" note shows every name,** says the usual cause
+  (a prompt waiting in the tab, such as folder trust), and has **Show** to
+  bring that tab forward.
 
 - **"Couldn't focus the pane:" with nothing after it** after a click that
   had in fact reached iTerm. The focus script's one-word answer was taken

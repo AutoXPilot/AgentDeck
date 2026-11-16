@@ -224,16 +224,29 @@ public enum ProcessTree {
     /// never started. Only processes that look like the provider's agent are
     /// examined, and their arguments are searched in place, not kept.
     public static func sessionsRunning(provider: Provider, ids: Set<String>) -> Set<String> {
-        guard !ids.isEmpty else { return [] }
+        Set(sessionPids(provider: provider, ids: ids).keys)
+    }
+
+    /// The same search, keeping the process found for each id (lowercased):
+    /// a restored session's pid before any hook has reported it, which is
+    /// how its pane is found.
+    public static func sessionPids(provider: Provider, ids: Set<String>) -> [String: pid_t] {
+        guard !ids.isEmpty else { return [:] }
         let wanted = ids.map { $0.lowercased() }
-        var found = Set<String>()
+        var found: [String: pid_t] = [:]
         for pid in allPids() where looksLikeAgent(pid, provider: provider) {
-            for id in wanted where !found.contains(id) && argumentsMention(id, pid: pid) {
-                found.insert(id)
+            for id in wanted where found[id] == nil && argumentsMention(id, pid: pid) {
+                found[id] = pid
             }
             if found.count == wanted.count { break }
         }
         return found
+    }
+
+    /// Whether `pid` is still the agent process started for `id`: checked
+    /// again before a cached pid is trusted, since pids are reused.
+    public static func isSessionProcess(_ pid: pid_t, provider: Provider, id: String) -> Bool {
+        looksLikeAgent(pid, provider: provider) && argumentsMention(id.lowercased(), pid: pid)
     }
 
     public static func codexThreadsRunning(_ threadIds: Set<String>) -> Set<String> {
