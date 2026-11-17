@@ -41,6 +41,13 @@
 
 ### Fixed
 
+- **A partial iTerm pane listing no longer drops the panes it missed.** One
+  listing came back with 14 of 31 panes and said nothing, and AgentDeck
+  took it as the whole truth: clicks to the missing tabs failed and agy
+  tabs were renamed every 15 seconds until the next full listing. The
+  listing now counts what it had to skip; a partial one is laid over the
+  previous listing instead of replacing it, and one more is asked for.
+
 - **agy sessions still count as agy after agy updates itself.** The update
   renames the running program to `agy.<number>.old`, and AgentDeck matched
   the name exactly, so every agy running across an update failed the

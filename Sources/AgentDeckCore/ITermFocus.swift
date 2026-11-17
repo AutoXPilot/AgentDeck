@@ -120,7 +120,10 @@ public enum ITermFocus {
     }
 
     /// Enumerates every iTerm session as
-    /// "GUID<TAB>tty<TAB>window id<TAB>tab number<TAB>title" lines. The title
+    /// "GUID<TAB>tty<TAB>window id<TAB>tab number<TAB>title" lines, then a
+    /// "#skipped<TAB>n" line: how many windows, tabs or sessions raised an
+    /// error and were left out. A listing once came back with 14 of 31
+    /// panes and said nothing; now it says it's partial. The title
     /// goes last because it is the only free-text field. The tab number
     /// counts every tab of the window, including one whose sessions failed
     /// to read, so positions stay true.
@@ -132,6 +135,7 @@ public enum ITermFocus {
         set d to (character id 9)
         set nl to (character id 10)
         set out to ""
+        set skipped to 0
         tell application "iTerm2"
             repeat with w in windows
                 try
@@ -141,14 +145,22 @@ public enum ITermFocus {
                         set tabNo to tabNo + 1
                         try
                             repeat with s in sessions of t
-                                set out to out & (id of s) & d & (tty of s) & d & wid & d & tabNo & d & (name of s) & nl
+                                try
+                                    set out to out & (id of s) & d & (tty of s) & d & wid & d & tabNo & d & (name of s) & nl
+                                on error
+                                    set skipped to skipped + 1
+                                end try
                             end repeat
+                        on error
+                            set skipped to skipped + 1
                         end try
                     end repeat
+                on error
+                    set skipped to skipped + 1
                 end try
             end repeat
         end tell
-        return out
+        return out & "#skipped" & d & skipped & nl
     end run
     """
 
@@ -230,6 +242,26 @@ public enum ITermFocus {
         public var guidByTTY: [String: String] = [:]
         /// GUID → window and tab
         public var placeByGUID: [String: Place] = [:]
+        /// Nothing was left out: the script's closing count arrived and is 0.
+        /// Only a complete listing is the whole truth about which panes exist.
+        public var complete = false
+
+        public init() {}
+
+        /// This listing laid over `earlier`: what it saw replaces, what it
+        /// missed is kept. For a partial listing, whose gaps say nothing
+        /// about whether those panes closed.
+        public func merged(over earlier: SessionList) -> SessionList {
+            var result = earlier
+            result.names.merge(names) { _, new in new }
+            // a pane seen now with no title has none, whatever it had
+            for guid in Set(guidByTTY.values) where names[guid] == nil { result.names[guid] = nil }
+            // a tty seen now names its pane now
+            result.guidByTTY.merge(guidByTTY) { _, new in new }
+            result.placeByGUID.merge(placeByGUID) { _, new in new }
+            result.complete = false
+            return result
+        }
     }
 
     /// The tty is how a session with no recorded pane id finds its pane:
@@ -238,6 +270,10 @@ public enum ITermFocus {
     public static func parseSessionList(_ output: String) -> SessionList {
         var list = SessionList()
         for line in output.split(separator: "\n") {
+            if line.hasPrefix("#skipped\t") {
+                list.complete = line.dropFirst("#skipped\t".count) == "0"
+                continue
+            }
             let fields = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
             guard fields.count == 5 else { continue }
             let guid = String(fields[0])

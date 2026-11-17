@@ -48,6 +48,8 @@ final class SessionsModel: ObservableObject {
     /// The iTerm run the pane maps above came from.
     private var iTermRun: ITermRun?
     private var listingSchedule = ListingSchedule()
+    /// The pane listing last applied (merged, if partial).
+    private var lastListing: ITermFocus.SessionList?
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
     /// agy conversation titles, for the row and the agy tab's name in iTerm
@@ -1527,7 +1529,8 @@ final class SessionsModel: ObservableObject {
             case .success(let raw):
                 list = ITermFocus.parseSessionList(raw)
                 Self.appLog("titles: fetched \(list?.names.count ?? 0) session titles, "
-                            + "\(list?.guidByTTY.count ?? 0) ttys, \(list?.placeByGUID.count ?? 0) places")
+                            + "\(list?.guidByTTY.count ?? 0) ttys, \(list?.placeByGUID.count ?? 0) places"
+                            + (list?.complete == true ? "" : " (partial: kept earlier panes)"))
             case .failure(let err):
                 Self.appLog("titles: fetch FAILED: \(err)")
                 list = nil  // keep prior titles on failure
@@ -1545,9 +1548,20 @@ final class SessionsModel: ObservableObject {
                     if now != nil { _ = self.listingSchedule.request() }
                     return
                 }
-                guard let list, generation == self.titleFetchGeneration else { return }
-                // A SUCCESSFUL empty fetch is authoritative — those sessions
-                // are gone — so apply it rather than leaving stale titles.
+                guard let fetched = list, generation == self.titleFetchGeneration else { return }
+                // A complete listing is authoritative, even an empty one —
+                // those sessions are gone. A partial one says nothing about
+                // the panes it missed (it once reported 14 of 31 and the rest
+                // stopped focusing), so it's laid over the last listing, and
+                // one more is asked for unless the last was partial too.
+                let list: ITermFocus.SessionList
+                if fetched.complete {
+                    list = fetched
+                } else {
+                    list = fetched.merged(over: self.lastListing ?? ITermFocus.SessionList())
+                    if self.lastListing?.complete != false { _ = self.listingSchedule.request() }
+                }
+                self.lastListing = list
                 self.terminalTitles = list.names
                 self.paneByTTY = list.guidByTTY
                 self.placeByGUID = self.bootID.map {
@@ -1573,6 +1587,8 @@ final class SessionsModel: ObservableObject {
         guard iTermRun != run else { return }
         iTermRun = run
         placeByGUID = [:]
+        // nothing from another run may fill a partial listing's gaps
+        lastListing = nil
     }
 
     private func watchDirectory() {

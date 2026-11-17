@@ -266,3 +266,33 @@ struct WindowExecutionTests {
                 "a boundary inside a batch, and a group spanning two batches")
     }
 }
+
+struct PartialListingTests {
+    @Test func onlyAListingThatCountedNothingSkippedIsComplete() {
+        let row = "G-1\tttys1\t109\t1\tweb\n"
+        #expect(ITermFocus.parseSessionList(row + "#skipped\t0\n").complete)
+        #expect(!ITermFocus.parseSessionList(row + "#skipped\t3\n").complete)
+        #expect(!ITermFocus.parseSessionList(row).complete, "no count: the script didn't finish")
+        #expect(ITermFocus.parseSessionList(row + "#skipped\t0\n").guidByTTY == ["ttys1": "G-1"],
+                "the count line isn't a pane")
+    }
+
+    @Test func aPartialListingKeepsWhatItMissedAndUpdatesWhatItSaw() {
+        let earlier = ITermFocus.parseSessionList(
+            "A\tttys1\t109\t1\talpha\nB\tttys2\t109\t2\tbeta\nC\tttys3\t365\t1\tgamma\n#skipped\t0\n")
+        // a later listing reached only A (moved to tab 3, retitled) and C (title gone)
+        let partial = ITermFocus.parseSessionList("A\tttys1\t109\t3\talpha2\nC\tttys3\t365\t1\t\n#skipped\t1\n")
+        let merged = partial.merged(over: earlier)
+        #expect(merged.guidByTTY == ["ttys1": "A", "ttys2": "B", "ttys3": "C"], "B wasn't seen, not closed")
+        #expect(merged.names["A"] == "alpha2" && merged.names["B"] == "beta")
+        #expect(merged.names["C"] == nil, "a pane seen without a title has none")
+        #expect(merged.placeByGUID["A"]?.tab == 3 && merged.placeByGUID["B"]?.tab == 2)
+        #expect(!merged.complete)
+    }
+
+    @Test func aTTYSeenAgainNamesItsPaneNow() {
+        let earlier = ITermFocus.parseSessionList("OLD\tttys1\t109\t1\tx\n#skipped\t0\n")
+        let partial = ITermFocus.parseSessionList("NEW\tttys1\t109\t1\ty\n#skipped\t2\n")
+        #expect(partial.merged(over: earlier).guidByTTY["ttys1"] == "NEW")
+    }
+}

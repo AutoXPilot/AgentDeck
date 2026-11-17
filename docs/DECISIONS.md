@@ -193,6 +193,17 @@ without that check. Without the presence folder, the old
 pid rule stands. Rejected: making the holder win over a hook-recorded pid,
 since the lockless process is often where the user is working.
 
+**Only a complete pane listing replaces the last one.** (Unreleased)
+iTerm's listing skips any window, tab or session that raises an error,
+and once returned 14 of 31 panes without a word. It now ends with a count
+of what it skipped. A listing with a non-zero count, or none, is partial:
+it's merged over the previous listing (what it saw wins, what it missed
+is kept), and one more listing is requested unless the previous one was
+partial too, so a persistent failure can't loop. A complete listing,
+even an empty one, replaces everything. Missed panes that really closed
+linger until the next complete listing, which is harmless; dropping live
+ones made their clicks fail.
+
 **Restore rebuilds windows from a recorded grouping key.** (Unreleased)
 Each workspace entry keeps the iTerm window it was in, as
 `<boot>:<iTerm pid>:<iTerm launch time>:<window id>`, and its tab number.
