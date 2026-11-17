@@ -4,6 +4,11 @@
 
 ### Added
 
+- **agy tabs in iTerm are named like their row.** agy sets no tab title,
+  so a tab read "agy", or "cd" after a restore. AgentDeck now gives the tab
+  the conversation's title, and again whenever it changes; a name you type
+  into the tab stays until then.
+
 - **Restore puts sessions back in the windows they were in.** Each session
   records its iTerm window and tab, and a restore opens one new window per
   recorded window, tabs in order, where it used to put everything in one.

@@ -73,6 +73,39 @@ public enum ITermFocus {
         return result.status == 0 ? .success(text) : .failure(text)
     }
 
+    /// Sets one session's name (what its tab shows). The name arrives as an
+    /// argument, never spliced into the script, so no title can change
+    /// what the script does. Same per-window/per-tab `try` as the focus
+    /// script.
+    public static let renameScript = """
+    on run argv
+        set targetId to item 1 of argv
+        set newName to item 2 of argv
+        tell application "iTerm2"
+            repeat with w in windows
+                try
+                    repeat with t in tabs of w
+                        try
+                            repeat with s in sessions of t
+                                if (id of s) is targetId then
+                                    set name of s to newName
+                                    return "named"
+                                end if
+                            end repeat
+                        end try
+                    end repeat
+                end try
+            end repeat
+        end tell
+        return "not-found"
+    end run
+    """
+
+    /// Whether iTerm renamed the pane.
+    public static func renameSession(guid: String, to name: String, timeout: TimeInterval = 5) -> Bool {
+        runAppleScript(renameScript, arguments: [guid, name], timeout: timeout) == .success("named")
+    }
+
     /// Returns "focused", "not-found", or "error: …" — callers can fall
     /// back to the reveal URL.
     public static func focusViaAppleScript(

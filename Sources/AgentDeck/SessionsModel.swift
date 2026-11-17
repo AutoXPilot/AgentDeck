@@ -50,9 +50,11 @@ final class SessionsModel: ObservableObject {
     private var listingSchedule = ListingSchedule()
     /// Codex session id → name set via its `/rename`.
     @Published private(set) var codexNames: [String: String] = [:]
-    /// agy conversation titles, for the row on screen only: see
-    /// `AntigravityState.conversationTitles`.
+    /// agy conversation titles, for the row and the agy tab's name in iTerm
+    /// only: see `AntigravityState.conversationTitles`.
     @Published private(set) var agyTitles: [String: String] = [:]
+    private var agyTabNames = AgyTabNames()
+    private var isNamingAgyTabs = false
     @Published private(set) var codexThreads: [String: CodexThread] = [:]
     /// thread id → the client that started it (`codex-tui`, `Codex Desktop`).
     private var codexOriginators: [String: String] = [:]
@@ -358,6 +360,7 @@ final class SessionsModel: ObservableObject {
                 if self.usage != loaded { self.usage = loaded }
                 if let titles, titles != self.agyTitles { self.agyTitles = titles }
                 if self.otherAccountUsage != others { self.otherAccountUsage = others }
+                self.nameAgyTabs()
             }
         }
     }
@@ -1513,6 +1516,7 @@ final class SessionsModel: ObservableObject {
                     run.places(list.placeByGUID, bootID: $0)
                 } ?? [:]
                 self.codexCLITTYs = codexTTYs
+                self.nameAgyTabs()
                 // a session opened since the last listing gets its place
                 // now, not at the next reload it may not live to see. A
                 // reload, not a re-record of the last one's rows: the record
@@ -1634,6 +1638,34 @@ extension SessionsModel {
             terminal: terminalLocation(of: s),
             place: paneGUID(of: s).flatMap { placeByGUID[$0] },
             now: now)
+    }
+
+    /// Gives each agy tab its conversation's title, as the row shows it.
+    /// The title goes to iTerm only, as an AppleScript argument: never
+    /// logged, typed or stored by AgentDeck (see DECISIONS).
+    private func nameAgyTabs() {
+        guard !readOnly, !isNamingAgyTabs else { return }
+        // forget a pane only once iTerm no longer has it: one missing from a
+        // single listing would otherwise be renamed again, over a name
+        // typed into the tab by hand
+        agyTabNames.keepOnly(Set(paneByTTY.values))
+        var titleByPane: [String: String] = [:]
+        for row in sessions where row.provider == .antigravity {
+            guard let title = agyTitles[row.sessionId], let pane = paneGUID(of: row) else { continue }
+            titleByPane[pane] = title
+        }
+        let due = agyTabNames.due(titleByPane: titleByPane)
+        guard !due.isEmpty else { return }
+        isNamingAgyTabs = true
+        Task.detached {
+            let named = due.filter { ITermFocus.renameSession(guid: $0.key, to: $0.value) }
+            Self.appLog("agy tabs: named \(named.count) of \(due.count)")
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (pane, title) in named { self.agyTabNames.confirm(pane: pane, title: title) }
+                self.isNamingAgyTabs = false
+            }
+        }
     }
 
     /// The row's own iTerm pane: the one a hook recorded, else the pane on

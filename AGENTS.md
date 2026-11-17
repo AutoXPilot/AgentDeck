@@ -197,8 +197,9 @@ orphan sweep that keeps files a newer build wrote), `BoundedSubprocess.swift`
   Codex `threads.title`, agy `history.jsonl`, Desktop `local_*.json` titles).
   Tests plant marker strings and assert they never reach a snapshot or log.
   One exception: agy's `annotations/<id>.pbtxt` `title` (a `/rename`, or a
-  title agy generated) is shown on the row, held in memory only. Never
-  store, log or notify it; a render includes it only with
+  title agy generated) is shown on the row, held in memory only, and given
+  to iTerm as that agy tab's name (`AgyTabNames`, AppleScript argument).
+  Never store, log, type or notify it; a render includes it only with
   `AGENTDECK_RENDER_AGY_TITLES=1`.
 - **User configs:** only `HookInstaller` writes `~/.claude/settings.json`,
   `~/.codex/hooks.json`, `~/.gemini/config/hooks.json`, always with a backup

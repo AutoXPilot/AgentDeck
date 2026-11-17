@@ -98,8 +98,12 @@ conversation map in `cache/last_conversations.json`, and whether
 the `title` field of `annotations/<id>.pbtxt` for the row's name. That title
 is what you set with `/rename`, or otherwise one agy generated from the
 conversation, and nothing in the file says which, so it can summarise your
-prompts. AgentDeck keeps it in memory for the row on screen only: it isn't
-saved, logged, or put in a notification. AgentDeck never reads
+prompts. AgentDeck keeps it in memory for the row on screen, and gives it
+to iTerm as the name of that agy's tab (agy sets no tab title of its own),
+the way Claude puts its own session names in its tabs. AgentDeck doesn't
+save or log it or put it in a notification; iTerm may keep tab names in
+its saved window state. A tab is renamed when the title changes, so a name
+you type into the tab stays until then. AgentDeck never reads
 `history.jsonl` (your prompts), the conversation databases,
 `conversation_summaries.db`, `brain/` or agy's logs.
 

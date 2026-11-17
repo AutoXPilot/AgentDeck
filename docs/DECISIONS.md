@@ -301,6 +301,17 @@ generated title summarises prompts. It stays on screen: in memory only,
 never in a snapshot, workspace, log or notification (Notification Center
 keeps what it's given). Restore therefore has no agy names.
 
+Amended 2026-11-16: the title also goes to iTerm as the agy tab's name, by
+AppleScript argument, since agy sets no tab title and a restored tab read
+"cd". Tony chose this knowing iTerm may keep tab names in its saved window
+state (written at quit, not observed); Claude already puts its own
+session names, generated ones included, in its tabs the same way.
+AgentDeck still never stores, logs, types or notifies it: the title never
+enters a command line, shell history or AgentDeck's files. A pane is
+renamed only when its conversation's title differs from the last one
+AgentDeck gave it, so a name typed into the tab stays until the title
+changes.
+
 **Free text that is shown or notified passes only as a known value.**
 (Unreleased)
 Claude's StopFailure `error` is kept only if it is one of the documented
