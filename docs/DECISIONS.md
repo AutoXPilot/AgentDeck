@@ -163,15 +163,35 @@ A shell alias or function of the same name would otherwise rewrite the
 restored line (an `agy` alias adding `--dangerously-skip-permissions`,
 for instance). `command` runs the real executable.
 
-**A session no hook has reported is found by the id in its arguments.**
+**A Claude or Codex session stuck at a startup prompt is found by the id
+in its arguments.** (Unreleased)
+It runs no hook until the prompt is answered, so it has no pid or pane;
+restore started it with the id on the command line, so **Show** finds the
+process by that id and its tty gives the tab. Not used for agy: argv was
+tried for agy (2026-11-16) and dropped the next day, since agy switches
+conversations inside one process and the id it started with goes stale.
+
+**For agy, the lock a process holds says which conversation it runs.**
 (Unreleased)
-A restored agy runs no hook until its first prompt, and a restored
-session stuck at a startup prompt runs none at all, so neither has a pid
-or a pane. Both were started by restore with the id on the command line,
-so the process is found by that id and its tty gives the pane. The pid is
-re-checked (agent executable, id still in its arguments) before each use,
-and an id the scan didn't find isn't scanned again while it stays wanted:
-a session started by hand without its id never will be.
+agy can move one process to another conversation (`/resume`), and the
+pid a hook recorded then belongs to the other one. Each agy process keeps
+one `presence/<id>.lock` open, the conversation it runs now (lsof,
+2026-11-17), and a conversation can also be open in a second process that
+holds no lock and still runs turns. So: a snapshot's own pid stands unless
+that pid now holds a different conversation's lock; then, after 60 s (a
+new conversation's first hook can land before its lock), its pid and pane
+are dropped, it doesn't count as running, and the snapshot is removed, as
+Claude's are after `/clear`. A row with no usable pid adopts the lock's
+holder, whose identity is "holds this lock" rather than its start time.
+An open lock file counts only if the lock is held, and a holder that
+can't be told (two pids, or a pid with two) maps nothing. A click (again
+right before the focus script) and each tab rename re-read the process's
+locks by the same rules (`AgyPresence.mayAct`) and refuse rather than act
+on a tab showing another conversation; an agy row never falls back to
+raising its owning app or opening the pane's reveal link, which would act
+without that check. Without the presence folder, the old
+pid rule stands. Rejected: making the holder win over a hook-recorded pid,
+since the lockless process is often where the user is working.
 
 **Restore rebuilds windows from a recorded grouping key.** (Unreleased)
 Each workspace entry keeps the iTerm window it was in, as
@@ -308,9 +328,12 @@ state (written at quit, not observed); Claude already puts its own
 session names, generated ones included, in its tabs the same way.
 AgentDeck still never stores, logs, types or notifies it: the title never
 enters a command line, shell history or AgentDeck's files. A pane is
-renamed only when its conversation's title differs from the last one
-AgentDeck gave it, so a name typed into the tab stays until the title
-changes.
+renamed only when its conversation's title, or the agy process in it,
+differs from the last rename AgentDeck made there (relaunching agy lets the
+shell retitle the tab), so a name typed into the tab stays until then.
+Those renames are forgotten when their process ends, never because a pane
+listing came back partial. The rename clears the name first: iTerm ignores
+a rename to the name it already holds.
 
 **Free text that is shown or notified passes only as a known value.**
 (Unreleased)

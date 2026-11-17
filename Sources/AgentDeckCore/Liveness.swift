@@ -96,6 +96,10 @@ public enum Liveness {
     /// re-adds it on the same key — it just silently strips the pane id,
     /// permission mode and hook-derived state, leaving a row that looks
     /// fine but can no longer be clicked to its terminal.
+    /// How long an agy snapshot is spared after its process is seen
+    /// holding another conversation's lock.
+    public static let agySwitchGrace: TimeInterval = 60
+
     public static func keysToRemove(
         _ snapshots: [SessionSnapshot],
         now: Date = Date(),
@@ -105,10 +109,21 @@ public enum Liveness {
         bootedAt: Date? = Liveness.bootTime(),
         confirmedLive: Set<String> = [],
         liveByPid: [Int32: ClaudeSessionRegistry.Entry] = [:],
+        agy: AgyPresence = .unknown,
         probe: ProcessProbe = .system
     ) -> [String] {
         snapshots.compactMap { s in
             if confirmedLive.contains(s.key) { return nil }
+            // agy switched this process to another conversation: it holds
+            // that one's lock now, so this conversation ended there. Not
+            // within the grace: a new conversation's first hook can land
+            // before its lock is taken. agy has no observation time to
+            // compare with, so it is now against the snapshot's own.
+            if s.provider == .antigravity, let pid = s.agentPid,
+               agy.movedOn(pid: pid, from: s.sessionId),
+               now.timeIntervalSince(s.updatedAt) > agySwitchGrace {
+                return s.key
+            }
             // Superseded: after /clear the process keeps running under a new
             // session id, and the registry, observed after this snapshot was
             // last written, names that new one for this pid. The old

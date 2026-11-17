@@ -76,7 +76,8 @@ public enum ITermFocus {
     /// Sets one session's name (what its tab shows). The name arrives as an
     /// argument, never spliced into the script, so no title can change
     /// what the script does. Same per-window/per-tab `try` as the focus
-    /// script.
+    /// script. Cleared first: iTerm ignores a rename to the name it already
+    /// holds, even after the shell has retitled the tab since (observed).
     public static let renameScript = """
     on run argv
         set targetId to item 1 of argv
@@ -88,6 +89,7 @@ public enum ITermFocus {
                         try
                             repeat with s in sessions of t
                                 if (id of s) is targetId then
+                                    set name of s to ""
                                     set name of s to newName
                                     return "named"
                                 end if

@@ -6,8 +6,8 @@
 
 - **agy tabs in iTerm are named like their row.** agy sets no tab title,
   so a tab read "agy", or "cd" after a restore. AgentDeck now gives the tab
-  the conversation's title, and again whenever it changes; a name you type
-  into the tab stays until then.
+  the conversation's title, and again whenever it changes or agy is
+  relaunched in that tab; a name you type into the tab stays until then.
 
 - **Restore puts sessions back in the windows they were in.** Each session
   records its iTerm window and tab, and a restore opens one new window per
@@ -47,8 +47,15 @@
   identity check.
 - **A restored agy session can be clicked to its tab before its first
   prompt.** agy reports nothing until you send a message, so a restored
-  row had no pane and a click did nothing. It's now found by its process,
-  which carries the conversation id (`agy --conversation <id>`).
+  row had no pane and a click did nothing. It's now found by the process
+  holding its conversation's lock.
+- **agy conversations you switch away from stop pointing at the tab.** agy
+  can move one process to another conversation, and the old one's row kept
+  the process: it stayed listed after it ended, its click opened the
+  conversation that tab had moved to, and a restore brought it back. The
+  conversation a process runs is now read from the lock it holds, so the
+  old row goes a minute later, a click goes where the conversation is (or
+  says it isn't open there any more), and it isn't saved as open.
 - **Restored agy tabs are named after their folder,** not "cd": the shell
   titled the tab after the first word of the typed line and agy sets no
   title of its own.

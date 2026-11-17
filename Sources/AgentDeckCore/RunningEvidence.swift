@@ -19,6 +19,10 @@ public struct RunningEvidence {
     /// open: a daemon-run thread records no pid, and its CLI client's
     /// arguments name no thread.
     public var daemonLive: Set<String>
+    /// agy's presence locks and who holds them. A pid that now holds a
+    /// different conversation's lock has moved on and proves nothing about
+    /// the conversation its old snapshot names.
+    public var agy: AgyPresence
     /// Whether a snapshot's pid still belongs to its agent.
     public var pidTrusted: (_ pid: Int32, _ updatedAt: Date, _ provider: Provider) -> Bool
     /// Which of these session ids a running agent process of the provider
@@ -30,6 +34,7 @@ public struct RunningEvidence {
         claudeRegistryLive: Set<String>,
         presenceLive: Set<String> = [],
         daemonLive: Set<String> = [],
+        agy: AgyPresence = .unknown,
         pidTrusted: @escaping (Int32, Date, Provider) -> Bool = { pid, updatedAt, provider in
             Liveness.pidIsTrustworthy(pid, forUpdatedAt: updatedAt, provider: provider)
         },
@@ -40,6 +45,7 @@ public struct RunningEvidence {
         self.claudeRegistryLive = claudeRegistryLive
         self.presenceLive = presenceLive
         self.daemonLive = daemonLive
+        self.agy = agy
         self.pidTrusted = pidTrusted
         self.processScan = processScan
     }
@@ -58,7 +64,8 @@ public struct RunningEvidence {
         keys.formUnion(daemonLive.filter { SessionKey.split($0)?.provider == .codex })
         for row in rows {
             guard row.provider.spec.running.trustsPid, row.pidProvesSession,
-                  let pid = row.agentPid, pidTrusted(pid, row.updatedAt, row.provider)
+                  let pid = row.agentPid, pidTrusted(pid, row.updatedAt, row.provider),
+                  !movedOn(row.provider, pid: pid, id: row.sessionId)
             else { continue }
             keys.insert(row.key)
         }
@@ -86,6 +93,31 @@ public struct RunningEvidence {
         return running
     }
 
+    /// The evidence for one provider, read fresh: only that provider's
+    /// source is read (the registry for Claude, presence and lock holders
+    /// for agy, the daemon's open rollouts for Codex). Off the main thread.
+    public static func reading(
+        for provider: Provider,
+        claudeLive: () -> Set<String>,
+        agy: () -> AgyPresence,
+        codexDaemonThreads: () -> Set<String>
+    ) -> RunningEvidence {
+        switch provider.spec.running {
+        case .claudeRegistry:
+            return RunningEvidence(claudeRegistryLive: claudeLive())
+        case .trustworthyPidOrPresence:
+            let presence = agy()
+            return RunningEvidence(
+                claudeRegistryLive: [],
+                presenceLive: Set(presence.held.map { SessionKey.make(provider, $0) }),
+                agy: presence)
+        case .trustworthyPid:
+            let daemon = provider == .codex
+                ? Set(codexDaemonThreads().map { SessionKey.make(.codex, $0) }) : []
+            return RunningEvidence(claudeRegistryLive: [], daemonLive: daemon)
+        }
+    }
+
     /// One entry, read fresh — for the re-check right before a launch and
     /// the confirmation after it. `snapshot` is the entry's current
     /// snapshot, if any.
@@ -103,12 +135,18 @@ public struct RunningEvidence {
             // resumed but silent: no hook has fired yet
             return scan && !processScan(entry.provider, [entry.sessionId]).isEmpty
         case .trustworthyPidOrPresence:
+            if presenceLive.contains(entry.key) { return true }
             if let snapshot, let pid = snapshot.agentPid,
                snapshot.pidProvesSession,
-               pidTrusted(pid, snapshot.updatedAt, entry.provider) {
+               pidTrusted(pid, snapshot.updatedAt, entry.provider),
+               !movedOn(entry.provider, pid: pid, id: entry.sessionId) {
                 return true
             }
-            return presenceLive.contains(entry.key)
+            return false
         }
+    }
+
+    private func movedOn(_ provider: Provider, pid: Int32, id: String) -> Bool {
+        provider == .antigravity && agy.movedOn(pid: pid, from: id)
     }
 }

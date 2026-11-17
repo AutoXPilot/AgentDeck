@@ -95,7 +95,9 @@ kept; the row shows a category taken from `terminationReason`
 `presence/*.lock` and whether a process holds each one, the workspace →
 conversation map in `cache/last_conversations.json`, and whether
 `conversations/<id>.db` exists and when it last changed (never opened), and
-the `title` field of `annotations/<id>.pbtxt` for the row's name. That title
+the `title` field of `annotations/<id>.pbtxt` for the row's name, and
+which presence lock each agy process holds open: agy can switch one
+process to another conversation, and the lock says which one it runs now. That title
 is what you set with `/rename`, or otherwise one agy generated from the
 conversation, and nothing in the file says which, so it can summarise your
 prompts. AgentDeck keeps it in memory for the row on screen, and gives it

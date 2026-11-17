@@ -34,6 +34,41 @@ public enum SessionPipeline {
         public var waitingReasons: [String: String]
         /// Row key of a background job → the window it moved out of.
         public var parkedWindows: [String: ParkedWindow] = [:]
+        /// agy row key → the lock holder it was given in place of a missing,
+        /// dead or moved-on pid. Its identity is "holds this lock", which a
+        /// click re-checks, not the process start time.
+        public var adoptedAgyPids: [String: Int32] = [:]
+    }
+
+    /// An agy row as its presence locks say it is now.
+    /// - Its pid holds another conversation's lock (agy switched): past the
+    ///   grace the pid, pane and host are dropped, since they're the other
+    ///   conversation's now.
+    /// - It has no usable pid and some process holds its lock: that holder
+    ///   is adopted, with no pane (the tty gives it).
+    /// - Its pid holds nothing, or holds this conversation: unchanged. A
+    ///   conversation can be open in a second, lockless process, whose hook
+    ///   is as real as the holder's.
+    static func correctAgy(
+        _ row: SessionSnapshot, agy: AgyPresence, now: Date,
+        pidTrusted: (Int32, Date) -> Bool
+    ) -> (row: SessionSnapshot, adopted: Int32?) {
+        guard row.provider == .antigravity, agy.listed else { return (row, nil) }
+        var row = row
+        if let pid = row.agentPid, agy.movedOn(pid: pid, from: row.sessionId) {
+            guard now.timeIntervalSince(row.updatedAt) > Liveness.agySwitchGrace else { return (row, nil) }
+            row.agentPid = nil
+            row.terminalSessionId = nil
+            row.hostKind = nil
+            row.hostBundlePath = nil
+        }
+        let usable = row.agentPid.map { pidTrusted($0, row.updatedAt) } ?? false
+        guard !usable, let holder = agy.holderOf[row.sessionId.lowercased()] else { return (row, nil) }
+        row.agentPid = holder
+        row.terminalSessionId = nil
+        row.hostKind = nil
+        row.hostBundlePath = nil
+        return (row, holder)
     }
 
     /// Job session id → the live window parked on it. Live entries only:
@@ -78,6 +113,10 @@ public enum SessionPipeline {
         acks: [String: Date],
         frozenOrder: [String]?,
         popoverVisible: Bool,
+        agy: AgyPresence = .unknown,
+        agyPidTrusted: (Int32, Date) -> Bool = { pid, updatedAt in
+            Liveness.pidIsTrustworthy(pid, forUpdatedAt: updatedAt, provider: .antigravity)
+        },
         now: Date = Date()
     ) -> Output {
         var reasons: [String: String] = [:]
@@ -167,7 +206,17 @@ public enum SessionPipeline {
         // Other providers' running sessions found without a hook
         // (Antigravity's presence locks); the same rule — a snapshot wins.
         let seen = known.union(discovered.map(\.key))
-        let others = extra.filter { !seen.contains($0.key) }
+        var adopted: [String: Int32] = [:]
+        // discovered agy rows too: they have no pid until a holder is adopted
+        func corrected(_ rows: [SessionSnapshot]) -> [SessionSnapshot] {
+            rows.map { row in
+                let (fixed, holder) = correctAgy(row, agy: agy, now: now, pidTrusted: agyPidTrusted)
+                if let holder { adopted[row.key] = holder }
+                return fixed
+            }
+        }
+        let fromSnapshots = corrected(normalized)
+        let others = corrected(extra.filter { !seen.contains($0.key) })
 
         // One row per parked pair. The job's: its state is the current one,
         // and the window's stopped when the conversation left it. After
@@ -181,7 +230,7 @@ public enum SessionPipeline {
             parkedWindows[SessionKey.make(.claude, jobId)] =
                 ParkedWindow(entry: window, pane: row?.terminalSessionId)
         }
-        let all = RowOrdering.deduplicated(normalized + discovered + others).filter {
+        let all = RowOrdering.deduplicated(fromSnapshots + discovered + others).filter {
             !($0.provider == .claude && windowIds.contains($0.sessionId))
         }
         let sorted = Attention.sorted(all, acks: acks)
@@ -199,7 +248,8 @@ public enum SessionPipeline {
             doneCount: Attention.doneCount(all, acks: acks),
             mostUrgent: Attention.mostUrgent(all, acks: acks),
             waitingReasons: reasons,
-            parkedWindows: parkedWindows
+            parkedWindows: parkedWindows,
+            adoptedAgyPids: adopted
         )
     }
 }

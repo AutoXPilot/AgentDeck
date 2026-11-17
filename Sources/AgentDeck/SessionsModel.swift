@@ -156,8 +156,15 @@ final class SessionsModel: ObservableObject {
     /// Live sessions by session id — the discovery source that makes rows
     /// appear for sessions the hooks never saw.
     private(set) var claudeLiveSessions: [String: ClaudeSessionRegistry.Entry] = [:]
-    /// Processes of agy conversations no hook has reported yet.
-    private var agyArgumentPids = ArgumentPids()
+    /// agy's presence locks and their holders, from this reload.
+    private var agyPresence = AgyPresence.unknown
+    /// agy row key → the lock holder the pipeline gave it.
+    private var adoptedAgyPids: [String: Int32] = [:]
+    /// Running agy processes. Walking every process is the costly part, so
+    /// it's redone on the sweep, or when a held conversation has no holder
+    /// (an agy started since) and that set hasn't already been looked for.
+    private var agyPids: [pid_t]?
+    private var agyHolderMisses: Set<String> = []
     /// Antigravity conversations whose presence lock a running agy holds.
     private(set) var antigravityPresence: [AntigravityState.Presence] = []
     var presenceLiveKeys: Set<String> {
@@ -505,8 +512,10 @@ final class SessionsModel: ObservableObject {
         // A held presence lock is agy's own evidence that the conversation
         // runs. Once released, the row loses this protection and its
         // snapshot follows the normal pid / idle rules.
-        antigravityPresence = Provider.antigravity.spec.applicability.isApplicable()
-            ? AntigravityState.runningConversations() : []
+        let listedPresence = Provider.antigravity.spec.applicability.isApplicable()
+            ? AntigravityState.listedConversations() : nil
+        antigravityPresence = listedPresence ?? []
+        agyPresence = observeAgyPresence(listed: listedPresence, sweep: sweep)
         // Before any removal decision: a daemon-run thread has no pid of
         // its own, so without this its row would be judged on the daemon's.
         if all.contains(where: { $0.provider == .codex }) {
@@ -533,22 +542,25 @@ final class SessionsModel: ObservableObject {
         if readOnly {
             // hide what the live app would remove, but touch nothing
             removed = Set(Liveness.keysToRemove(all, confirmedLive: confirmedLive,
-                                                liveByPid: liveByPid))
+                                                liveByPid: liveByPid, agy: agyPresence))
         } else {
             // sweepOrphans stats+re-decodes every file; only the 15s tick
             // needs it, not every hook-driven reload.
             if sweep { store.sweepOrphans() }
             for key in Liveness.keysToRemove(all, confirmedLive: confirmedLive,
-                                             liveByPid: liveByPid) {
+                                             liveByPid: liveByPid, agy: agyPresence) {
                 // Re-read and delete under the SAME lock the helper writes
                 // under. Unlocked, a helper could publish a fresh event in
                 // the gap between the re-read and the delete, and we would
                 // delete that fresh event — losing a live session's row.
                 // no lock, no delete: a row kept one more cycle is harmless
                 let deleted = (try? store.withKeyLock(key) { () -> Bool in
+                    // the presence probe again, cheaply: a conversation that
+                    // came back since the scan must keep its row
                     if let fresh = store.load(key: key),
                        Liveness.keysToRemove(
-                           [fresh], confirmedLive: confirmedLive, liveByPid: liveByPid
+                           [fresh], confirmedLive: confirmedLive.union(self.freshAgyHeldKeys(for: fresh)),
+                           liveByPid: liveByPid, agy: agyPresence
                        ).isEmpty {
                         return false
                     }
@@ -574,6 +586,7 @@ final class SessionsModel: ObservableObject {
             acks: acks,
             frozenOrder: frozenOrder,
             popoverVisible: popoverVisible,
+            agy: agyPresence,
             now: Date()
         )
         // Auto-acknowledge done sessions finished > 30 min ago so the
@@ -597,16 +610,8 @@ final class SessionsModel: ObservableObject {
             || (iTermRun != nil && Self.currentITermRun() != iTermRun && listingSchedule.request()) {
             startListing()
         }
-        // agy rows no hook has reported (a restored one, before its first
-        // prompt) have no pid; `agy --conversation <id>` names its process
-        let unreported = Set(output.rows.filter {
-            $0.provider == .antigravity && $0.event == AntigravityState.discoveryEvent
-        }.map(\.sessionId))
-        agyArgumentPids.update(
-            wanted: unreported,
-            stillValid: { ProcessTree.isSessionProcess($1, provider: .antigravity, id: $0) },
-            scan: { ProcessTree.sessionPids(provider: .antigravity, ids: $0) })
         parkedWindows = output.parkedWindows
+        adoptedAgyPids = output.adoptedAgyPids
         frozenOrder = popoverVisible ? output.frozenOrder : nil
         waitingReasons = output.waitingReasons
         alertCount = output.alertCount
@@ -922,9 +927,12 @@ final class SessionsModel: ObservableObject {
         }
         // a daemon-run thread's recorded pane is the daemon's, not its own
         let recordedPane = isRunByCodexDaemon(snapshot) ? nil : snapshot.terminalSessionId
+        // agy: a pane or nothing. A process can switch conversations, so
+        // raising whatever app owns it says nothing about this one.
+        let agy = snapshot.provider == .antigravity
         return FocusResolver.resolve(
             terminalSessionId: recordedPane ?? paneByControllingTTY(snapshot),
-            owningAppBundlePath: owningAppBundle(for: snapshot),
+            owningAppBundlePath: agy ? nil : owningAppBundle(for: snapshot),
             host: effectiveHost(for: snapshot),
             provider: snapshot.provider, sessionId: snapshot.sessionId,
             isBackground: isBackgroundSession(snapshot)
@@ -961,18 +969,20 @@ final class SessionsModel: ObservableObject {
         if isRunByCodexDaemon(snapshot) {
             return codexDaemonPane(snapshot)?.guid
         }
+        // agy, a lock holder the pipeline adopted: its identity is holding
+        // this conversation's lock (it may have started long after the row's
+        // time), checked against this reload's observation; a click checks
+        // it again, fresh
+        if snapshot.provider == .antigravity, let pid = snapshot.agentPid,
+           adoptedAgyPids[snapshot.key] == pid {
+            guard agyPresence.holderOf[snapshot.sessionId.lowercased()] == pid,
+                  let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
+            return paneByTTY[tty]
+        }
         // agy: the hook recorded its own pid; trusted only while it passes
         // the identity check (start time, `agy` executable)
         if snapshot.provider == .antigravity, let pid = snapshot.agentPid,
            Liveness.pidIsTrustworthy(pid, forUpdatedAt: snapshot.updatedAt, provider: .antigravity),
-           let tty = ProcessTree.controllingTTY(of: pid) {
-            return paneByTTY[tty]
-        }
-        // no hook yet: the process started with this conversation's id,
-        // re-checked now since pids are reused
-        if snapshot.provider == .antigravity, snapshot.agentPid == nil,
-           let pid = agyArgumentPids.pids[snapshot.sessionId],
-           ProcessTree.isSessionProcess(pid, provider: .antigravity, id: snapshot.sessionId),
            let tty = ProcessTree.controllingTTY(of: pid) {
             return paneByTTY[tty]
         }
@@ -1015,6 +1025,15 @@ final class SessionsModel: ObservableObject {
     /// surfacing sessions with no recorded pane. Right-click → Dismiss is
     /// still there when you do mean "I've handled it".
     func activate(_ snapshot: SessionSnapshot) {
+        // agy can switch conversations inside one process: if this row's
+        // process moved on since the last reload, its pane shows another
+        // conversation now, so don't go there
+        if let moved = agyConversationMoved(snapshot) {
+            focusProblem = moved
+            reload()
+            if popoverVisible { onRequestClose?() }
+            return
+        }
         let target = focusTarget(for: snapshot)
         // A pane is acknowledged once the focus script reports it reached
         // it, not before: a pane id can be stale (the tab closed, or a
@@ -1074,16 +1093,35 @@ final class SessionsModel: ObservableObject {
         let guessedPane = isRunByCodexDaemon(snapshot) && codexDaemonPane(snapshot)?.byName != true
         let proves = !guessedPane
             && SessionPipeline.focusAcknowledges(snapshot, parkedWindows: parkedWindows)
-        let fallbackURL = ITermFocus.revealURL(
+        // agy: no reveal fallback either; the AppleScript names the pane
+        // exactly, and a fallback would act without the check below
+        let agyCheck: (pid: Int32, id: String, adopted: Bool, since: Date)? =
+            snapshot.provider == .antigravity
+                ? snapshot.agentPid.map { ($0, snapshot.sessionId,
+                                           adoptedAgyPids[snapshot.key] == $0, snapshot.updatedAt) }
+                : nil
+        let fallbackURL = snapshot.provider == .antigravity ? nil : ITermFocus.revealURL(
             terminalSessionId: ownPane(of: snapshot))
         Self.appLog("activate key=\(snapshot.key) guid=\(guid)")
         pendingFocus = { [weak self] in
             // The osascript call blocks, so it runs detached — capturing only
             // the guid string, never self, to stay Sendable-clean.
             Task { @MainActor in
-                let result = await Task.detached {
-                    ITermFocus.focusViaAppleScript(guid: guid)
+                let result = await Task.detached { () -> String in
+                    // the focus can run a while after the click (the popover
+                    // closes first): check again right before it
+                    if let c = agyCheck, !SessionsModel.agyMayAct(
+                        pid: c.pid, id: c.id, adopted: c.adopted,
+                        snapshotAge: Date().timeIntervalSince(c.since)) {
+                        return "agy-moved"
+                    }
+                    return ITermFocus.focusViaAppleScript(guid: guid)
                 }.value
+                if result == "agy-moved" {
+                    self?.focusProblem = "This agy conversation isn't open in that tab any more."
+                    self?.reload()
+                    return
+                }
                 SessionsModel.appLog("applescript focus: \(result)")
                 guard let self else { return }
                 if result == "focused" {
@@ -1640,29 +1678,97 @@ extension SessionsModel {
             now: now)
     }
 
+    private func observeAgyPresence(listed: [AntigravityState.Presence]?, sweep: Bool) -> AgyPresence {
+        guard let listed else { return .unknown }
+        let held = Set(listed.map(\.conversationId))
+        let directory = AgyPresence.presenceDirectory()
+        func resolve() -> AgyPresence {
+            var paths: [Int32: [String]?] = [:]
+            for pid in agyPids ?? [] { paths[pid] = ProcessTree.agyLockPaths(of: pid) }
+            return AgyPresence.resolve(held: held, lockPaths: paths, presenceDirectory: directory)
+        }
+        if held.isEmpty { agyPids = nil; agyHolderMisses = []; return resolve() }
+        let walked = sweep || agyPids == nil
+        if walked { agyPids = ProcessTree.agyPids(); agyHolderMisses = [] }
+        var presence = resolve()
+        // a holder the cached list doesn't know: an agy started since
+        let unexplained = held.subtracting(presence.holderOf.keys).subtracting(presence.ambiguous)
+        if walked {
+            agyHolderMisses = unexplained
+        } else if !unexplained.isEmpty, !unexplained.isSubset(of: agyHolderMisses) {
+            agyPids = ProcessTree.agyPids()
+            presence = resolve()
+            agyHolderMisses = held.subtracting(presence.holderOf.keys)
+        }
+        return presence
+    }
+
+    /// The held key for this snapshot's conversation, probed now: the locked
+    /// re-check before a delete mustn't rely on a scan that's a moment old.
+    private func freshAgyHeldKeys(for snapshot: SessionSnapshot) -> Set<String> {
+        guard snapshot.provider == .antigravity, let uuid = UUID(uuidString: snapshot.sessionId)
+        else { return [] }
+        let lock = AntigravityState.defaultDirectory
+            .appendingPathComponent("presence/\(uuid.uuidString.lowercased()).lock")
+        return AntigravityState.isLockHeld(lock) ? [snapshot.key] : []
+    }
+
+    /// Read fresh from the process's open lock files, at the moment of a
+    /// click or rename: nil when it may act on this row's pane, else why not
+    /// (`AgyPresence.mayAct`).
+    private func agyConversationMoved(_ snapshot: SessionSnapshot) -> String? {
+        guard snapshot.provider == .antigravity, let pid = snapshot.agentPid else { return nil }
+        return Self.agyMayAct(pid: pid, id: snapshot.sessionId,
+                              adopted: adoptedAgyPids[snapshot.key] == pid,
+                              snapshotAge: Date().timeIntervalSince(snapshot.updatedAt))
+            ? nil : "This agy conversation isn't open in that tab any more."
+    }
+
+    nonisolated static func agyMayAct(pid: Int32, id: String, adopted: Bool,
+                                      snapshotAge: TimeInterval) -> Bool {
+        let presence = AgyPresence.presenceDirectory()
+        return AgyPresence.mayAct(
+            pid: pid, id: id, adopted: adopted, snapshotAge: snapshotAge,
+            lockPaths: ProcessTree.agyLockPaths(of: pid), presenceDirectory: presence,
+            isHeld: { AntigravityState.isLockHeld(URL(fileURLWithPath: presence + "/" + $0 + ".lock")) })
+    }
+
     /// Gives each agy tab its conversation's title, as the row shows it.
     /// The title goes to iTerm only, as an AppleScript argument: never
     /// logged, typed or stored by AgentDeck (see DECISIONS).
     private func nameAgyTabs() {
         guard !readOnly, !isNamingAgyTabs else { return }
-        // forget a pane only once iTerm no longer has it: one missing from a
-        // single listing would otherwise be renamed again, over a name
-        // typed into the tab by hand
-        agyTabNames.keepOnly(Set(paneByTTY.values))
-        var titleByPane: [String: String] = [:]
+        // forget renames for agy processes that ended; never because a pane
+        // listing came back without some panes
+        agyTabNames.keepOnly(pids: Set(sessions.compactMap {
+            $0.provider == .antigravity ? $0.agentPid : nil
+        }))
+        var targets: [String: AgyTabNames.Given] = [:]
+        var checkFor: [String: (pid: Int32, id: String, adopted: Bool, since: Date)] = [:]
         for row in sessions where row.provider == .antigravity {
-            guard let title = agyTitles[row.sessionId], let pane = paneGUID(of: row) else { continue }
-            titleByPane[pane] = title
+            guard let title = agyTitles[row.sessionId], let pid = row.agentPid,
+                  let pane = paneGUID(of: row) else { continue }
+            targets[pane] = .init(title: title, pid: pid)
+            checkFor[pane] = (pid, row.sessionId, adoptedAgyPids[row.key] == pid, row.updatedAt)
         }
-        let due = agyTabNames.due(titleByPane: titleByPane)
+        let due = agyTabNames.due(targets)
         guard !due.isEmpty else { return }
         isNamingAgyTabs = true
         Task.detached {
-            let named = due.filter { ITermFocus.renameSession(guid: $0.key, to: $0.value) }
+            // each rename checked right before it: a pane whose process
+            // switched conversations shows another one now
+            let named = due.filter { pane, title in
+                if let c = checkFor[pane], !SessionsModel.agyMayAct(
+                    pid: c.pid, id: c.id, adopted: c.adopted,
+                    snapshotAge: Date().timeIntervalSince(c.since)) { return false }
+                return ITermFocus.renameSession(guid: pane, to: title)
+            }
             Self.appLog("agy tabs: named \(named.count) of \(due.count)")
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                for (pane, title) in named { self.agyTabNames.confirm(pane: pane, title: title) }
+                for pane in named.keys {
+                    if let target = targets[pane] { self.agyTabNames.confirm(pane: pane, as: target) }
+                }
                 self.isNamingAgyTabs = false
             }
         }
@@ -1678,9 +1784,7 @@ extension SessionsModel {
         if isRunByCodexDaemon(s) { return nil }
         if let recorded = ITermFocus.sessionGUID(from: ownPane(of: s)) { return recorded }
         let registryPid = s.provider == .claude ? claudeLiveSessions[s.sessionId]?.pid : nil
-        let argumentPid = s.provider == .antigravity && s.agentPid == nil
-            ? agyArgumentPids.pids[s.sessionId] : nil
-        guard let pid = argumentPid ?? SessionPipeline.terminalPid(
+        guard let pid = SessionPipeline.terminalPid(
                 for: s, registryPid: registryPid, parkedWindows: parkedWindows),
               let tty = ProcessTree.controllingTTY(of: pid) else { return nil }
         return paneByTTY[tty]
@@ -1705,7 +1809,8 @@ extension SessionsModel {
     /// `RunningEvidence`), from the registry view this reload read.
     var runningEvidence: RunningEvidence {
         RunningEvidence(claudeRegistryLive: Set(claudeLiveSessions.keys),
-                        presenceLive: presenceLiveKeys, daemonLive: codexDaemonLive)
+                        presenceLive: presenceLiveKeys, daemonLive: codexDaemonLive,
+                        agy: agyPresence)
     }
 
     func runningKeys(_ rows: [SessionSnapshot]) -> Set<String> {
@@ -1871,17 +1976,12 @@ extension SessionsModel {
     /// One entry, read fresh from disk — for use off the main thread, right
     /// before a launch and in the confirmation after it.
     nonisolated static func isRunning(_ entry: WorkspaceEntry) -> Bool {
-        // the registry is read only for a provider whose evidence it is
-        let live = entry.provider.spec.running == .claudeRegistry
-            ? Set(ClaudeSessionRegistry.liveSessions().keys) : []
-        let presence = entry.provider.spec.running == .trustworthyPidOrPresence
-            ? Set(AntigravityState.runningConversations().map {
-                SessionKey.make(.antigravity, $0.conversationId)
-            }) : []
-        let daemon = entry.provider == .codex
-            ? Set(ProcessTree.codexDaemonOpenThreads().map { SessionKey.make(.codex, $0) }) : []
-        return RunningEvidence(claudeRegistryLive: live, presenceLive: presence, daemonLive: daemon)
-            .isRunning(entry, snapshot: SnapshotStore().load(key: entry.key))
+        RunningEvidence.reading(
+            for: entry.provider,
+            claudeLive: { Set(ClaudeSessionRegistry.liveSessions().keys) },
+            agy: { AgyPresence.observe(pids: ProcessTree.agyPids()) },
+            codexDaemonThreads: { ProcessTree.codexDaemonOpenThreads() }
+        ).isRunning(entry, snapshot: SnapshotStore().load(key: entry.key))
     }
 
     /// A reservation ends when its session is seen running. Nothing expires
@@ -1925,11 +2025,19 @@ extension SessionsModel {
     func showPendingRestore() {
         let pending = pendingRestores.compactMap(SessionKey.split)
         let panes = paneByTTY
+        // agy by the lock holder: the id it was started with can go stale
+        let agyHolders = agyPresence.holderOf
         Task { @MainActor in
             let guid = await Task.detached { () -> String? in
-                let byProvider = Dictionary(grouping: pending, by: \.provider)
+                let byProvider = Dictionary(grouping: pending.filter { $0.provider != .antigravity },
+                                            by: \.provider)
                     .mapValues { Set($0.map { $0.sessionId.lowercased() }) }
                 var pids: [String: pid_t] = [:]
+                for (provider, id) in pending where provider == .antigravity {
+                    if let holder = agyHolders[id.lowercased()] {
+                        pids[SessionKey.make(provider, id.lowercased())] = holder
+                    }
+                }
                 for (provider, ids) in byProvider {
                     for (id, pid) in ProcessTree.sessionPids(provider: provider, ids: ids) {
                         pids[SessionKey.make(provider, id)] = pid

@@ -218,9 +218,18 @@ public enum AntigravityState {
         directory: URL = defaultDirectory,
         isHeld: (URL) -> Bool = isLockHeld
     ) -> [Presence] {
+        listedConversations(directory: directory, isHeld: isHeld) ?? []
+    }
+
+    /// The same, or nil when the presence folder couldn't be listed: no
+    /// evidence, as opposed to evidence that nothing runs.
+    public static func listedConversations(
+        directory: URL = defaultDirectory,
+        isHeld: (URL) -> Bool = isLockHeld
+    ) -> [Presence]? {
         let presence = directory.appendingPathComponent("presence", isDirectory: true)
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: presence.path)
-        else { return [] }
+        else { return nil }
         return names.sorted().compactMap { name in
             guard name.hasSuffix(".lock"),
                   let uuid = UUID(uuidString: String(name.dropLast(".lock".count)))

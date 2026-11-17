@@ -108,8 +108,13 @@ Discovery, liveness, state
 - `AntigravityState.swift` — non-blocking `flock` probe of presence locks,
   `last_conversations.json` for an unambiguous cwd, and the `title` of
   `annotations/<id>.pbtxt` (on-screen only; see Invariants).
+- `AgyPresence.swift` — which agy process holds which conversation's lock
+  (each keeps its current one open), since agy can switch conversations
+  in one process. A pid holding another conversation's lock has moved on;
+  `SessionPipeline.correctAgy` drops its pane or adopts the holder.
 - `Liveness.swift` — what to delete: dead/reused pids, superseded after
-  `/clear`, 24 h idle for pid-less or app-hosted-Codex rows, 7 days idle
+  `/clear` (Claude) or a switch (agy, after 60 s), 24 h idle for pid-less
+  or app-hosted-Codex rows, 7 days idle
   only where a live pid's start time can't be read; confirmed-live keys
   are never deleted.
 - `RunningEvidence.swift` — the single "is it running" definition (capture,

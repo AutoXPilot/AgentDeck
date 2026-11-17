@@ -228,8 +228,9 @@ public enum ProcessTree {
     }
 
     /// The same search, keeping the process found for each id (lowercased):
-    /// a restored session's pid before any hook has reported it, which is
-    /// how its pane is found.
+    /// how **Show** finds the tab of a restored Claude or Codex session
+    /// stuck at a startup prompt, before any hook. Not used for agy, which
+    /// can switch conversations after starting with one in its arguments.
     public static func sessionPids(provider: Provider, ids: Set<String>) -> [String: pid_t] {
         guard !ids.isEmpty else { return [:] }
         let wanted = ids.map { $0.lowercased() }
@@ -241,12 +242,6 @@ public enum ProcessTree {
             if found.count == wanted.count { break }
         }
         return found
-    }
-
-    /// Whether `pid` is still the agent process started for `id`: checked
-    /// again before a cached pid is trusted, since pids are reused.
-    public static func isSessionProcess(_ pid: pid_t, provider: Provider, id: String) -> Bool {
-        looksLikeAgent(pid, provider: provider) && argumentsMention(id.lowercased(), pid: pid)
     }
 
     public static func codexThreadsRunning(_ threadIds: Set<String>) -> Set<String> {
@@ -283,6 +278,18 @@ public enum ProcessTree {
         return String(decoding: arguments[index], as: UTF8.self)
     }
 
+    /// Running agy processes (not the `--bg-updater` child). Walks every
+    /// process, so callers cache it.
+    public static func agyPids() -> [pid_t] {
+        allPids().filter { looksLikeAgent($0, provider: .antigravity) }
+    }
+
+    /// The agy presence-lock paths `pid` has open, or nil when its
+    /// descriptors can't be read. Paths only; nothing is opened.
+    public static func agyLockPaths(of pid: pid_t) -> [String]? {
+        openFilePaths(of: pid)?.filter { $0.contains("/presence/") && $0.hasSuffix(".lock") }
+    }
+
     /// Codex thread ids whose rollout a Codex app-server daemon holds open.
     /// The daemon keeps the rollout of each thread it is running open and
     /// closes it when the thread ends, so this is the daemon-run thread's
@@ -291,7 +298,7 @@ public enum ProcessTree {
     public static func codexDaemonOpenThreads(daemons: [pid_t]? = nil) -> Set<String> {
         var ids = Set<String>()
         for pid in daemons ?? codexDaemonPids() {
-            for file in openFilePaths(of: pid) {
+            for file in openFilePaths(of: pid) ?? [] {
                 if let id = CodexAppServer.threadId(fromRolloutPath: file) { ids.insert(id) }
             }
         }
@@ -304,15 +311,17 @@ public enum ProcessTree {
         allPids().filter { isCodexSharedDaemon($0) }
     }
 
-    static func openFilePaths(of pid: pid_t) -> [String] {
+    /// nil when the descriptor table can't be read: not the same as a
+    /// process with nothing open.
+    static func openFilePaths(of pid: pid_t) -> [String]? {
         let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
-        guard size > 0 else { return [] }
+        guard size > 0 else { return nil }
         let count = Int(size) / MemoryLayout<proc_fdinfo>.stride
         var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: count + 16)
         let filled = fds.withUnsafeMutableBytes {
             proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
         }
-        guard filled > 0 else { return [] }
+        guard filled > 0 else { return nil }
         var paths: [String] = []
         for fd in fds.prefix(Int(filled) / MemoryLayout<proc_fdinfo>.stride)
         where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
