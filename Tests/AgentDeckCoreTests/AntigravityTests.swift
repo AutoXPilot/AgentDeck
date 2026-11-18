@@ -122,8 +122,10 @@ final class AntigravityHookTests {
     @Test func aQuestionIsAskedThenAnsweredThenTheTurnEnds() throws {
         send("PreInvocation", AgyFixture.invocation(0))
         send("PreToolUse", AgyFixture.tool("run_command"))
+        #expect(store.load(key: key)?.event == "PreToolUse", "a started call is on record")
         send("PostToolUse", AgyFixture.tool("run_command"))
-        #expect(store.load(key: key)?.state == .working, "other tools change nothing")
+        #expect(store.load(key: key)?.state == .working, "other tools don't make it wait")
+        #expect(store.load(key: key)?.event == "PostToolUse")
 
         #expect(send("PreToolUse", AgyFixture.tool("ask_question")) == .set(.waiting))
         let waiting = try #require(store.load(key: key))
@@ -210,8 +212,11 @@ struct AntigravityMappingTests {
         #expect(act(e("PostInvocation")) == .ignore)
         #expect(act(e("PreToolUse", tool: "ask_question")) == .set(.waiting))
         #expect(act(e("PostToolUse", tool: "ask_question")) == .set(.working))
-        #expect(act(e("PreToolUse", tool: "run_command")) == .ignore)
-        #expect(act(e("PreToolUse")) == .ignore)
+        // any other tool: still working, but a call that started and
+        // finished is on record (the trace a permission prompt would leave)
+        #expect(act(e("PreToolUse", tool: "run_command")) == .set(.working))
+        #expect(act(e("PostToolUse", tool: "run_command")) == .set(.working))
+        #expect(act(e("PreToolUse")) == .set(.working))
         #expect(act(e("Stop", idle: true)) == .set(.done))
         #expect(act(e("Stop", idle: false)) == .ignore)
         #expect(act(e("Stop")) == .ignore)
@@ -277,7 +282,7 @@ final class AntigravityInstallerTests {
         }
         for event in ["PreToolUse", "PostToolUse"] {
             let groups = try #require(set[event] as? [[String: Any]])
-            #expect(groups.count == 1 && groups[0]["matcher"] as? String == "ask_question")
+            #expect(groups.count == 1 && groups[0]["matcher"] as? String == ".*")
             let hooks = try #require(groups[0]["hooks"] as? [[String: Any]])
             #expect(hooks.first?["command"] as? String == q(event))
         }

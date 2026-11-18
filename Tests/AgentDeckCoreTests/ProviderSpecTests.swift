@@ -107,7 +107,7 @@ struct ProviderSpecTests {
         #expect(HookInstaller.events(for: .antigravity) == [
             "SessionStart", "PreInvocation", "PostInvocation", "Stop", "PreToolUse", "PostToolUse",
         ])
-        #expect(spec.hooks?.matchers == ["PreToolUse": "ask_question", "PostToolUse": "ask_question"])
+        #expect(spec.hooks?.matchers == ["PreToolUse": ".*", "PostToolUse": ".*"])
     }
 
     @Test func anExactBasenameRuleRejectsLookalikes() {

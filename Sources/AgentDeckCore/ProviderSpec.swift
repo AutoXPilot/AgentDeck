@@ -100,10 +100,12 @@ public struct ProviderSpec: Sendable {
                     "SessionStart", "PreInvocation", "PostInvocation", "Stop",
                     "PreToolUse", "PostToolUse",
                 ],
-                // Only the question tool: every other tool call would run
-                // the helper for nothing. Permission prompts were not
-                // observed, so they have no matcher and aren't detected.
-                matchers: ["PreToolUse": "ask_question", "PostToolUse": "ask_question"],
+                // Every tool (a regex): agy has no hook for a permission
+                // prompt, and a tool call that started and hasn't finished
+                // is the only trace one leaves. Recorded, not yet read as
+                // waiting: when the prompt shows relative to these hasn't
+                // been observed.
+                matchers: ["PreToolUse": ".*", "PostToolUse": ".*"],
                 policyGated: false,
                 installNote: "agy reads hooks only at startup — restart running agy sessions"),
             applicability: .requiresHomeDirectory(".gemini/antigravity-cli"),

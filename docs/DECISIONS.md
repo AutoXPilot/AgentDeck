@@ -171,6 +171,18 @@ process by that id and its tty gives the tab. Not used for agy: argv was
 tried for agy (2026-11-16) and dropped the next day, since agy switches
 conversations inside one process and the id it started with goes stale.
 
+**agy's tool hooks match every tool, to see what a permission prompt
+leaves.** (Unreleased)
+agy has no hook for a permission prompt. Its `PreToolUse` runs before
+agy decides whether to ask, and `PostToolUse` after the call finishes,
+so a prompt can only show as a call that started and hasn't finished
+while no command runs (a running command is a child shell of agy). The
+matchers were widened from `ask_question` to `.*` and every other tool's
+two events now record the call (state stays working), so the next real
+prompt can be observed before anything is inferred from it. Cost: the
+helper runs twice per tool call. The hook prints nothing, which leaves
+the call alone; printing `{}` would deny it.
+
 **For agy, the lock a process holds says which conversation it runs.**
 (Unreleased)
 agy can move one process to another conversation (`/resume`), and the

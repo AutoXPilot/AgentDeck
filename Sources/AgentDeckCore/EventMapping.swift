@@ -62,10 +62,12 @@ public enum EventMapping {
         case "PreInvocation":
             return .set(.working)
         case "PreToolUse":
-            return asksUser ? .set(.waiting) : .ignore
+            // any other tool: still working, but the snapshot now says a
+            // call started and when, the trace a permission prompt leaves
+            return asksUser ? .set(.waiting) : .set(.working)
         case "PostToolUse":
-            // answered
-            return asksUser ? .set(.working) : .ignore
+            // answered, or the call finished
+            return .set(.working)
         case "Stop":
             // an error outranks idleness: a failed turn also ends idle
             if e.reportedError { return .set(.error) }
