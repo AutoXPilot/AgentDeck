@@ -20,6 +20,8 @@ public struct NormalizedHookEvent: Equatable, Sendable {
     /// The tool a tool event is about (`ask_question`). The name only —
     /// a tool call's arguments are content and are never read.
     public var toolName: String? = nil
+    /// agy: the allow-listed tool of a call that just started (PreToolUse).
+    public var pendingTool: String? = nil
     /// Antigravity's Stop: whether the agent is fully idle (turn over).
     public var fullyIdle: Bool? = nil
     /// Whether the payload reported an error. Antigravity's `error` is
@@ -104,6 +106,7 @@ public enum HookPayload {
                 ? errorCategory(terminationReason: payload["terminationReason"] as? String) : nil,
             endReason: nil,
             toolName: toolName,
+            pendingTool: event == "PreToolUse" ? toolName.flatMap { agyPendingTools.contains($0) ? $0 : nil } : nil,
             fullyIdle: payload["fullyIdle"] as? Bool,
             reportedError: reportedError)
     }
@@ -116,6 +119,11 @@ public enum HookPayload {
         "account_on_hold", "billing_error", "invalid_request", "model_not_found",
         "server_error", "max_output_tokens", "cloud_credential_error", "unknown",
     ]
+
+    /// The agy tools a started call is recorded for: the one whose prompt
+    /// can be told from a call that's running (a running command is a
+    /// child process of agy). A fixed list, so nothing free-form is stored.
+    public static let agyPendingTools: Set<String> = ["run_command"]
 
     /// Antigravity's question tool, observed with agy 1.4.7.
     public static let askQuestionTool = "ask_question"

@@ -278,6 +278,46 @@ public enum ProcessTree {
         return String(decoding: arguments[index], as: UTF8.self)
     }
 
+    /// Whether agy `pid` has a child process other than its own
+    /// `--bg-updater` (a command it is running). nil when that can't be
+    /// told: the process is gone or unreadable, the listing failed (it
+    /// reports 0 children then, so `errno` decides), or the list was full.
+    /// A zombie isn't running anything; a child that can't be read counts
+    /// as a command, since a wrong "none" would invent a prompt.
+    public static func agyHasCommandChild(_ pid: pid_t) -> Bool? {
+        guard nameAndParent(of: pid) != nil else { return nil }
+        var children = [pid_t](repeating: 0, count: 256)
+        errno = 0
+        let n = proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size))
+        guard n >= 0, !(n == 0 && errno != 0), Int(n) < children.count else { return nil }
+        return children.prefix(Int(n)).contains { child in
+            guard child > 0 else { return false }
+            guard let (name, _) = nameAndParent(of: child) else { return true }
+            if isZombie(child) { return false }
+            return !(name == "agy" && hasArgument("--bg-updater", pid: child))
+        }
+    }
+
+    static func isZombie(_ pid: pid_t) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return false }
+        return info.kp_proc.p_stat == SZOMB
+    }
+
+    /// Whether one of the process's arguments is exactly `argument`.
+    static func hasArgument(_ argument: String, pid: pid_t) -> Bool {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size
+        else { return false }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return false }
+        let target = Array(argument.utf8)
+        return procArguments(Array(buffer.prefix(size))).dropFirst().contains { Array($0) == target }
+    }
+
     /// Running agy processes (not the `--bg-updater` child). Walks every
     /// process, so callers cache it.
     public static func agyPids() -> [pid_t] {

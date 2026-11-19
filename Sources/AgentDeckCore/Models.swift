@@ -79,6 +79,11 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     public var hostKind: String?
     /// The outermost application bundle hosting the session, when known.
     public var hostBundlePath: String?
+    /// agy: the tool a call that has started and not finished belongs to,
+    /// allow-listed (`HookPayload.agyPendingTools`), never its arguments.
+    /// A `run_command` waiting with no command running is agy asking for
+    /// permission, which no hook reports. Optional, so older builds ignore it.
+    public var pendingTool: String?
 
     public init(
         schemaVersion: Int = SessionSnapshot.currentSchemaVersion,
@@ -97,7 +102,8 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         effort: String? = nil,
         errorKind: String? = nil,
         hostKind: String? = nil,
-        hostBundlePath: String? = nil
+        hostBundlePath: String? = nil,
+        pendingTool: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.provider = provider
@@ -116,6 +122,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.errorKind = errorKind
         self.hostKind = hostKind
         self.hostBundlePath = hostBundlePath
+        self.pendingTool = pendingTool
     }
 
     /// Whether a live `agentPid` proves this particular session is alive.
@@ -154,7 +161,7 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         case schemaVersion, provider, sessionId, projectPath, state, event
         case updatedAt, terminalSessionId, agentPid, notificationType
         case permissionMode, model, modelObservedAt, effort, errorKind
-        case hostKind, hostBundlePath
+        case hostKind, hostBundlePath, pendingTool
     }
 
     public init(from decoder: any Decoder) throws {
@@ -176,5 +183,6 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         errorKind = try c.decodeIfPresent(String.self, forKey: .errorKind)
         hostKind = try c.decodeIfPresent(String.self, forKey: .hostKind)
         hostBundlePath = try c.decodeIfPresent(String.self, forKey: .hostBundlePath)
+        pendingTool = try? c.decodeIfPresent(String.self, forKey: .pendingTool)
     }
 }

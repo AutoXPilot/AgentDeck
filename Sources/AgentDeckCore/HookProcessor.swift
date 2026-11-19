@@ -131,7 +131,12 @@ public enum HookProcessor {
                     effort: e.effort ?? existing?.effort,
                     errorKind: state == .error ? e.errorKind : nil,
                     hostKind: hostKind,
-                    hostBundlePath: hostBundlePath
+                    hostBundlePath: hostBundlePath,
+                    // set by the call's start, cleared by the next event
+                    // that writes (PostToolUse, PreInvocation, …). Not by
+                    // PostInvocation, which writes nothing: agy sends it
+                    // right after PreToolUse, before the tool runs or asks.
+                    pendingTool: e.pendingTool
                 )
                 try? store.write(snapshot)
             }

@@ -107,7 +107,7 @@ public struct ProviderSpec: Sendable {
                 // been observed.
                 matchers: ["PreToolUse": ".*", "PostToolUse": ".*"],
                 policyGated: false,
-                installNote: "agy reads hooks only at startup — restart running agy sessions"),
+                installNote: "agy applies new hooks to conversations started afterwards — start a new one, or restart agy"),
             applicability: .requiresHomeDirectory(".gemini/antigravity-cli"),
             eventNameOnArgv: true,
             // `agy --bg-updater` is a child process with the same name;

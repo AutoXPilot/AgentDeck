@@ -142,6 +142,10 @@ Discovery, liveness, state
 - `CodexStall.swift` — a Codex thread stuck on a prompt no hook reports
   (MCP elicitation): last rollout record a non-shell tool call with no
   output, quiet 2 minutes. Fed to `SessionPipeline` as `inferredWaiting`.
+- `AgyPrompt.swift` — an agy command permission prompt no hook reports: a
+  started `run_command` (`pendingTool`) whose agy has no child but its
+  `--bg-updater`, on two looks 5 s apart, 10 s after the call. Also fed in
+  as `inferredWaiting`.
 - `CodexAppServer.swift` — Codex's shared app-server daemon (0.166+): detection,
   and the title match that finds a daemon-run CLI thread's pane. The helper
   drops the daemon's pid and inherited pane; `CodexThreads.originators`
@@ -287,7 +291,8 @@ was checked, is [docs/platform-facts.md](docs/platform-facts.md).
 - All ChatGPT threads report one shared Codex server pid.
   `codex://threads/<thread id>` opens the exact thread;
   `FocusResolver.deepLink` builds it.
-- agy reads hooks only at startup, sends no SessionStart on `--continue`,
+- agy picks up hook changes for conversations started afterwards (an
+  older build read them only at startup), sends no SessionStart on `--continue`,
   and puts prompt text (`lastUserInput`) in every payload.
 - Ad-hoc signing: `UNUserNotificationCenter` is refused, so notifications
   fall back to `osascript`; keep a stable `--identifier` so Automation
@@ -298,8 +303,9 @@ was checked, is [docs/platform-facts.md](docs/platform-facts.md).
 - Usage lines: several Codex accounts aren't told apart (the figures are
   whichever account reported last); Claude's are filed per account. Claude's structured `/usage` (an experimental SDK
   `get_usage` control request) would give per-model rows; not used.
-- agy permission prompts aren't detected (tool name never observed); agy
-  print mode isn't filtered.
+- agy permission prompts are inferred for `run_command` only
+  (`AgyPrompt.swift`), not yet seen end to end; other tools' prompts aren't
+  detected; agy print mode isn't filtered.
 - Live checks still owed (reboot banner, Locate…, the Claude Desktop row,
   agy permission prompts and print mode): the table at the end of
   [docs/platform-facts.md](docs/platform-facts.md).

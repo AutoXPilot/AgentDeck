@@ -33,7 +33,7 @@ waiting on you** — then click a row to jump to that exact iTerm2 tab/pane.
 |---|---|---|---|---|---|
 | Claude Code | CL | `~/.claude/settings.json` | hooks + Claude's session registry | permission and input prompts | `command claude --resume <id>` |
 | Codex CLI | CX | `~/.codex/hooks.json` | hooks | permission requests (when Codex fires them) | `command codex resume <id>` |
-| Antigravity CLI | AG | `~/.gemini/config/hooks.json` (set `agentdeck`) | hooks + agy's presence locks | questions (`ask_question`) only — **not** permission prompts | `command agy --conversation <id>` |
+| Antigravity CLI | AG | `~/.gemini/config/hooks.json` (set `agentdeck`) | hooks + agy's presence locks | questions (`ask_question`); command permission prompts inferred ("may need you"), since agy has no hook for them | `command agy --conversation <id>` |
 
 ## What it writes on your machine (read this first)
 
@@ -192,8 +192,9 @@ git clone https://github.com/AutoXPilot/AgentDeck && cd AgentDeck
 - Codex sessions started **before** the hooks were installed won't report
   until restarted. Claude sessions appear either way — see discovery
   below.
-- agy reads its hooks only at startup: restart running `agy` sessions
-  after installing. Until then they still appear (from agy's presence
+- agy applies new hooks to conversations started after they're installed
+  (an older agy only on restart): start a new conversation or restart
+  `agy`. Until then running sessions still appear (from agy's presence
   locks), shown as ready and never changing state.
 
 ## How it works
@@ -223,13 +224,18 @@ Antigravity (agy 1.4.7, observed live): a session's first event is
 PreInvocation (SessionStart did not fire, even with `--continue`), and one
 turn runs several PreInvocation/PostInvocation pairs before exactly one
 Stop. Mapping: PreInvocation→working; PreToolUse(`ask_question`)→waiting
-and PostToolUse(`ask_question`)→working (the hook set's matcher is exactly
-`ask_question`, so no other tool call runs the helper); Stop with a
-non-empty `error`→error, else Stop with `fullyIdle: true`→done, otherwise
-ignored; PostInvocation is ignored; SessionStart→ready if a newer agy ever
-fires it. A Stop may create a row, since a missed start would otherwise
-leave the session invisible. **Permission prompts are not detected**: no
-probe exercised one, so no tool name is matched for them. agy has no
+and PostToolUse(`ask_question`)→working; any other tool's PreToolUse and
+PostToolUse→working, recording a started `run_command` (the tool name
+only); Stop with a non-empty `error`→error, else Stop with `fullyIdle:
+true`→done, otherwise ignored; PostInvocation is ignored (agy sends it right
+after PreToolUse, before the tool runs); SessionStart→ready if a newer agy
+ever fires it. A Stop may create a row, since a missed start would otherwise
+leave the session invisible. **A command's permission prompt is inferred**
+(agy has no hook for it): a started `run_command` with no command running
+under agy, on two looks at least 5 s apart and 10 s or more after it
+started, shows "may need you", so 15–30 s after the prompt appears.
+Prompts for other tools aren't detected, and a long-lived process agy
+started hides one. agy has no
 SessionEnd; a row goes when its `agy` process does (the sweep), and the
 `agy --bg-updater` child process is never mistaken for a session.
 

@@ -123,9 +123,21 @@ final class AntigravityHookTests {
         send("PreInvocation", AgyFixture.invocation(0))
         send("PreToolUse", AgyFixture.tool("run_command"))
         #expect(store.load(key: key)?.event == "PreToolUse", "a started call is on record")
+        #expect(store.load(key: key)?.pendingTool == "run_command")
+        #expect(!(try storedText()).contains(AgyFixture.argsText), "the tool's name, never its arguments")
         send("PostToolUse", AgyFixture.tool("run_command"))
         #expect(store.load(key: key)?.state == .working, "other tools don't make it wait")
         #expect(store.load(key: key)?.event == "PostToolUse")
+        #expect(store.load(key: key)?.pendingTool == nil, "the call finished")
+        send("PreToolUse", AgyFixture.tool("read_url_content"))
+        #expect(store.load(key: key)?.pendingTool == nil, "only allow-listed tools are kept")
+        // agy's order around a prompt: PreToolUse, then PostInvocation at once
+        // (before the tool runs or asks); only the next writing event clears it
+        send("PreToolUse", AgyFixture.tool("run_command"))
+        send("PostInvocation", AgyFixture.invocation(0))
+        #expect(store.load(key: key)?.pendingTool == "run_command", "PostInvocation must not clear it")
+        send("PreInvocation", AgyFixture.invocation(1))
+        #expect(store.load(key: key)?.pendingTool == nil, "the next step (after a denial, say) does")
 
         #expect(send("PreToolUse", AgyFixture.tool("ask_question")) == .set(.waiting))
         let waiting = try #require(store.load(key: key))

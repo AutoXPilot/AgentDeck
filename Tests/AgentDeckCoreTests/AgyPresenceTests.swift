@@ -252,3 +252,93 @@ struct RunningEvidenceReadingTests {
         #expect(read == ["claude", "codex", "agy"])
     }
 }
+
+struct AgyPromptTests {
+    let now = Date(timeIntervalSince1970: 10_000)
+    private func row(event: String = "PreToolUse", tool: String? = "run_command", age: TimeInterval = 30,
+                     state: SessionState = .working, provider: Provider = .antigravity,
+                     pid: Int32? = 12222) -> SessionSnapshot {
+        SessionSnapshot(provider: provider, sessionId: id(1), projectPath: "/tmp", state: state,
+                        event: event, updatedAt: now.addingTimeInterval(-age), agentPid: pid,
+                        pendingTool: tool)
+    }
+    /// Two looks, `gap` apart, both with `child`.
+    private func twoLooks(_ r: SessionSnapshot, gap: TimeInterval = 6, child: Bool? = false) -> [String: Date] {
+        var watch = AgyPromptWatch()
+        _ = watch.observe([r], now: now, hasChild: { _ in child })
+        return watch.observe([r], now: now.addingTimeInterval(gap), hasChild: { _ in child })
+    }
+
+    @Test func aStartedCommandWithNothingRunningOnTwoLooksIsAPrompt() {
+        let r = row()
+        var watch = AgyPromptWatch()
+        #expect(watch.observe([r], now: now, hasChild: { _ in false }).isEmpty, "one look isn't enough")
+        #expect(watch.observe([r], now: now.addingTimeInterval(6), hasChild: { _ in false }) == [r.key: r.updatedAt])
+    }
+
+    @Test func looksCloserThanTheGapOrInterruptedDontCount() {
+        #expect(twoLooks(row(), gap: 2).isEmpty)
+        var watch = AgyPromptWatch()
+        let r = row()
+        _ = watch.observe([r], now: now, hasChild: { _ in false })
+        _ = watch.observe([r], now: now.addingTimeInterval(3), hasChild: { _ in true })
+        #expect(watch.observe([r], now: now.addingTimeInterval(7), hasChild: { _ in false }).isEmpty,
+                "a command ran in between: start over")
+        // a new call (another PreToolUse) starts over too
+        var other = AgyPromptWatch()
+        _ = other.observe([row(age: 30)], now: now, hasChild: { _ in false })
+        #expect(other.observe([row(age: 20)], now: now.addingTimeInterval(6), hasChild: { _ in false }).isEmpty)
+    }
+
+    @Test func aRunningOrJustStartedOrUnreadableCommandIsNot() {
+        #expect(twoLooks(row(), child: true).isEmpty, "the command is running")
+        #expect(twoLooks(row(age: 9)).isEmpty, "under the threshold at the first look: that look doesn't count")
+        #expect(!twoLooks(row(age: 10)).isEmpty, "at the threshold on both looks")
+        #expect(twoLooks(row(age: 3)).isEmpty, "a command just approved hasn't started its shell yet")
+        #expect(twoLooks(row(), child: nil).isEmpty, "can't tell")
+    }
+
+    @Test func eachConditionIsNeeded() {
+        #expect(twoLooks(row(event: "PostToolUse")).isEmpty, "the call finished, even if the tool lingered")
+        #expect(twoLooks(row(tool: nil)).isEmpty, "another tool, or none recorded")
+        #expect(twoLooks(row(state: .waiting)).isEmpty)
+        #expect(twoLooks(row(provider: .claude)).isEmpty)
+        #expect(twoLooks(row(pid: nil)).isEmpty)
+    }
+
+    @Test func thePipelineShowsItAsMayNeedYou() {
+        let r = row()
+        let out = SessionPipeline.run(snapshots: [r], registry: [:], inferredWaiting: twoLooks(r),
+                                      acks: [:], frozenOrder: nil, popoverVisible: false, now: now)
+        #expect(out.rows.first?.state == .waiting)
+        #expect(out.waitingReasons[r.key] == SessionPipeline.inferredWaitingReason)
+        #expect(out.alertCount == 1)
+    }
+
+    @Test func theCheckRunsOnThePidThatHoldsTheConversationNow() {
+        // the snapshot's pid moved on to another conversation; the holder is 40
+        let presence = AgyPresence.resolve(held: [id(1), id(2)],
+                                           lockPaths: [12222: [lock(2)], 40: [lock(1)]], presenceDirectory: dir)
+        let fixed = SessionPipeline.correctedAgyRow(row(age: 120), agy: presence, now: now)
+        #expect(fixed.agentPid == 40)
+    }
+}
+
+struct AgyChildProbeTests {
+    @Test func aRunningChildIsSeenAndAGoneProcessIsUnknown() throws {
+        let me = getpid()
+        // a system binary, never deleted (see ProcessFixtures)
+        let child = try Process.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["5"])
+        defer { child.terminate(); child.waitUntilExit() }
+        #expect(ProcessTree.agyHasCommandChild(me) == true)
+        #expect(ProcessTree.agyHasCommandChild(999_999) == nil, "no such process")
+    }
+
+    @Test func anUpdaterIsKnownByItsExactArgument() throws {
+        let child = try Process.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["5"])
+        defer { child.terminate(); child.waitUntilExit() }
+        #expect(!ProcessTree.hasArgument("--bg-updater", pid: child.processIdentifier))
+        #expect(ProcessTree.hasArgument("5", pid: child.processIdentifier))
+        #expect(!ProcessTree.hasArgument("/bin/sleep", pid: child.processIdentifier), "not the program name")
+    }
+}

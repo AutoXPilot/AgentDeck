@@ -171,6 +171,25 @@ process by that id and its tty gives the tab. Not used for agy: argv was
 tried for agy (2026-11-16) and dropped the next day, since agy switches
 conversations inside one process and the id it started with goes stale.
 
+**An agy command prompt is inferred from a started call with nothing
+running.** (Unreleased)
+Observed once: during agy's "Run this command?" prompt the last hook was
+`PreToolUse` for `run_command`, no `PostToolUse` followed, and agy had no
+child process; an approved command runs as a child shell. So a working agy
+row whose last event is that `PreToolUse`, 10 s or more old, with no child
+but the `--bg-updater`, on two looks at least 5 s apart (one look can fall
+between a command's processes), reads as "may need you", like Codex's MCP
+prompts; the notification says "may need you" too. It is judged on the pid
+that runs the conversation now (`correctedAgyRow`). A child that can't be
+listed means unknown, never "none". PostInvocation must not clear the
+pending call: agy sends it right after PreToolUse, before the tool runs or
+asks; the next writing event (PostToolUse, or PreInvocation after a denial)
+does. Only `run_command` (`pendingTool`, an allow-list, never the
+arguments): a slow in-process tool, such as a web fetch, has no child
+either and would look the same. Other tools' prompts stay undetected, and
+any long-lived child of agy (a server it started, a second command) hides a
+prompt: a miss, never a false alarm.
+
 **agy's tool hooks match every tool, to see what a permission prompt
 leaves.** (Unreleased)
 agy has no hook for a permission prompt. Its `PreToolUse` runs before

@@ -48,6 +48,7 @@ final class SessionsModel: ObservableObject {
     /// The iTerm run the pane maps above came from.
     private var iTermRun: ITermRun?
     private var listingSchedule = ListingSchedule()
+    private var agyPromptWatch = AgyPromptWatch()
     /// The pane listing last applied (merged, if partial).
     private var lastListing: ITermFocus.SessionList?
     /// Codex session id → name set via its `/rename`.
@@ -574,13 +575,22 @@ final class SessionsModel: ObservableObject {
         }
         all.removeAll { removed.contains($0.key) }
 
+        // agy permission prompts, judged on the pid that runs each
+        // conversation now, as the pipeline will correct it
+        let checkedAt = Date()
+        let agyPrompts = readOnly ? [:] : agyPromptWatch.observe(
+            all.filter { $0.provider == .antigravity }
+                .map { SessionPipeline.correctedAgyRow($0, agy: agyPresence, now: checkedAt) },
+            now: checkedAt, hasChild: ProcessTree.agyHasCommandChild)
+
         // All derivation lives in the tested core; this method only reads
         // files, assigns outputs, and performs side effects.
         let output = SessionPipeline.run(
             snapshots: all,
             registry: claudeRegistry,
             liveSessions: claudeLiveSessions,
-            inferredWaiting: codexStalls,
+            // prompts no hook reports: Codex MCP elicitations, agy permission
+            inferredWaiting: codexStalls.merging(agyPrompts) { codex, _ in codex },
             discovered: AntigravityState.discoveredSnapshots(
                 antigravityPresence,
                 workspaces: antigravityPresence.isEmpty
@@ -1311,7 +1321,10 @@ final class SessionsModel: ObservableObject {
             guard let snapshot = snapshots.first(where: { $0.key == key }) else { continue }
             // A dismissal is "I know, leave me alone" — respect it.
             guard needsAttention(snapshot) else { continue }
-            let heading = "\(snapshot.provider.displayName) is waiting on you"
+            // an inferred prompt says so: it may already be answered
+            let inferred = waitingReasons[key] == SessionPipeline.inferredWaitingReason
+            let heading = "\(snapshot.provider.displayName) "
+                + (inferred ? "may need you" : "is waiting on you")
             var body = notificationLabel(for: snapshot)
             if let reason = waitingReasons[key] { body += " — \(reason)" }
             post(title: heading, body: body, key: key)

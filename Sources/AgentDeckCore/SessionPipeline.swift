@@ -40,6 +40,16 @@ public enum SessionPipeline {
         public var adoptedAgyPids: [String: Int32] = [:]
     }
 
+    /// `correctAgy` for one row, outside a pipeline run: what the row's pid
+    /// will be once the run corrects it, for checks made before the run.
+    public static func correctedAgyRow(
+        _ row: SessionSnapshot, agy: AgyPresence, now: Date = Date()
+    ) -> SessionSnapshot {
+        correctAgy(row, agy: agy, now: now, pidTrusted: { pid, updatedAt in
+            Liveness.pidIsTrustworthy(pid, forUpdatedAt: updatedAt, provider: .antigravity)
+        }).row
+    }
+
     /// An agy row as its presence locks say it is now.
     /// - Its pid holds another conversation's lock (agy switched): past the
     ///   grace the pid, pane and host are dropped, since they're the other

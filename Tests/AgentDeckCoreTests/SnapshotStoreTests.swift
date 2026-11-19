@@ -66,7 +66,8 @@ final class SnapshotStoreTests {
             effort: "high",
             errorKind: "rate_limit",
             hostKind: "app",
-            hostBundlePath: "/Applications/Claude.app"
+            hostBundlePath: "/Applications/Claude.app",
+            pendingTool: "run_command"
         )
         try store.write(snap)
         let loaded = try #require(store.load(key: snap.key))
@@ -83,6 +84,7 @@ final class SnapshotStoreTests {
         #expect(loaded.model == "gpt-6-astra")
         #expect(loaded.effort == "high")
         #expect(loaded.errorKind == "rate_limit", "every field populated, so a dropped one shows")
+        #expect(loaded.pendingTool == "run_command")
         #expect(loaded.modelObservedAt != nil, "modelObservedAt was silently dropped on write")
         #expect(abs((loaded.modelObservedAt ?? .distantPast)
             .timeIntervalSince(observed)) < 1.0)

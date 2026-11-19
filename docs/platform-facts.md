@@ -69,10 +69,11 @@ and allow-listed values only. Payloads carry prompt text (agy's
 
 | Fact | Seen on | How |
 |---|---|---|
-| Hooks load only from named hook sets in `~/.gemini/config/hooks.json`, and only at startup: a running agy doesn't see new hooks. | 1.4.7, 2026-10-28 | docs + observed |
+| Hooks load from named hook sets in `~/.gemini/config/hooks.json` (and a project's `.agents/hooks.json`). A running agy didn't see new hooks (1.4.7); in 1.5.10 a process started before a hook change recorded the new hooks in a conversation it began afterwards, so a new conversation picks them up. | 1.4.7, 2026-10-28; 1.5.10, 2026-11-19 | docs + observed |
+| A permission prompt ("Requesting permission for: … Run this command?") left `PreToolUse` (`run_command`) as the last hook, with no `PostToolUse`, for 4+ minutes, and agy had no child process; an approved command runs as a child (`zsh -c …`). | 1.5.10, 2026-11-19 | observed (one live prompt) |
 | The payload is camelCase and names no event, so the event goes on the command line. Every payload carries `lastUserInput` (prompt text); tool events carry `toolCall.args`. | 1.4.7, 2026-10-28 | observed (metadata-only probe) |
 | No SessionStart, even on `--continue`: the first event is PreInvocation. One turn runs several PreInvocation/PostInvocation pairs and one `Stop{fullyIdle:true, terminationReason:"NO_TOOL_CALL", error:""}`. | 1.4.7, 2026-10-28 | observed |
-| A question to the user is the tool `ask_question` (PreToolUse/PostToolUse). Permission prompts: tool name never observed. | 1.4.7, 2026-10-28 | observed |
+| A question to the user is the tool `ask_question` (PreToolUse/PostToolUse). A command's permission prompt has no hook of its own; see the 1.5.10 rows below. | 1.4.7, 2026-10-28; 2026-11-19 | observed |
 | Hook commands inherit `ITERM_SESSION_ID`; `ANTIGRAVITY_CONVERSATION_ID` is set. | 1.4.7, 2026-10-28 | observed (names only) |
 | `presence/<conversation>.lock` is `flock`-held while the session runs; the file stays afterwards with an unchanged mtime. | 1.4.7, 2026-10-28 | observed |
 | `/rename <name>` writes `title:"…"` to `annotations/<conversation>.pbtxt`; agy writes its generated title to the same field, and `last_user_view_time` can sit beside it. `conversation_summaries.db` `title` can lag it. The file name is the id hooks report. agy doesn't put the name in the terminal title by default (`/title [on\|off]` is a separate custom title, untested). A `/rename` before the conversation has an id wasn't found in any file. | 1.4.12–1.5.2, 2026-11-06 | observed (field names and matches only) |
@@ -124,7 +125,7 @@ row (date, version, result) when one is done.
 | Single-quoted hook command under Codex | done 2026-10-28 |
 | `codex://threads/<id>` opens the exact thread | done 2026-11-01 |
 | Claude Desktop row: label, "Desktop" tag, click brings Claude.app forward | pending (no Desktop-hosted session run since 0.6.0) |
-| agy permission prompt: which tool name it uses | pending; prompts aren't detected until then |
+| agy command permission prompt: the inference shows "may need you" on a live prompt, and clears when it's answered or denied | pending (built 2026-11-19; the hook trace and childless agy observed once) |
 | agy print mode (`agy -p`): is there a discriminator to filter on? | not run |
 | A per-session `claude://` link | not run |
 | agy reads this repo's `AGENTS.md` | not observed (documented) |

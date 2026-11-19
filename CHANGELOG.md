@@ -4,6 +4,14 @@
 
 ### Added
 
+- **agy's command permission prompts show as "may need you".** agy has no
+  hook for them, but its hooks show a command that started and hasn't
+  finished, and while agy waits for approval no command is running. Seen
+  that way twice, a few seconds apart, it reads as a prompt, 15–30 s after
+  it appears. Inferred, so worded as such, notification included; other
+  tools' prompts are still not detected, and a long-lived process agy
+  started hides one.
+
 - **agy tabs in iTerm are named like their row.** agy sets no tab title,
   so a tab read "agy", or "cd" after a restore. AgentDeck now gives the tab
   the conversation's title, and again whenever it changes or agy is
